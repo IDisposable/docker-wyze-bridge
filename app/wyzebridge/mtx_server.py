@@ -96,6 +96,7 @@ class MtxServer:
             {
                 "ips": ["127.0.0.1"],
                 "permissions": [{"action": "read"}, {"action": "publish"}],
+                "user": "any",
             }
         ]
         with MtxInterface() as mtx:
