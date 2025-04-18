@@ -92,17 +92,25 @@ class MtxServer:
             mtx.set("pathDefaults.recordDeleteAfter", RECORD_KEEP)
 
     def setup_auth(self, api: Optional[str], stream: Optional[str]):
+        administrator = [
+            {
+                "user": "any",
+                "ips": ["127.0.0.1", "::1"],
+                "permissions": [{"action": "api"}, {"action": "metrics"}, {"action": "pprof"}],
+            }
+        ]
         publisher = [
             {
-                "ips": ["127.0.0.1"],
-                "permissions": [{"action": "read"}, {"action": "publish"}],
                 "user": "any",
+                "ips": ["127.0.0.1", "::1"],
+                "permissions": [{"action": "read"}, {"action": "playback"}, {"action": "publish"}],
             }
         ]
         with MtxInterface() as mtx:
-            mtx.set("authInternalUsers", publisher)
+            mtx.set("authInternalUsers", administrator)
+            mtx.add("authInternalUsers", publisher)
             if api or not stream:
-                client: dict = {"permissions": [{"action": "read"}]}
+                client: dict = {"permissions": [{"action": "read"}, {"action": "playback"}]}
                 if api:
                     client.update({"user": "wb", "pass": api})
                 else:
@@ -238,10 +246,10 @@ def parse_auth(auth: str) -> list[dict[str, str]]:
             paths = []
             for endpoint in endpoints[0].split(","):
                 paths.append(endpoint)
-                data["permissions"].append({"action": "read", "path": endpoint})
+                data["permissions"].append([{"action": "read", "path": endpoint}, {"action": "playback", "path": endpoint}])
         else:
             paths = "all"
-            data["permissions"].append({"action": "read"})
+            data["permissions"].append([{"action": "read"}, {"action": "playback"}])
         logger.info(f"[MTX] Auth [{data['user']}:{data['pass']}] {paths=}")
         entries.append(data)
     return entries
