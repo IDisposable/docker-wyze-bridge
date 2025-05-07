@@ -1,37 +1,44 @@
 ARG BUILD
 ARG BUILD_DATE
 ARG GITHUB_SHA
+
 FROM python:3.13-slim-bookworm AS base
 
 FROM base AS builder
 ARG BUILD_DATE
-RUN apt-get update \
-    && apt-get install -y curl tar gcc \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y \
+        curl \
+        tar \
+        gcc \
+    ; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
 COPY /app/ /build/app/
-RUN pip3 install --disable-pip-version-check --prefix=/build/usr/local -r /build/app/requirements.txt
-RUN echo "BUILDING IMAGE FOR ${TARGETARCH}" && \
-    if [ "$(uname -m)" = "armv7l" ]; \
-    then TARGETARCH=arm; FFMPEG_ARCH=arm32v7; MTX_ARCH=armv7; \
-    elif [ "$(uname -m)" = "aarch64" ]; \
-    then TARGETARCH=arm64; FFMPEG_ARCH=aarch64; MTX_ARCH=arm64; \
-    else TARGETARCH=amd64; FFMPEG_ARCH=x86_64; MTX_ARCH=amd64; \
-    fi \
-    && cd /build \
-    && . app/.env \
-    && mkdir -p tokens img \
-    && curl -fSL https://github.com/homebridge/ffmpeg-for-homebridge/releases/latest/download/ffmpeg-alpine-${FFMPEG_ARCH}.tar.gz -o ffmpeg.tar.gz \
-    && tar tzf ffmpeg.tar.gz || (echo "Invalid ffmpeg tarball for ${FFMPEG_ARCH}" && exit 1) \
-    && tar xzf ffmpeg.tar.gz -C . \
-    && rm ffmpeg.tar.gz \
-    && curl -fSL https://github.com/bluenviron/mediamtx/releases/download/v${MTX_TAG}/mediamtx_v${MTX_TAG}_linux_${MTX_ARCH}.tar.gz -o mediamtx.tar.gz \
-    && tar tzf mediamtx.tar.gz || (echo "Invalid mediamtx tarball for ${MTX_ARCH}" && exit 1) \
-    && tar xzf mediamtx.tar.gz -C app \
-    && rm mediamtx.tar.gz \
-    && cp app/lib/lib.${TARGETARCH} usr/local/lib/libIOTCAPIs_ALL.so \
-    && rm -rf app/*.txt app/lib/  \ 
-    && if [ -z "${BUILD_DATE}" ]; then echo BUILD_DATE=$(date) > .build_date; else echo BUILD_DATE=${BUILD_DATE} > .build_date; fi
+RUN set -eux; pip3 install --disable-pip-version-check --prefix=/build/usr/local -r /build/app/requirements.txt
+RUN set -eux; \
+    echo "BUILDING IMAGE FOR $(uname -m)";\
+        if [ "$(uname -m)" = "armv7l" ]; \
+        then TARGETARCH=arm; FFMPEG_ARCH=arm32v7; MTX_ARCH=armv7; \
+        elif [ "$(uname -m)" = "aarch64" ]; \
+        then TARGETARCH=arm64; FFMPEG_ARCH=aarch64; MTX_ARCH=arm64; \
+        else TARGETARCH=amd64; FFMPEG_ARCH=x86_64; MTX_ARCH=amd64; \
+    fi; \
+    cd /build;\
+    . app/.env; \
+    mkdir -p tokens img; \
+    curl -fsSL https://github.com/homebridge/ffmpeg-for-homebridge/releases/latest/download/ffmpeg-alpine-${FFMPEG_ARCH}.tar.gz -o ffmpeg.tar.gz; \
+    tar tzf ffmpeg.tar.gz || (echo "Invalid ffmpeg tarball for ${FFMPEG_ARCH}" && exit 1); \
+    tar xzf ffmpeg.tar.gz -C .; \
+    rm ffmpeg.tar.gz; \
+    curl -fsSL https://github.com/bluenviron/mediamtx/releases/download/v${MTX_TAG}/mediamtx_v${MTX_TAG}_linux_${MTX_ARCH}.tar.gz -o mediamtx.tar.gz; \
+    tar tzf mediamtx.tar.gz || (echo "Invalid mediamtx tarball for ${MTX_ARCH}" && exit 1); \
+    tar xzf mediamtx.tar.gz -C app; \
+    rm mediamtx.tar.gz; \
+    cp app/lib/lib.${TARGETARCH} usr/local/lib/libIOTCAPIs_ALL.so; \
+    rm -rf app/*.txt app/lib/; \
+    if [ -z "${BUILD_DATE}" ]; then echo BUILD_DATE=$(date) > .build_date; else echo BUILD_DATE=${BUILD_DATE} > .build_date; fi
 
 FROM base
 ARG BUILD
