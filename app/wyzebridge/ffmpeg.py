@@ -159,8 +159,7 @@ def re_encode_video(uri: str, is_vertical: bool) -> list[str]:
 
 
 def get_livestream_cmd(uri: str) -> str:
-
-    flv = "|[f=flv:flvflags=no_duration_filesize:use_fifo=1:fifo_options=attempt_recovery=1\\\:drop_pkts_on_overflow=1:onfail=abort]"
+    flv = "|[f=flv:flvflags=no_duration_filesize:use_fifo=1:fifo_options=attempt_recovery=1:drop_pkts_on_overflow=1:onfail=abort]"
 
     for platform, api in LIVESTREAM_PLATFORMS.items():
         key = env_bool(f"{platform}_{uri}", style="original")
@@ -175,32 +174,55 @@ def purge_old(base_path: str, extension: str, keep_time: Optional[timedelta]):
     if not keep_time:
         return
     threshold = datetime.now() - keep_time
-    for filepath in Path(base_path).rglob(f"*{extension}"):
-        modify_time = file_modified(filepath)
-        if modify_time > threshold.timestamp():
-            continue
-        filepath.unlink()
-        logger.debug(f"[ffmpeg] Deleted: {filepath}")
+    parents = set()
 
-        if not any(filepath.parent.iterdir()):
-            shutil.rmtree(filepath.parent)
-            logger.debug(f"[ffmpeg] Deleted empty directory: {filepath.parent}")
+    try:
+        for file_path in Path(base_path).rglob(f"*{extension}"):
+            modify_time = file_modified(file_path)
+
+            if modify_time > threshold.timestamp():
+                continue
+
+            if file_unlink(file_path):
+                parents.add(file_path.parent)
+
+        while len(parents) > 0:
+            parent = parents.pop()
+            directory_remove_if_empty(parent)
+    except (PermissionError, FileNotFoundError, OSError) as e:
+        logger.debug(f"Error accessing {base_path}/*{extension}: {e}")
+    except RecursionError as e:
+        logger.debug(f"Recursion error while accessing {base_path}/*{extension}: {e}")
 
 def file_modified(file_path: Path) -> float:
     try:
         file_stat = os.stat(file_path)
         return file_stat.st_mtime
-    except FileNotFoundError:
-        logger.debug(f"Error: File not found: {file_path}")
-    except PermissionError:
-        logger.debug(f"Error: Permission denied: {file_path}")
-    except NotADirectoryError:
-        logger.debug(f"Error: Not a directory: {file_path}")
-    except OSError as e:
-        logger.debug(f"Error: An unexpected error occurred: {e}")
+    except (PermissionError, FileNotFoundError, IsADirectoryError, OSError) as e:
+        logger.debug(f"Error stat {file_path}: {e}")
 
     # if an Exception occurs, we return the current time, which will never qualify for deletion
     return datetime.now().timestamp()
+
+def file_unlink(file_path: Path) -> bool:
+    try:
+        file_path.unlink(missing_ok=True)
+        logger.debug(f"[ffmpeg] Deleted: {file_path}")
+        return True
+    except (PermissionError, FileNotFoundError, IsADirectoryError, OSError) as e:
+        logger.debug(f"Error unlink {file_path}: {e}")
+
+    return False
+
+def directory_remove_if_empty(directory: Path) -> bool:
+    try:
+        if not any(directory.iterdir()):
+            shutil.rmtree(directory, ignore_errors=True)
+            logger.debug(f"[ffmpeg] Deleted empty directory: {directory}")
+            return True
+    except (PermissionError, NotADirectoryError, OSError) as e:
+        logger.debug(f"Error rmtree {directory}: {e}")
+    return False
 
 def parse_timedelta(env_key: str) -> Optional[timedelta]:
     value = env_bool(env_key)
@@ -218,7 +240,6 @@ def parse_timedelta(env_key: str) -> Optional[timedelta]:
         return timedelta(**{time_map[unit]: amount})
     except (ValueError, TypeError):
         return
-
 
 def rtsp_snap_cmd(cam_name: str, interval: bool = False):
     ext = env_bool("IMG_TYPE", "jpg")
