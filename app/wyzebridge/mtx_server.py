@@ -13,7 +13,7 @@ MTX_CONFIG = "/app/mediamtx.yml"
 RECORD_LENGTH = env_bool("RECORD_LENGTH", "60s")
 RECORD_KEEP = env_bool("RECORD_KEEP", "0s")
 REC_FILE = env_bool("RECORD_FILE_NAME", "%Y-%m-%d-%H-%M-%S", style="original").strip("/")
-REC_PATH = env_bool("RECORD_PATH", "record/%path/%Y/%m/%d/", style="original")
+REC_PATH = env_bool("RECORD_PATH", "record/{cam_name}/%Y/%m/%d/", style="original")
 RECORD_PATH = f"{Path('/') / Path(REC_PATH) / Path(REC_FILE)}".removesuffix(".mp4")
 
 class MtxInterface:

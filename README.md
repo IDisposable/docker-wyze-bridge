@@ -82,7 +82,7 @@ See [basic usage](#basic-usage) for additional information or visit the [wiki pa
   of *either* a `"%s"` or **all** of of "%Y", "%m", "%d", "%H", "%M", "%S" (case-sensitive).
   If the value is not compliant, to keep MediaMTX from erroring out, we append `"_%s"` whatever 
   was specified and emit a warning.
-- Changed the default `RECORD_PATH` to `"record/%path/%Y/%m/%d/"`
+- Changed the default `RECORD_PATH` to `"record/{cam_name}/%Y/%m/%d/"`
 - Changed the default `RECORD_FILE_NAME` to `"%Y-%m-%d-%H-%M-%S"`
 
 ## What's Changed in v3.10.1
@@ -197,8 +197,8 @@ Recoding streams has been updated to use MediaMTX with the option to delete olde
 
 Use `RECORD_ALL` or `RECORD_CAM_NAME` to enable recording.
 
-- `RECORD_FILE_NAME` Available variables are `%path` or `{cam_name}`, `%Y` `%m` `%d` `%H` `%M` `%S` `%f` `%s` (time in strftime format).
-- `RECORD_PATH` Available variables are `%path` or `{cam_name}`, `%Y` `%m` `%d` `%H` `%M` `%S` `%f` `%s` (time in strftime format).
+- `RECORD_FILE_NAME` Available variables are `{CAM_NAME}` or `{cam_name}`, `%Y` `%m` `%d` `%H` `%M` `%S` `%f` `%s` (time in strftime format).
+- `RECORD_PATH` Available variables are `{CAM_NAME}` or `{cam_name}`, `%Y` `%m` `%d` `%H` `%M` `%S` `%f` `%s` (time in strftime format).
 - `RECORD_LENGTH` Length of each clip. Use `s` for seconds , `h` for hours. Defaults to `60s`
 - `RECORD_KEEP` Delete older clips. Use `s` for seconds , `h` for hours. Set to 0s to disable automatic deletion. Defaults to `0s`
 
