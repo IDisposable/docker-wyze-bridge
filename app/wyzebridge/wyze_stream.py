@@ -62,7 +62,6 @@ class WyzeStreamOptions:
         self.bitrate = bit or 180
         self.frame_size = 1 if "sd" in quality else hq_frame_size
 
-
 class WyzeStream:
     user: WyzeAccount
     api: WyzeApi
@@ -100,7 +99,7 @@ class WyzeStream:
             logger.info(
                 f"⚠︎ [{self.camera.product_model}] {self.camera.nickname} may not be supported"
             )
-            self.state = StreamStatus.DISABLED
+            return
         if self.options.substream and not self.camera.can_substream:
             logger.error(f"❗ {self.camera.nickname} may not support multiple streams!")
             self.state = StreamStatus.DISABLED

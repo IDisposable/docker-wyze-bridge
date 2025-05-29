@@ -3,7 +3,7 @@ description: WebRTC/RTSP/RTMP/LL-HLS bridge for Wyze cams in a docker container.
 slug: docker_wyze_bridge
 url: https://github.com/idisposable/docker-wyze-bridge
 image: idisposablegithub365/wyze-bridge
-version: 3.10.10-beta.1
+version: 3.10.10-beta.4
 stage: stable
 arch:
   - armv7
@@ -13,7 +13,7 @@ startup: application
 boot: auto
 apparmor: false
 hassio_api: true
-host_network: true
+# host_network: bridge
 ports:
   1935/tcp: 1935
   1936/tcp: 1936
@@ -24,12 +24,12 @@ ports:
   8002/udp: 8002
   8003/udp: 8003
   8189/udp: 8189
+  8189/tcp: 8189
   8322/tcp: 8322
   8554/tcp: 8554
   8888/tcp: 8888
   8889/tcp: 8889
   8890/udp: 8890
-  9996/tcp: 9996
   5000/tcp: 5000
 ports_description:
   1935/tcp: RTMP rtmp://localhost:1935/mystream?user=myuser&pass=mypass
@@ -46,12 +46,10 @@ ports_description:
   8888/tcp: HLS http://localhost:8888/mystream
   8889/tcp: WebRTC http://localhost:8889/mystream and http://localhost:8889/mystream/whep
   8890/udp: SRT UDP srt://localhost:8890?streamid=read:mystream:myuser:mypass
-  9996/tcp: MediaMTX Playback server
   5000/tcp: WEB-UI http://localhost:5000/mystream
 environment:
   IMG_DIR: media/wyze/img/
-  RECORD_PATH: media/wyze/{CAM_NAME}
-  MQTT_DTOPIC: homeassistant
+  RECORD_PATH: media/wyze/recordings/{cam_name}
 map:
   - addon_config:rw
   - media:rw
@@ -68,9 +66,6 @@ options:
   ON_DEMAND: true
   WB_AUTH: true
   MOTION_API: true
-  MQTT: true
-  MQTT_DTOPIC: homeassistant
-  CAM_OPTIONS: []
 schema:
   WYZE_EMAIL: email?
   WYZE_PASSWORD: password?

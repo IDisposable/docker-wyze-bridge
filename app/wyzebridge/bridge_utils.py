@@ -11,14 +11,12 @@ LIVESTREAM_PLATFORMS = {
     "Livestream": "",
 }
 
-
 def env_cam(env: str, uri: str, default="", style="") -> str:
     return env_bool(
         f"{env}_{uri}",
         env_bool(env, env_bool(f"{env}_all", default, style=style), style=style),
         style=style,
     )
-
 
 def env_bool(env: str, false="", true="", style="") -> Any:
     """Return env variable or empty string if the variable contains 'false' or is empty."""
@@ -40,14 +38,12 @@ def env_bool(env: str, false="", true="", style="") -> Any:
         return value
     return true if true and value else value.lower() or false
 
-
 def env_list(env: str) -> list:
     """Return env values as a list."""
     return [
         x.strip("'\"\n ").upper().replace(":", "")
         for x in os.getenv(env.upper(), "").split(",")
     ]
-
 
 def env_filter(cam: WyzeCamera) -> bool:
     """Check if cam is being filtered in any env."""
@@ -60,16 +56,13 @@ def env_filter(cam: WyzeCamera) -> bool:
         or cam.model_name.upper() in env_list("FILTER_MODELS")
     )
 
-
 def split_int_str(env_value: str, min: int = 0, default: int = 0) -> tuple[str, int]:
     string_value = "".join(filter(str.isalpha, env_value))
     int_value = int("".join(filter(str.isnumeric, env_value)) or default)
     return string_value, max(int_value, min)
 
-
 def is_livestream(uri: str) -> bool:
     return any(env_bool(f"{service}_{uri}") for service in LIVESTREAM_PLATFORMS)
-
 
 def migrate_path(old: str, new: str):
     if not os.path.exists(old):

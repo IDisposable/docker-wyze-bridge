@@ -1,0 +1,219 @@
+logLevel: info
+logDestinations:
+- stdout
+logFile: mediamtx.log
+sysLogPrefix: mediamtx
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+udpMaxPayloadSize: 1472
+runOnConnect: null
+runOnConnectRestart: false
+runOnDisconnect: null
+authMethod: internal
+authInternalUsers:
+- user: any
+  ips:
+  - 127.0.0.1
+  - ::1
+  permissions:
+  - action: api
+  - action: metrics
+  - action: pprof
+- user: any
+  ips:
+  - 127.0.0.1
+  - ::1
+  permissions:
+  - action: publish
+- user: any
+  permissions:
+  - action: read
+  - action: playback
+authHTTPAddress: null
+authHTTPExclude:
+- action: api
+- action: metrics
+- action: pprof
+authJWTJWKS: null
+authJWTJWKSFingerprint: null
+authJWTClaimKey: mediamtx_permissions
+authJWTExclude: []
+authJWTInHTTPQuery: true
+api: false
+apiAddress: :9997
+apiEncryption: false
+apiServerKey: server.key
+apiServerCert: server.crt
+apiAllowOrigin: '*'
+apiTrustedProxies: []
+metrics: false
+metricsAddress: :9998
+metricsEncryption: false
+metricsServerKey: server.key
+metricsServerCert: server.crt
+metricsAllowOrigin: '*'
+metricsTrustedProxies: []
+pprof: false
+pprofAddress: :9999
+pprofEncryption: false
+pprofServerKey: server.key
+pprofServerCert: server.crt
+pprofAllowOrigin: '*'
+pprofTrustedProxies: []
+playback: false
+playbackAddress: :9996
+playbackEncryption: false
+playbackServerKey: server.key
+playbackServerCert: server.crt
+playbackAllowOrigin: '*'
+playbackTrustedProxies: []
+rtsp: true
+rtspTransports:
+- udp
+- multicast
+- tcp
+rtspEncryption: 'no'
+rtspAddress: :8554
+rtspsAddress: :8322
+rtpAddress: :8000
+rtcpAddress: :8001
+multicastIPRange: 224.1.0.0/16
+multicastRTPPort: 8002
+multicastRTCPPort: 8003
+rtspServerKey: server.key
+rtspServerCert: server.crt
+rtspAuthMethods:
+- basic
+rtmp: true
+rtmpAddress: :1935
+rtmpEncryption: 'no'
+rtmpsAddress: :1936
+rtmpServerKey: server.key
+rtmpServerCert: server.crt
+hls: true
+hlsAddress: :8888
+hlsEncryption: false
+hlsServerKey: server.key
+hlsServerCert: server.crt
+hlsAllowOrigin: '*'
+hlsTrustedProxies: []
+hlsAlwaysRemux: false
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+hlsDirectory: ''
+hlsMuxerCloseAfter: 60s
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcServerKey: server.key
+webrtcServerCert: server.crt
+webrtcAllowOrigin: '*'
+webrtcTrustedProxies: []
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ''
+webrtcIPsFromInterfaces: true
+webrtcIPsFromInterfacesList: []
+webrtcAdditionalHosts: []
+webrtcICEServers2: []
+webrtcHandshakeTimeout: 10s
+webrtcTrackGatherTimeout: 2s
+webrtcSTUNGatherTimeout: 5s
+srt: true
+srtAddress: :8890
+pathDefaults:
+  source: publisher
+  sourceFingerprint: null
+  sourceOnDemand: false
+  sourceOnDemandStartTimeout: 10s
+  sourceOnDemandCloseAfter: 10s
+  maxReaders: 0
+  srtReadPassphrase: null
+  fallback: null
+  useAbsoluteTimestamp: false
+  record: false
+  recordPath: /media/wyze/recordings/%path/%Y-%m-%d-%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 60s
+  recordDeleteAfter: 0s
+  overridePublisher: true
+  srtPublishPassphrase: null
+  rtspTransport: automatic
+  rtspAnyPort: false
+  rtspRangeType: null
+  rtspRangeStart: null
+  sourceRedirect: null
+  rpiCameraCamID: 0
+  rpiCameraSecondary: false
+  rpiCameraWidth: 1920
+  rpiCameraHeight: 1080
+  rpiCameraHFlip: false
+  rpiCameraVFlip: false
+  rpiCameraBrightness: 0
+  rpiCameraContrast: 1
+  rpiCameraSaturation: 1
+  rpiCameraSharpness: 1
+  rpiCameraExposure: normal
+  rpiCameraAWB: auto
+  rpiCameraAWBGains:
+  - 0
+  - 0
+  rpiCameraDenoise: 'off'
+  rpiCameraShutter: 0
+  rpiCameraMetering: centre
+  rpiCameraGain: 0
+  rpiCameraEV: 0
+  rpiCameraROI: null
+  rpiCameraHDR: false
+  rpiCameraTuningFile: null
+  rpiCameraMode: null
+  rpiCameraFPS: 30
+  rpiCameraAfMode: continuous
+  rpiCameraAfRange: normal
+  rpiCameraAfSpeed: normal
+  rpiCameraLensPosition: 0.0
+  rpiCameraAfWindow: null
+  rpiCameraFlickerPeriod: 0
+  rpiCameraTextOverlayEnable: false
+  rpiCameraTextOverlay: '%Y-%m-%d %H:%M:%S - MediaMTX'
+  rpiCameraCodec: auto
+  rpiCameraIDRPeriod: 60
+  rpiCameraBitrate: 5000000
+  rpiCameraProfile: main
+  rpiCameraLevel: '4.1'
+  rpiCameraJPEGQuality: 60
+  runOnInit: bash -c 'echo $MTX_PATH,Init! > /tmp/mtx_event;'
+  runOnInitRestart: false
+  runOnDemand: null
+  runOnDemandRestart: false
+  runOnDemandStartTimeout: 30s
+  runOnDemandCloseAfter: 60s
+  runOnUnDemand: null
+  runOnReady: bash -c 'echo $MTX_PATH,Ready! > /tmp/mtx_event;'
+  runOnReadyRestart: false
+  runOnNotReady: bash -c 'echo $MTX_PATH,NotReady! > /tmp/mtx_event;'
+  runOnRead: bash -c 'echo $MTX_PATH,Read! > /tmp/mtx_event;'
+  runOnReadRestart: false
+  runOnUnread: bash -c 'echo $MTX_PATH,Unread! > /tmp/mtx_event;'
+  runOnRecordSegmentCreate: null
+  runOnRecordSegmentComplete: null
+paths:
+  front-door:
+    runOnDemand: bash -c 'echo $MTX_PATH,start! > /tmp/mtx_event'
+    runOnUnDemand: bash -c 'echo $MTX_PATH,stop! > /tmp/mtx_event'
+  bird-camera:
+    runOnDemand: bash -c 'echo $MTX_PATH,start! > /tmp/mtx_event'
+    runOnUnDemand: bash -c 'echo $MTX_PATH,stop! > /tmp/mtx_event'
+  coop-camera:
+    runOnDemand: bash -c 'echo $MTX_PATH,start! > /tmp/mtx_event'
+    runOnUnDemand: bash -c 'echo $MTX_PATH,stop! > /tmp/mtx_event'
+  basement-camera:
+    runOnDemand: bash -c 'echo $MTX_PATH,start! > /tmp/mtx_event'
+    runOnUnDemand: bash -c 'echo $MTX_PATH,stop! > /tmp/mtx_event'
+  driveway-camera:
+    runOnDemand: bash -c 'echo $MTX_PATH,start! > /tmp/mtx_event'
+    runOnUnDemand: bash -c 'echo $MTX_PATH,stop! > /tmp/mtx_event'

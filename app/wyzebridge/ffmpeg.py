@@ -48,17 +48,18 @@ def get_ffmpeg_cmd(
     if audio_out.lower() not in {"libopus", "aac"}:
         a_options += ["-ar", "8000"]
     rtsp_transport = "udp" if "udp" in env_bool("MTX_RTSPTRANSPORTS") else "tcp"
-    fio_cmd = r"use_fifo=1:fifo_options=attempt_recovery=1\\\:drop_pkts_on_overflow=1:"
+    fio_cmd = r"onfail=abort:use_fifo=1:attempt_recovery=1:drop_pkts_on_overflow=1:"
     rss_cmd = f"[{fio_cmd}{{}}f=rtsp:{rtsp_transport=:}]rtsp://0.0.0.0:8554/{uri}"
     rtsp_ss = rss_cmd.format("")
     if env_cam("AUDIO_STREAM", uri, style="original") and audio:
         rtsp_ss += "|" + rss_cmd.format("select=a:") + "_audio"
     h264_enc = env_bool("h264_enc").partition("_")[2]
+    level = get_log_level()
 
     cmd = env_cam("FFMPEG_CMD", uri, style="original").format(
         cam_name=uri, CAM_NAME=uri.upper(), audio_in=audio_in
     ).split() or (
-        ["-hide_banner", "-loglevel", get_log_level()]
+        ["-hide_banner", "-loglevel", level]
         + env_cam("FFMPEG_FLAGS", uri, flags).strip("'\"\n ").split()
         + thread_queue.split()
         + (["-hwaccel", h264_enc, "-hwaccel_output_format", h264_enc] if h264_enc in {"vaapi", "qsv"} else [])
@@ -73,10 +74,13 @@ def get_ffmpeg_cmd(
         + ["-f", "tee"]
         + [rtsp_ss + livestream]
     )
+
     if "ffmpeg" not in cmd[0].lower():
         cmd.insert(0, "ffmpeg")
-    if env_bool("FFMPEG_LOGLEVEL") in {"info", "verbose", "debug"}:
+
+    if level in {"info", "verbose", "debug"}:
         logger.info(f"[FFMPEG_CMD] {' '.join(cmd)}")
+
     return cmd
 
 
@@ -108,7 +112,6 @@ def re_encode_video(uri: str, is_vertical: bool) -> list[str]:
 
     Returns:
     - list of str: ffmpeg compatible list to be used as a value for `-c:v`.
-
 
     ENV Parameters:
     - ENV ROTATE_DOOR: Rotate and re-encode WYZEDB3 cameras.
@@ -159,7 +162,7 @@ def re_encode_video(uri: str, is_vertical: bool) -> list[str]:
 
 
 def get_livestream_cmd(uri: str) -> str:
-    flv = r"|[f=flv:flvflags=no_duration_filesize:use_fifo=1:fifo_options=attempt_recovery=1\\\:drop_pkts_on_overflow=1:onfail=abort]"
+    flv = r"|[f=flv:flvflags=no_duration_filesize:onfail=abort:use_fifo=1:attempt_recovery=1:drop_pkts_on_overflow=1]"
 
     for platform, api in LIVESTREAM_PLATFORMS.items():
         key = env_bool(f"{platform}_{uri}", style="original")
@@ -189,7 +192,7 @@ def purge_old(base_path: str, extension: str, keep_time: Optional[timedelta]):
         while len(parents) > 0:
             parent = parents.pop()
             directory_remove_if_empty(parent)
-    except (PermissionError, FileNotFoundError, OSError) as e:
+    except (OSError) as e:
         logger.debug(f"Error accessing {base_path}/*{extension}: {e}")
     except RecursionError as e:
         logger.debug(f"Recursion error while accessing {base_path}/*{extension}: {e}")
@@ -198,7 +201,7 @@ def file_modified(file_path: Path) -> float:
     try:
         file_stat = os.stat(file_path)
         return file_stat.st_mtime
-    except (PermissionError, FileNotFoundError, IsADirectoryError, OSError) as e:
+    except (OSError) as e:
         logger.debug(f"Error stat {file_path}: {e}")
 
     # if an Exception occurs, we return the current time, which will never qualify for deletion
@@ -209,7 +212,7 @@ def file_unlink(file_path: Path) -> bool:
         file_path.unlink(missing_ok=True)
         logger.debug(f"[ffmpeg] Deleted: {file_path}")
         return True
-    except (PermissionError, FileNotFoundError, IsADirectoryError, OSError) as e:
+    except (OSError) as e:
         logger.debug(f"Error unlink {file_path}: {e}")
 
     return False
@@ -220,7 +223,7 @@ def directory_remove_if_empty(directory: Path) -> bool:
             shutil.rmtree(directory, ignore_errors=True)
             logger.debug(f"[ffmpeg] Deleted empty directory: {directory}")
             return True
-    except (PermissionError, NotADirectoryError, OSError) as e:
+    except (OSError) as e:
         logger.debug(f"Error rmtree {directory}: {e}")
     return False
 
@@ -260,11 +263,18 @@ def rtsp_snap_cmd(cam_name: str, interval: bool = False):
     if rotate_img := env_bool(f"ROTATE_IMG_{cam_name}"):
         transpose = rotate_img if rotate_img in {"0", "1", "2", "3"} else "clock"
         rotation = ["-filter:v", f"{transpose=}"]
-
-    return (
-        ["ffmpeg", "-loglevel", "fatal", "-analyzeduration", "0", "-probesize", "32"]
-        + ["-f", "rtsp", "-rtsp_transport", "tcp", "-thread_queue_size", "500"]
+        
+    rtsp_transport = "udp" if "udp" in env_bool("MTX_RTSPTRANSPORTS") else "tcp"
+    
+    cmd = (
+        ["ffmpeg", "-loglevel", "error", "-analyzeduration", "0", "-probesize", "32"]
+        + ["-f", "rtsp", "-rtsp_transport", rtsp_transport, "-thread_queue_size", "500"]
         + ["-i", f"rtsp://0.0.0.0:8554/{cam_name}", "-map", "0:v:0"]
         + rotation
         + ["-f", "image2", "-frames:v", "1", "-y", img]
     )
+
+    if get_log_level() in {"info", "verbose", "debug"}:
+        logger.info(f"[SNAPSHOT_CMD] {' '.join(cmd)}")
+
+    return cmd

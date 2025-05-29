@@ -8,7 +8,6 @@ import requests
 import wyzecam
 from wyzebridge.logging import format_logging, logger
 
-
 def setup_hass(hass_token: Optional[str]) -> None:
     """Home Assistant related config."""
     if not hass_token:
@@ -79,11 +78,13 @@ def setup_hass(hass_token: Optional[str]) -> None:
         logger.warning("MQTT IS DISABLED")
         environ.pop("MQTT_HOST", None)
 
-    log_time = "%X" if conf.get("LOG_TIME") else ""
     log_level = conf.get("LOG_LEVEL", "")
+    log_time = "%X" if conf.get("LOG_TIME") else ""
+    
     if log_level or log_time:
         log_level = getattr(logging, log_level.upper(), 20)
         format_logging(logging.StreamHandler(stdout), log_level, log_time)
+
     if conf.get("LOG_FILE"):
         log_path = "/config/logs/"
         log_file = f"{log_path}wyze-bridge.log"

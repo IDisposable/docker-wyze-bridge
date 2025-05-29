@@ -306,7 +306,7 @@ class TutkError(RuntimeError):
         return TutkError.name_mapping.get(self.code, self.code)
 
     def __str__(self):
-        return self.name
+        return self.name or ""
 
 
 class FormattedStructure(Structure):

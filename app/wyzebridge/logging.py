@@ -16,14 +16,12 @@ logger.setLevel(logging.DEBUG)
 warnings.formatwarning = lambda msg, *args, **kwargs: f"WARNING: {msg}"
 logging.captureWarnings(True)
 
-
 def clear_handler(handler: logging.Handler):
     for logger_name in ("WyzeBridge", "", "werkzeug", "py.warnings"):
         target_logger = logging.getLogger(logger_name)
         for existing_handler in target_logger.handlers:
-            if type(existing_handler) == type(handler):
+            if type(existing_handler) is type(handler):
                 target_logger.removeHandler(existing_handler)
-
 
 def format_logging(handler: logging.Handler, level: int, date_format: str = ""):
     clear_handler(handler)
@@ -44,9 +42,7 @@ def format_logging(handler: logging.Handler, level: int, date_format: str = ""):
     target_logger.addHandler(handler)
     target_logger.setLevel(level)
 
-
 format_logging(logging.StreamHandler(stdout), log_level, log_time)
-
 
 if env_bool("LOG_FILE"):
     log_path = "/logs/"

@@ -13,8 +13,9 @@ MTX_CONFIG = "/app/mediamtx.yml"
 RECORD_LENGTH = env_bool("RECORD_LENGTH", "60s")
 RECORD_KEEP = env_bool("RECORD_KEEP", "0s")
 REC_FILE = env_bool("RECORD_FILE_NAME", r"%Y-%m-%d-%H-%M-%S", style="original")
-REC_PATH = env_bool("RECORD_PATH", r"./recordings/{cam_name}/%Y/%m/%d", style="original")
+REC_PATH = env_bool("RECORD_PATH", r"recordings/{cam_name}/%Y/%m/%d", style="original")
 RECORD_PATH = f"{Path(REC_PATH) / Path(REC_FILE)}".removesuffix(".mp4").removesuffix(".fmp4").removesuffix(".ts")
+STUN_SERVER = env_bool("STUN_SERVER", "", style="original")
 
 class MtxInterface:
     __slots__ = "data", "_modified"
@@ -90,6 +91,10 @@ class MtxServer:
             mtx.set("pathDefaults.recordPath", record_path)
             mtx.set("pathDefaults.recordSegmentDuration", RECORD_LENGTH)
             mtx.set("pathDefaults.recordDeleteAfter", RECORD_KEEP)
+            
+            if STUN_SERVER != "":
+                logger.info(f"[MTX] enabling STUN server at: {STUN_SERVER}")
+                mtx.set("webrtcICEServers2", [{"url": f"{STUN_SERVER}"}])
 
     def setup_auth(self, api: Optional[str], stream: Optional[str]):
         administrator: dict = {
@@ -151,10 +156,7 @@ class MtxServer:
     def start(self) -> bool:
         if not self.sub_process_alive():
             logger.info(f"[MTX] starting MediaMTX {getenv('MTX_TAG')}")
-            self.sub_process = Popen(["./mediamtx", "./mediamtx.yml"],
-                                    stdout=None,  # None means inherit from parent process
-                                    stderr=None   # None means inherit from parent process
-            )
+            self.sub_process = Popen(["./mediamtx", "./mediamtx.yml"], stderr=None) # None means inherit from parent process
         return self.sub_process_alive()
 
     def stop(self):
@@ -238,7 +240,6 @@ def generate_certificates(cert_path):
         logger.info("[MTX] 🔐 Generating key for LL-HLS")
         Popen(
             ["openssl", "genrsa", "-out", f"{cert_path}.key", "2048"],
-            stdout=None,  # None means inherit from parent process
             stderr=None   # None means inherit from parent process
         ).wait()
     if not Path(f"{cert_path}.crt").is_file():
@@ -251,7 +252,6 @@ def generate_certificates(cert_path):
             + (["-addext", f"subjectAltName = DNS:{dns}"] if dns else [])
             + ["-out", f"{cert_path}.crt"]
             + ["-days", "3650"],
-            stdout=None,  # None means inherit from parent process
             stderr=None   # None means inherit from parent process
         ).wait()
 

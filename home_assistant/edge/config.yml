@@ -12,7 +12,7 @@ startup: application
 boot: auto
 apparmor: false
 hassio_api: true
-host_network: true
+# host_network: true
 ports:
   1935/tcp: 1935
   1936/tcp: 1936
@@ -23,11 +23,12 @@ ports:
   8002/udp: 8002
   8003/udp: 8003
   8189/udp: 8189
+  8189/tcp: 8189
   8322/tcp: 8322
   8554/tcp: 8554
   8888/tcp: 8888
   8889/tcp: 8889
-  8890/udp: 8890 
+  8890/udp: 8890
   5000/tcp: 5000
 ports_description:
   1935/tcp: RTMP rtmp://localhost:1935/mystream?user=myuser&pass=mypass
@@ -36,8 +37,8 @@ ports_description:
   2936/tcp: RTMPS rtmps://localhost:2936/mystream?user=myuser&pass=mypass
   8000/udp: RTSP UDP/RTP rtsp://localhost:8000/mystream
   8001/udp: RTSP UDP/RTCP rtsp://localhost:8001/mystream
-  8002/udp: RTP Multicast
-  8003/udp: RTP Multicast control
+  8002/udp: RTSP RTP Multicast
+  8003/udp: RTSP RTCP Multicast control
   8189/udp: WebRTC ICE/UDP
   8322/tcp: TCP/TLS/RTSPS rtsps://localhost:8322/mystream
   8554/tcp: RTSP rtsp://localhost:8554/mystream
@@ -47,8 +48,7 @@ ports_description:
   5000/tcp: WEB-UI http://localhost:5000/mystream
 environment:
   IMG_DIR: media/wyze/img/
-  RECORD_PATH: media/wyze/{CAM_NAME}
-  MQTT_DTOPIC: homeassistant
+  RECORD_PATH: media/wyze/recordings/{cam_name}
 map:
   - addon_config:rw
   - media:rw

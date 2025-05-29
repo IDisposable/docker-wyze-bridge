@@ -17,14 +17,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
+        build-essential \
         curl \
         gcc \
-        tar \
-        xz-utils; \
-    if [ -n "$QSV" ]; then \
-        apt-get install -y i965-va-driver intel-media-va-driver-non-free libmfx1 libva-drm2; \
-        apt-get install -y i965-va-driver-shaders; \
-    fi; \
+        libffi-dev \
+        tar; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -36,7 +33,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN set -eux; \
     echo "BUILDING IMAGE FOR amd64";\
     TARGETARCH=amd64; FFMPEG_ARCH=x86_64; MTX_ARCH=amd64; \
-    cd /build; \
+    cd /build;\
     . app/.env; \
     mkdir -p tokens img ${QSV:+usr/lib}; \
     curl -SL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n6.1-latest-linux64-lgpl-6.1.tar.xz -o ffmpeg.tar.xz; \
@@ -65,8 +62,26 @@ ARG QSV
 
 COPY --from=builder /build /
 
-ENV PYTHONUNBUFFERED=1 FLASK_APP=frontend BUILD=$BUILD GITHUB_SHA=$GITHUB_SHA
+ENV PYTHONUNBUFFERED=1 FLASK_APP=frontend BUILD=$BUILD BUILD_VERSION=$BUILD_VERSION BUILD_DATE=$BUILD_DATE GITHUB_SHA=$GITHUB_SHA
 WORKDIR /app
+
+# EXPOSE 1935
+# EXPOSE 1936
+# EXPOSE 2935
+# EXPOSE 2936
+# EXPOSE 8000/udp
+# EXPOSE 8001/udp
+# EXPOSE 8002/udp
+# EXPOSE 8003/udp
+# EXPOSE 8189/udp
+# EXPOSE 8189/tcp
+# EXPOSE 8322
+# EXPOSE 8554
+# EXPOSE 8888
+# EXPOSE 8889
+# EXPOSE 8890/udp
+# EXPOSE 5000
+
 CMD ["flask", "run", "--host=0.0.0.0"]
 
 LABEL \

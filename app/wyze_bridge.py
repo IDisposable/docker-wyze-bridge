@@ -71,7 +71,7 @@ class WyzeBridge(Thread):
                 quality=env_cam("quality", cam.name_uri),
                 audio=bool(env_cam("enable_audio", cam.name_uri)),
                 record=bool(env_cam("record", cam.name_uri)),
-                reconnect=is_livestream(cam.name_uri) or not config.ON_DEMAND,
+                reconnect=(not config.ON_DEMAND) or is_livestream(cam.name_uri),
             )
             self.add_substream(cam, options)
             stream = WyzeStream(cam, options)
@@ -99,6 +99,7 @@ class WyzeBridge(Thread):
             quality = env_cam("sub_quality", cam.name_uri, "sd30")
             record = bool(env_cam("sub_record", cam.name_uri))
             sub_opt = replace(options, substream=True, quality=quality, record=record)
+            logger.info(f"[++] Adding {cam.name_uri} substream quality: {quality} record: {record}")
             sub = WyzeStream(cam, sub_opt)
             self.mtx.add_path(sub.uri, not options.reconnect)
             self.streams.add(sub)
@@ -112,7 +113,6 @@ class WyzeBridge(Thread):
         self.mtx.stop()
         logger.info("👋 goodbye!")
         sys.exit(0)
-
 
 if __name__ == "__main__":
     wb = WyzeBridge()
