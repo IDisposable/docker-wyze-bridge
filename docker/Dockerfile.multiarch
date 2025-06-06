@@ -24,6 +24,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY /app/ /build/app/
 
+RUN chmod +x /build/app/run
+
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eux; pip3 install --disable-pip-version-check --prefix=/build/usr/local -r /build/app/requirements.txt
 
@@ -66,27 +68,9 @@ RUN set -eux; \
 
 COPY --from=builder /build /
 
-ENV PYTHONUNBUFFERED=1 FLASK_APP=frontend BUILD=$BUILD BUILD_VERSION=$BUILD_VERSION BUILD_DATE=$BUILD_DATE GITHUB_SHA=$GITHUB_SHA
+ENV PYTHONUNBUFFERED=1 FLASK_APP=frontend BUILD=$BUILD BUILD_VERSION=$BUILD_VERSION BUILD_DATE=$BUILD_DATE GITHUB_SHA=$GITHUB_SHA FLASK_ENV=production FLASK_DEBUG=0
 WORKDIR /app
-
-#EXPOSE 1935
-#EXPOSE 1936
-#EXPOSE 2935
-#EXPOSE 2936
-#EXPOSE 8000/udp
-#EXPOSE 8001/udp
-#EXPOSE 8002/udp
-#EXPOSE 8003/udp
-#EXPOSE 8189/udp
-#EXPOSE 8189/tcp
-#EXPOSE 8322
-#EXPOSE 8554
-#EXPOSE 8888
-#EXPOSE 8889
-#EXPOSE 8890/udp
-#EXPOSE 5000
-
-CMD ["flask", "run", "--host=0.0.0.0"]
+ENTRYPOINT [ "/app/run" ]
 
 LABEL \
     io.hass.name="Docker Wyze Bridge for Home Assistant" \
