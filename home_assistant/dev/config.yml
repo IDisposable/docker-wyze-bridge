@@ -64,11 +64,8 @@ options:
   ENABLE_AUDIO: true
   ON_DEMAND: true
   MOTION_API: true
-  CAM_OPTIONS:
-    - CAM_NAME: some-camera-name
-      RECORD: true
-  MEDIAMTX:
-    MTX_LOGLEVEL=warn
+  CAM_OPTIONS: []
+  MEDIAMTX: []
 schema:
   WYZE_EMAIL: email?
   WYZE_PASSWORD: password?
