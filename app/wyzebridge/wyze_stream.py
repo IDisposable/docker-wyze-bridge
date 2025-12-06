@@ -27,6 +27,32 @@ from wyzecam import TutkError, WyzeAccount, WyzeCamera, WyzeIOTC, WyzeIOTCSessio
 NET_MODE = {0: "P2P", 1: "RELAY", 2: "LAN"}
 
 
+def _safe_is_alive(process_or_thread) -> bool:
+    """
+    Safely check if a process/thread is alive, handling Python 3.13's stricter checks.
+
+    Python 3.13 raises AssertionError("can only test a child process")
+    when is_alive() is called from a different process than the parent.
+    This can happen during signal handling or when stopping streams.
+
+    Args:
+        process_or_thread: A multiprocessing.Process or threading.Thread object
+
+    Returns:
+        bool: True if alive, False if not alive or if state cannot be determined
+    """
+    if process_or_thread is None:
+        return False
+    try:
+        return process_or_thread.is_alive()
+    except (AssertionError, ValueError, AttributeError, RuntimeError):
+        # AssertionError: Python 3.13 "can only test a child process"
+        # ValueError: process object closed
+        # AttributeError: process already cleaned up
+        # RuntimeError: various multiprocessing errors
+        return False
+
+
 StreamTuple = namedtuple("stream", ["user", "camera", "options"])
 QueueTuple = namedtuple("queue", ["cam_resp", "cam_cmd"])
 
@@ -173,11 +199,11 @@ class WyzeStream:
         self._clear_mp_queue()
         self.start_time = 0
         self.state = StreamStatus.STOPPING
-        if self.process and self.process.is_alive():
+        if self.process and _safe_is_alive(self.process):
             with contextlib.suppress(AttributeError):
                 self.process.join(1)
             with contextlib.suppress(AttributeError):
-                if self.process.is_alive():
+                if _safe_is_alive(self.process):
                     self.process.kill()
                     self.process.join(1)
 
@@ -467,7 +493,7 @@ def start_tutk_stream(uri: str, stream: StreamTuple, queue: QueueTuple, state: c
 
 
 def stop_and_wait(thread: Optional[Thread]):
-    if thread and thread.is_alive():
+    if thread and _safe_is_alive(thread):
         with contextlib.suppress(AttributeError, RuntimeError):
             thread.join()
 
@@ -499,9 +525,7 @@ def get_cam_params(sess: WyzeIOTCSession, uri: str) -> tuple[str, dict]:
     net_mode = check_net_mode(sess.session_check().mode, uri)
     v_codec, fps = get_video_params(sess)
     firmware, wifi = get_camera_info(sess)
-    stream = (
-        f"{sess.preferred_bitrate}kb/s {sess.resolution} stream ({v_codec}/{fps}fps)"
-    )
+    stream = f"{sess.preferred_bitrate}kb/s {sess.resolution} stream ({v_codec}/{fps}fps)"
 
     logger.info(f"📡 Getting {stream} via {net_mode} (WiFi: {wifi}%) FW: {firmware}")
 
@@ -518,7 +542,7 @@ def get_cam_params(sess: WyzeIOTCSession, uri: str) -> tuple[str, dict]:
 
 def get_camera_info(sess: WyzeIOTCSession) -> tuple[str, str]:
     if not (camera_info := sess.camera.camera_info):
-        logger.warn("⚠️ cameraInfo is missing.")
+        logger.warning("⚠️ cameraInfo is missing.")
         return "NA", "NA"
     logger.debug(f"[cameraInfo] {camera_info}")
 
@@ -536,20 +560,20 @@ def get_camera_info(sess: WyzeIOTCSession) -> tuple[str, str]:
 def get_video_params(sess: WyzeIOTCSession) -> tuple[str, int]:
     cam_info = sess.camera.camera_info
     if not cam_info or not (video_param := cam_info.get("videoParm")):
-        logger.warn("⚠️ camera_info is missing videoParm. Using default values.")
+        logger.warning("⚠️ camera_info is missing videoParm. Using default values.")
         video_param = {"type": "h264", "fps": 20}
 
     fps = int(video_param.get("fps", 0))
 
     if force_fps := int(env_cam("FORCE_FPS", sess.camera.name_uri, "0")):
-        logger.info(f"Attempting to force fps={force_fps}")
+        logger.info(f"🦾 Attempting to force fps={force_fps}")
         sess.update_frame_size_rate(fps=force_fps)
         fps = force_fps
 
     if fps % 5 != 0:
         logger.error(f"⚠️ Unusual FPS detected: {fps}")
 
-    logger.debug(f"[videoParm] {video_param}")
+    logger.debug(f"📽️ [videoParm] {video_param}")
     sess.preferred_frame_rate = fps
 
     return video_param.get("type", "h264"), fps
@@ -562,11 +586,13 @@ def get_audio_params(sess: WyzeIOTCSession) -> dict[str, str | int]:
     codec, rate = sess.identify_audio_codec()
     logger.info(f"🔊 Audio Enabled [Source={codec.upper()}/{rate:,}Hz]")
 
-    if codec_out := env_bool("AUDIO_CODEC"):
-        logger.info(f"[AUDIO] Re-Encode Enabled [AUDIO_CODEC={codec_out}]")
+    codec_out = ""
+    if codec_out_env := env_bool("AUDIO_CODEC"):
+        codec_out = codec_out_env
+        logger.info(f"🔊 [AUDIO] Re-Encode Enabled [AUDIO_CODEC={codec_out}]")
     elif rate > 8000 or codec.lower() == "s16le":
         codec_out = "pcm_mulaw"
-        logger.info(f"[AUDIO] Re-Encode for RTSP compatibility [{codec_out=}]")
+        logger.info(f"🔊 [AUDIO] Re-Encode for RTSP compatibility [{codec_out=}]")
 
     return {"codec": codec, "rate": rate, "codec_out": codec_out.lower()}
 
@@ -574,10 +600,12 @@ def get_audio_params(sess: WyzeIOTCSession) -> dict[str, str | int]:
 def check_net_mode(session_mode: int, uri: str) -> str:
     """Check if the connection mode is allowed."""
     net_mode = env_cam("NET_MODE", uri, "any")
+
     if "p2p" in net_mode and session_mode == 1:
-        raise Exception("☁️ Connected via RELAY MODE! Reconnecting")
+        raise RuntimeError("☁️ Connected via RELAY MODE! Reconnecting")
+
     if "lan" in net_mode and session_mode != 2:
-        raise Exception("☁️ Connected via NON-LAN MODE! Reconnecting")
+        raise RuntimeError("☁️ Connected via NON-LAN MODE! Reconnecting")
 
     mode = f'{NET_MODE.get(session_mode, f"UNKNOWN ({session_mode})")} mode'
     if session_mode != 2:
@@ -589,11 +617,11 @@ def check_net_mode(session_mode: int, uri: str) -> str:
 def set_cam_offline(uri: str, error: TutkError, was_offline: bool) -> None:
     """Do something when camera goes offline."""
     state = "offline" if error.code == -90 else error.name
-    update_mqtt_state(uri.lower(), state)
+    update_mqtt_state(uri.lower(), str(state))
 
     if str(error.code) not in env_bool("OFFLINE_ERRNO", "-90"):
         return
-    if was_offline:  # Don't resend if previous state was offline.
+    if was_offline:
         return
 
     send_webhook("offline", uri, f"{uri} is offline")
