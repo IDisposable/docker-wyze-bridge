@@ -1,82 +1,73 @@
-# Docker Wyze Bridge
+# Wyze Bridge for Home Assistant
 
-## Wyze Authentication
+Stream your Wyze cameras locally via WebRTC, RTSP, and HLS — no cloud required.
 
-As of April 2024, you will need to supply your own API Key and API ID along with your Wyze email and password. 
+## Setup
 
-See the official help documentation on how to generate your developer keys: https://support.wyze.com/hc/en-us/articles/16129834216731.
+1. Install the add-on from the repository
+2. Configure your Wyze credentials in the add-on settings:
+   - **WYZE_EMAIL** — your Wyze account email
+   - **WYZE_PASSWORD** — your Wyze account password
+   - **WYZE_API_ID** — API ID from [Wyze Developer Console](https://developer-api-console.wyze.com/#/apikey/view)
+   - **WYZE_API_KEY** — API Key from the same page
+3. Start the add-on
+4. Open the WebUI from the sidebar
 
-## Stream and API Authentication
+## MQTT Auto-Detection
 
-Note that all streams and the REST API will necessitate authentication when WebUI Auth `WB_AUTH` is enabled.
+If you have the Mosquitto broker add-on installed, MQTT is configured automatically. The bridge will publish camera states and Home Assistant discovery messages.
 
-- REST API will require an `api` query parameter. 
-  - Example:  `http://homeassistant.local:5000/api/<camera-name>/state?api=<your-wb-api-key>`
-- Streams will also require authentication.
-  - username: `wb`
-  - password: your unique wb api key
+## WebRTC
 
-Please double check your router/firewall and do NOT forward ports or enable DMZ access to your bridge/server unless you know what you are doing!
+For WebRTC streaming (lowest latency), set **WB_IP** to your Home Assistant host's IP address.
 
+## Camera Filtering
 
-## Camera Specific Options
+Use **FILTER_NAMES**, **FILTER_MODELS**, or **FILTER_MACS** (comma-separated) to limit which cameras appear. Set **FILTER_BLOCKS** to `true` to **exclude** instead of include.
 
-Camera specific options can now be passed to the bridge using `CAM_OPTIONS`. To do so you, will need to specify the `CAM_NAME` and the option(s) that you want to pass to the camera.
+## Recording
 
-`CAM_OPTIONS`:
+Set **RECORD_ALL** to `true` to record all cameras, or use per-camera `RECORD_{CAM_NAME}` overrides via **CAM_OPTIONS**.
 
-```YAML
-- CAM_NAME: Front
-  AUDIO: true
-  ROTATE: true
-- CAM_NAME: Back door
-  QUALITY: SD50
-  RECORD: true
+## Per-Camera Options
+
+Use **CAM_OPTIONS** in the add-on config to override settings per camera:
+
+```yaml
+CAM_OPTIONS:
+  - CAM_NAME: front_door
+    QUALITY: hd
+    RECORD: true
+  - CAM_NAME: backyard
+    AUDIO: false
 ```
 
-Available options:
+Camera names are matched case-insensitively; spaces are treated as underscores. Only letters, digits, and underscores are preserved — cameras with other punctuation in their Wyze-account names can't be matched via this option.
 
-- `AUDIO` - Enable audio for this camera.
-- `FFMPEG` - Use a custom ffmpeg command for this camera.
-- `LIVESTREAM` - Specify a rtmp url to livestream to for this camera.
-- `NET_MODE` - Change the allowed net mode for this camera only.
-- `ROTATE` - Rotate this camera 90 degrees clockwise.
-- `QUALITY` - Adjust the quality for this camera only.
-- `SUB_QUALITY` - Adjust the quality for this camera's substream.
-- `FORCE_FPS` - Sets the frames-per-second for this camera.
-- `RECORD` - Enable recording for this camera.
-- `SUB_RECORD` - Enable recording of the substream for this camera.
-- `SUBSTREAM` - Enable a substream for this camera.
-- `MOTION_WEBHOOKS` - Specify a url to POST to when motion is detected.
+## Webhooks
 
-## URIs
+Set **WEBHOOK_URLS** to a comma-separated list of URLs. The bridge will POST JSON on every camera state change (offline → discovering → connecting → streaming → error).
 
-`camera-nickname` is the name of the camera set in the Wyze app and are converted to lower case with hyphens in place of spaces.
+## Gwell Cameras (OG, Doorbell Pro, Doorbell Duo)
 
-e.g. 'Front Door' would be `/front-door`
+Support for Wyze's newer Gwell/IoTVideo cameras (GW_BE1, GW_GC1, GW_GC2, GW_DBD) is enabled by default via an embedded proxy. Set **GWELL_ENABLED** to `false` to disable it if you have only TUTK cameras and want to skip the sidecar.
 
-- RTMP:
+## REST API Token
 
-```
-rtmp://homeassistant.local:1935/camera-nickname
-```
+Set **WB_API** to a secret string to require that token on REST API requests. Leave empty to disable API auth (the WebUI itself is still covered by `WB_AUTH`/`WB_USERNAME`/`WB_PASSWORD`).
 
-- RTSP:
+## Ports
 
-```
-rtsp://homeassistant.local:8554/camera-nickname
-```
+| Port | Protocol | Purpose |
+| ------ | ---------- | --------- |
+| 5080 | TCP | WebUI (ingress) |
+| 1984 | TCP | go2rtc native UI |
+| 8554 | TCP | RTSP |
+| 8888 | TCP | HLS |
+| 8889 | TCP | WebRTC HTTP |
+| 8189 | UDP | WebRTC ICE |
 
-- HLS:
+## Support
 
-```
-http://homeassistant.local:8888/camera-nickname/stream.m3u8
-```
-
-- HLS can also be viewed in the browser using:
-
-```
-http://homeassistant.local:8888/camera-nickname
-```
-
-Please visit [github.com/idisposable/docker-wyze-bridge](https://github.com/idisposable/docker-wyze-bridge) for additional information.
+- [GitHub Issues](https://github.com/IDisposable/docker-wyze-bridge/issues)
+- [Migration Guide](https://github.com/IDisposable/docker-wyze-bridge/blob/main/MIGRATION.md)

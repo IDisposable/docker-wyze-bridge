@@ -1,0 +1,212 @@
+/* Wyze Bridge WebUI */
+:root {
+    --bg: #1a1a2e;
+    --bg-card: #16213e;
+    --bg-hover: #1a2744;
+    --text: #e0e0e0;
+    --text-dim: #8899aa;
+    --accent: #0f3460;
+    --accent-bright: #5390d9;
+    --success: #4caf50;
+    --warning: #ff9800;
+    --error: #f44336;
+    --border: #2a3a5c;
+    --radius: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+}
+
+a { color: var(--accent-bright); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+header {
+    background: var(--accent);
+    padding: 1rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+header h1 { font-size: 1.3rem; font-weight: 600; }
+header .version { font-weight: 300; color: var(--text-dim); font-size: 0.8rem; }
+header .back { font-size: 1.1rem; }
+
+main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
+
+/* Camera Grid */
+.camera-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.camera-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+.camera-card:hover { border-color: var(--accent-bright); }
+.camera-card a { color: inherit; text-decoration: none; }
+
+.camera-preview {
+    position: relative;
+    background: #000;
+    aspect-ratio: 16/9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+.camera-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.camera-preview video-rtc {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.camera-preview video-rtc video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+}
+/* Invisible click-through overlay so the whole tile navigates to detail
+   EXCEPT the bottom ~32px where the native <video> controls live. */
+.camera-preview-overlay {
+    position: absolute;
+    inset: 0 0 32px 0;
+    z-index: 2;
+}
+
+.state-badge {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.state-badge.streaming { background: var(--success); color: #fff; }
+.state-badge.connecting { background: var(--warning); color: #000; }
+.state-badge.offline, .state-badge.error { background: var(--error); color: #fff; }
+.state-badge.discovering { background: var(--accent-bright); color: #fff; }
+
+.camera-info { padding: 0.8rem 1rem; }
+.camera-info h3 { font-size: 1rem; margin-bottom: 0.2rem; }
+.camera-info p { font-size: 0.8rem; color: var(--text-dim); }
+
+.camera-links {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0 1rem 0.8rem;
+}
+.camera-links a,
+.camera-links .copy-btn {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    background: var(--accent);
+    border: none;
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-family: inherit;
+}
+.camera-links a:hover,
+.camera-links .copy-btn:hover { color: var(--text); text-decoration: none; }
+.camera-links .copy-btn.copied { background: var(--success); color: #fff; }
+
+.no-cameras {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-dim);
+}
+
+/* Camera Detail */
+.camera-detail {
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    gap: 1.5rem;
+    align-items: start;
+}
+
+.player-container {
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    aspect-ratio: 16/9;
+}
+.player-container video-rtc {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.camera-meta {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+}
+.camera-meta table { width: 100%; border-collapse: collapse; }
+.camera-meta td {
+    padding: 0.4rem 0;
+    font-size: 0.85rem;
+    border-bottom: 1px solid var(--border);
+}
+.camera-meta td:first-child { color: var(--text-dim); width: 40%; }
+
+.stream-urls { margin-top: 1rem; }
+.stream-urls h3 { font-size: 0.9rem; margin-bottom: 0.5rem; }
+.stream-urls code {
+    display: block;
+    background: var(--bg);
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    margin-bottom: 0.3rem;
+    word-break: break-all;
+    color: var(--text-dim);
+}
+.stream-urls code.copy-btn { cursor: pointer; border: 1px solid transparent; }
+.stream-urls code.copy-btn:hover { color: var(--text); border-color: var(--border); }
+.stream-urls code.copy-btn.copied { background: var(--success); color: #fff; }
+.stream-urls h3 small { color: var(--text-dim); font-weight: 300; font-size: 0.75rem; }
+
+.actions {
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.actions button {
+    padding: 0.4rem 1rem;
+    background: var(--accent);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+.actions button:hover { background: var(--bg-hover); border-color: var(--accent-bright); }
+
+@media (max-width: 768px) {
+    .camera-detail { grid-template-columns: 1fr; }
+    .camera-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+    main { padding: 1rem; }
+}

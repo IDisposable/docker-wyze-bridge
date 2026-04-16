@@ -1,15 +1,56 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
 updates:
-  - package-ecosystem: "pip"
-    directory: "/app"
+  # Go modules
+  - package-ecosystem: gomod
+    directory: /
     schedule:
-      interval: "daily"
-  - package-ecosystem: "github-actions" 
-    directory: "/"
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+      - go
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: "daily"
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - ci
+
+  # Dockerfile (go2rtc version, base images)
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "docker"
+    labels:
+      - dependencies
+      - docker
+
+  # HA add-on Dockerfile
+  - package-ecosystem: docker
+    directory: /home_assistant
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "docker"
+    labels:
+      - dependencies
+      - docker
+
+  # Devcontainer Dockerfile
+  - package-ecosystem: docker
+    directory: /.devcontainer
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "dev"
+    labels:
+      - dependencies
+      - dev

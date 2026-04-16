@@ -1,8 +1,0 @@
-#!/bin/sh
-
-if [ "$BUILD" = "dev" ]; then
-    printenv
-    cat /data/options.json
-fi
-
-flask run --host=0.0.0.0

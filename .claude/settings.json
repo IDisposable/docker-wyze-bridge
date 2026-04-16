@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git log *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git remote -v*)",
+      "Bash(git remote show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git ls-files *)",
+      "Bash(git ls-tree *)",
+      "Bash(git cat-file *)",
+      "Bash(git blame *)",
+      "Bash(git grep *)",
+      "Bash(git describe *)",
+      "Bash(git shortlog *)",
+      "Bash(git -C * log *)",
+      "Bash(git -C * status *)",
+      "Bash(git -C * diff *)",
+      "Bash(git -C * show *)",
+      "Bash(git -C * remote -v*)",
+      "Bash(git -C * remote show *)",
+      "Bash(git -C * rev-parse *)",
+      "Bash(git -C * ls-files *)",
+      "Bash(git -C * ls-tree *)",
+      "Bash(git -C * cat-file *)",
+      "Bash(git -C * blame *)",
+      "Bash(git -C * grep *)",
+      "Bash(git -C * describe *)",
+      "Bash(git -C * shortlog *)"
+    ]
+  }
+}

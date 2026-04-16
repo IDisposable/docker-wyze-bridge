@@ -2,70 +2,91 @@ name: Version Check
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * 1' # weekly on Monday
   workflow_dispatch:
 
 jobs:
-  update-media-mtx:
+  update-go2rtc:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get Latest MediaMTX Release
-        id: media_mtx
+      - name: Get latest go2rtc release
+        id: go2rtc
         run: |
-          release_tag=$(curl -s https://api.github.com/repos/bluenviron/mediamtx/releases/latest | jq -r '.tag_name' | sed 's/^v//')
-          if [[ ! $release_tag =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "Invalid version format: ${release_tag}. Exiting workflow."
+          latest=$(curl -s https://api.github.com/repos/AlexxIT/go2rtc/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          if [[ ! $latest =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version: ${latest}"
             exit 1
           fi
-          current_tag=$(cat ./app/.env | grep MTX_TAG | cut -d'=' -f2)
-          sed -i "s/MTX_TAG=.*/MTX_TAG=${release_tag}/" ./app/.env
-          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
-          echo "current_tag=$current_tag" >> $GITHUB_OUTPUT
+          current=$(grep 'GO2RTC_VERSION=' docker/Dockerfile | head -1 | sed 's/.*GO2RTC_VERSION=//' | tr -d ' ')
+          echo "latest=$latest" >> $GITHUB_OUTPUT
+          echo "current=$current" >> $GITHUB_OUTPUT
+
+      - name: Update go2rtc version
+        if: steps.go2rtc.outputs.current != steps.go2rtc.outputs.latest
+        run: |
+          sed -i "s/GO2RTC_VERSION=.*/GO2RTC_VERSION=${{ steps.go2rtc.outputs.latest }}/" docker/Dockerfile
+          sed -i "s/GO2RTC_VERSION=.*/GO2RTC_VERSION=${{ steps.go2rtc.outputs.latest }}/" home_assistant/Dockerfile
 
       - name: Create Pull Request
+        if: steps.go2rtc.outputs.current != steps.go2rtc.outputs.latest
         uses: peter-evans/create-pull-request@v7
-        if: steps.media_mtx.outputs.current_tag != '' && steps.media_mtx.outputs.current_tag != steps.media_mtx.outputs.release_tag
         with:
-          title: 'Bump MediaMTX to v${{ steps.media_mtx.outputs.release_tag }}'
-          commit-message: 'Update MediaMTX version from v${{ steps.media_mtx.outputs.current_tag }} to v${{ steps.media_mtx.outputs.release_tag }}'
-          branch: mtx-version
+          title: 'Bump go2rtc to v${{ steps.go2rtc.outputs.latest }}'
+          commit-message: 'deps: update go2rtc from v${{ steps.go2rtc.outputs.current }} to v${{ steps.go2rtc.outputs.latest }}'
+          branch: go2rtc-version
           body: |
-            This pull request updates MediaMTX to the latest version: [v${{ steps.media_mtx.outputs.release_tag }}](https://github.com/bluenviron/mediamtx/releases/tag/v${{ steps.media_mtx.outputs.release_tag }})
-          add-paths: app/.env
-          base: main
+            Updates go2rtc to [v${{ steps.go2rtc.outputs.latest }}](https://github.com/AlexxIT/go2rtc/releases/tag/v${{ steps.go2rtc.outputs.latest }}).
+
+            **Test checklist:**
+            - [ ] Cameras connect and stream
+            - [ ] WebRTC player works
+            - [ ] RTSP output works
+          add-paths: |
+            docker/Dockerfile
+            home_assistant/Dockerfile
+          base: go-rewrite
           delete-branch: true
 
-  update-wyze-ios:
+  update-wyze-app-version:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get Latest Wyze Release
-        id: wyze_ios
+      - name: Get latest Wyze iOS app version
+        id: wyze
         run: |
-          release_tag=$(curl -s 'https://itunes.apple.com/lookup?id=1288415553' | jq -r '.results[0].version')
-          if [[ ! $release_tag =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "Invalid version format: ${release_tag}. Exiting workflow."
+          latest=$(curl -s 'https://itunes.apple.com/lookup?id=1288415553' | jq -r '.results[0].version')
+          if [[ ! $latest =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Invalid version: ${latest}"
             exit 1
           fi
-          current_tag=$(cat ./app/.env | grep APP_VERSION | cut -d'=' -f2)
-          sed -i "s/APP_VERSION=.*/APP_VERSION=${release_tag}/" ./app/.env
-          echo "release_tag=$release_tag" >> $GITHUB_OUTPUT
-          echo "current_tag=$current_tag" >> $GITHUB_OUTPUT
+          current=$(grep 'appVersion' internal/wyzeapi/auth.go | head -1 | sed 's/.*= "//' | sed 's/"//')
+          echo "latest=$latest" >> $GITHUB_OUTPUT
+          echo "current=$current" >> $GITHUB_OUTPUT
+
+      - name: Update app version constant
+        if: steps.wyze.outputs.current != steps.wyze.outputs.latest
+        run: |
+          sed -i "s/appVersion = \".*\"/appVersion = \"${{ steps.wyze.outputs.latest }}\"/" internal/wyzeapi/auth.go
 
       - name: Create Pull Request
+        if: steps.wyze.outputs.current != steps.wyze.outputs.latest
         uses: peter-evans/create-pull-request@v7
-        if: steps.wyze_ios.outputs.current_tag != '' && steps.wyze_ios.outputs.current_tag != steps.wyze_ios.outputs.release_tag
         with:
-          title: 'Bump Wyze App version to v${{ steps.wyze_ios.outputs.release_tag }}'
-          commit-message: 'Update Wyze iOS App version from v${{ steps.wyze_ios.outputs.current_tag }} to v${{ steps.wyze_ios.outputs.release_tag }}'
-          branch: wyze-version
+          title: 'Bump Wyze app version to ${{ steps.wyze.outputs.latest }}'
+          commit-message: 'deps: update Wyze iOS app version from ${{ steps.wyze.outputs.current }} to ${{ steps.wyze.outputs.latest }}'
+          branch: wyze-app-version
           body: |
-            This pull request updates the Wyze iOS App version to the latest version: [v${{ steps.wyze_ios.outputs.release_tag }}](https://apps.apple.com/us/app/wyze-make-your-home-smarter/id1288415553)
-          add-paths: app/.env
-          base: main
+            Updates the Wyze iOS app version used in API User-Agent headers.
+
+            Current: `${{ steps.wyze.outputs.current }}`
+            Latest: `${{ steps.wyze.outputs.latest }}`
+
+            This keeps our API requests consistent with the official Wyze app.
+          add-paths: internal/wyzeapi/auth.go
+          base: go-rewrite
           delete-branch: true

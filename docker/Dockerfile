@@ -1,86 +1,53 @@
-ARG BUILD
-ARG BUILD_DATE
-ARG GITHUB_SHA
+# ── Stage 1: Fetch go2rtc binary + video-rtc.js ─────────────────────────────
+FROM alpine:3.21 AS go2rtc-fetch
+ARG GO2RTC_VERSION=1.9.14
+ARG TARGETARCH
+RUN apk add --no-cache curl ca-certificates && \
+    ARCH=${TARGETARCH}; \
+    if [ "$ARCH" = "arm" ]; then ARCH="arm"; fi; \
+    curl -fsSL \
+      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_${ARCH}" \
+      -o /go2rtc && \
+    chmod +x /go2rtc && \
+    curl -fsSL \
+      "https://github.com/AlexxIT/go2rtc/raw/v${GO2RTC_VERSION}/www/video-rtc.js" \
+      -o /video-rtc.js
 
-FROM python:3.13-slim-bookworm AS base
+# ── Stage 2: Build Go binary ──────────────────────────────────────────────────
+FROM golang:1.26.2-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# Replace placeholder video-rtc.js with real one before embedding
+COPY --from=go2rtc-fetch /video-rtc.js ./internal/webui/static/video-rtc.js
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -ldflags="-s -w -X main.Version=${VERSION}" \
+    -o /wyze-bridge ./cmd/wyze-bridge
 
-FROM base AS builder
-ARG BUILD_DATE
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
+FROM alpine:3.21
+# ffmpeg is required only by go2rtc's /api/frame.jpeg snapshot endpoint —
+# the bridge itself never calls ffmpeg. Alpine's ffmpeg package adds ~40 MB,
+# bringing the total image to ~60–65 MB (still well under the 200+ MB Python
+# bridge). If you need smallest-possible, you can omit ffmpeg and the
+# snapshot endpoint will return 500 instead; all other stream protocols
+# (RTSP/HLS/WebRTC) work without it.
+RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
+    mkdir -p /config /img /record
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        curl \
-        gcc \
-        libffi-dev \
-        tar; \
-    apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
+COPY --from=builder      /wyze-bridge   /usr/local/bin/wyze-bridge
+COPY --from=go2rtc-fetch /go2rtc        /usr/local/bin/go2rtc
 
-COPY /app/ /build/app/
+EXPOSE 5080
+EXPOSE 1984
+EXPOSE 8554
+EXPOSE 8888
+EXPOSE 8889
+EXPOSE 8189/udp
 
-RUN chmod +x /build/app/run
+VOLUME ["/config", "/img", "/record"]
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    set -eux; pip3 install --disable-pip-version-check --prefix=/build/usr/local -r /build/app/requirements.txt
-
-RUN set -eux; \
-    echo "BUILDING IMAGE FOR $(uname -m)";\
-    if [ "$(uname -m)" = "armv7l" ]; then \
-        TARGETARCH=arm; FFMPEG_ARCH=arm32v7; MTX_ARCH=armv7; \
-    elif [ "$(uname -m)" = "aarch64" ]; then \
-        TARGETARCH=arm64; FFMPEG_ARCH=aarch64; MTX_ARCH=arm64; \
-    else \
-        TARGETARCH=amd64; FFMPEG_ARCH=x86_64; MTX_ARCH=amd64; \
-    fi; \
-    cd /build; \
-    . app/.env; \
-    mkdir -p tokens; \
-    curl -fsSL https://github.com/homebridge/ffmpeg-for-homebridge/releases/latest/download/ffmpeg-alpine-${FFMPEG_ARCH}.tar.gz -o ffmpeg.tar.gz; \
-    tar tzf ffmpeg.tar.gz || (echo "Invalid ffmpeg tarball for ${FFMPEG_ARCH}" && exit 1); \
-    tar xzf ffmpeg.tar.gz -C . ;\
-    rm ffmpeg.tar.gz; \
-    curl -fsSL https://github.com/bluenviron/mediamtx/releases/download/v${MTX_TAG}/mediamtx_v${MTX_TAG}_linux_${MTX_ARCH}.tar.gz -o mediamtx.tar.gz; \
-    tar tzf mediamtx.tar.gz || (echo "Invalid mediamtx tarball for ${MTX_ARCH}" && exit 1); \
-    tar xzf mediamtx.tar.gz -C app; \
-    rm mediamtx.tar.gz; \
-    cp app/lib/lib.${TARGETARCH} usr/local/lib/libIOTCAPIs_ALL.so; \
-    rm -rf app/*.txt app/lib/; \
-    if [ -z "${BUILD_DATE}" ]; \
-        then echo BUILD_DATE=$(date) > .build_date; \
-        else echo BUILD_DATE=${BUILD_DATE} > .build_date; \
-    fi;
-
-FROM base
-ARG BUILD
-ARG GITHUB_SHA
-ARG BUILD_DATE
-ARG BUILD_VERSION
-
-RUN set -eux; \
-    rm /var/log/*.log ; \
-    rm -rf /var/log/apt ;
-
-COPY --from=builder /build /
-
-ENV PYTHONUNBUFFERED=1 FLASK_APP=frontend BUILD=$BUILD BUILD_VERSION=$BUILD_VERSION BUILD_DATE=$BUILD_DATE GITHUB_SHA=$GITHUB_SHA FLASK_ENV=production FLASK_DEBUG=0
-WORKDIR /app
-ENTRYPOINT [ "/app/run" ]
-
-LABEL \
-    io.hass.name="Docker Wyze Bridge for Home Assistant" \
-    io.hass.description="Bridges Wyze Cameras into Home Assistant using MediaMTX in Docker container" \
-    io.hass.type="addon" \
-    io.hass.version=${BUILD_VERSION} \
-    maintainer="Marc Brooks <idisposable@gmail.com>" \
-    org.label-schema.name="Docker Wyze Bridge HA" \
-    org.label-schema.description="Docker Wyze Bridge for Home Assistant" \
-    org.label-schema.build-date=${BUILD_DATE} \
-    org.label-schema.schema-version="1.0" \
-    org.label-schema.usage="https://github.com/IDisposable/docker-wyze-bridge/blob/main/README.md" \
-    org.label-schema.vcs-ref=${GITHUB_SHA} \
-    org.label-schema.vcs-url="https://github.com/IDisposable/docker-wyze-bridge/" \
-    org.label-schema.vendor="HomeAssistant add-ons by Marc Brooks"
+ENTRYPOINT ["/usr/local/bin/wyze-bridge"]

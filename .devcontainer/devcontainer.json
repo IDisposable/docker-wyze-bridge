@@ -1,0 +1,80 @@
+{
+  "name": "wyze-bridge",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  // Host networking is required for TUTK P2P to reach cameras on the LAN.
+  // On WSL2, this means the container shares the WSL VM's network namespace.
+  // On Docker Desktop Mac/Windows without WSL, host networking behaves
+  // differently — see DEVELOPER.md for alternatives.
+  "runArgs": [
+    "--network=host"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.26.2"
+    }
+  },
+  "forwardPorts": [
+    5080,
+    1984,
+    8554,
+    8888,
+    8889
+  ],
+  "portsAttributes": {
+    "5080": {
+      "label": "Bridge WebUI",
+      "onAutoForward": "notify"
+    },
+    "1984": {
+      "label": "go2rtc UI",
+      "onAutoForward": "silent"
+    },
+    "8554": {
+      "label": "RTSP",
+      "onAutoForward": "silent"
+    },
+    "8888": {
+      "label": "HLS",
+      "onAutoForward": "silent"
+    },
+    "8889": {
+      "label": "WebRTC HTTP",
+      "onAutoForward": "silent"
+    }
+  },
+  "postCreateCommand": ".devcontainer/setup.sh",
+  "postAttachCommand": "bash -lc 'if [ -n \"$SSH_AUTH_SOCK\" ] && [ -S \"$SSH_AUTH_SOCK\" ]; then echo \"SSH agent keys:\"; ssh-add -l || true; else echo \"SSH agent not forwarded (SSH_AUTH_SOCK missing or not a socket).\"; fi'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-vscode.makefile-tools"
+      ],
+      "settings": {
+        "go.testFlags": [
+          "-v"
+        ],
+        "go.lintTool": "golangci-lint",
+        "go.lintOnSave": "package",
+        "editor.formatOnSave": true,
+        "[go]": {
+          "editor.defaultFormatter": "golang.go"
+        }
+      }
+    }
+  },
+  "containerEnv": {
+    "STATE_DIR": "/workspaces/docker-wyze-bridge/local/config",
+    "IMG_DIR": "/workspaces/docker-wyze-bridge/local/img",
+    "LOG_LEVEL": "debug"
+  },
+  "mounts": [
+    "source=${localWorkspaceFolder}/.env.dev,target=/workspaces/docker-wyze-bridge/.env.dev,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached"
+  ],
+  "remoteUser": "vscode"
+}

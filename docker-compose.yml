@@ -1,0 +1,58 @@
+services:
+    wyze-bridge:
+        container_name: wyze-bridge
+        restart: unless-stopped
+        build:
+            context: .
+            dockerfile: ./docker/Dockerfile
+            args:
+                - VERSION=4.0-beta
+        ports:
+            - 5080:5080     # Bridge WebUI + REST API
+            - 1984:1984     # go2rtc native API/WebUI (optional)
+            - 8554:8554     # RTSP
+            - 8888:8888     # HLS
+            - 8889:8889     # WebRTC HTTP
+            - 8189:8189/udp # WebRTC ICE
+        volumes:
+            - ./config:/config
+            - ./img:/img
+            - ./record:/record
+        environment:
+            # Wyze credentials (required)
+            - WYZE_EMAIL=
+            - WYZE_PASSWORD=
+            - WYZE_API_ID=
+            - WYZE_API_KEY=
+
+            # Network
+            # - WB_IP=192.168.1.50  # Required for WebRTC
+
+            # WebUI auth (default: false)
+            # - WB_AUTH=true
+            # - WB_USERNAME=wyze
+            # - WB_PASSWORD=
+
+            # MQTT (optional)
+            # - MQTT_HOST=mosquitto
+            # - MQTT_PORT=1883
+            # - MQTT_USERNAME=
+            # - MQTT_PASSWORD=
+
+            # Camera defaults
+            # - QUALITY=hd
+            # - AUDIO=true
+
+            # Recording (disabled by default)
+            # - RECORD_ALL=false
+            # - RECORD_PATH=/record/{cam_name}/%Y/%m/%d
+            # - RECORD_LENGTH=60s
+            # - RECORD_KEEP=0s
+
+            # Snapshots (disabled by default)
+            # - SNAPSHOT_INT=0
+            # - IMG_DIR=/img
+
+            # Debugging
+            # - LOG_LEVEL=info
+            # - FORCE_IOTC_DETAIL=false

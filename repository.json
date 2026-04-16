@@ -1,5 +1,5 @@
 {
-    "name": "docker-wyze-bridge",
-    "url": "https://github.com/idisposable/docker-wyze-bridge",
-    "maintainer": "Marc Brooks IDisposable@gmail.com"
+  "name": "Wyze Bridge Add-ons",
+  "url": "https://github.com/IDisposable/docker-wyze-bridge",
+  "maintainer": "Marc Brooks (@IDisposable)"
 }

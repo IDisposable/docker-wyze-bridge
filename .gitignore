@@ -1,18 +1,36 @@
+# OS
 **/.DS_Store
-**/docker-compose.yml
+
+# IDE
+**/.vscode
+.idea/
+
+# Go
+/wyze-bridge
+*.exe
+*.test
+*.prof
+vendor/
+
+# Docker
+docker-compose.override.yml
+
+# Secrets
 **/mfa_token
 **/totp
-**/.vscode
 **/tokens/
-*.pickle
-*.env
-*.pyc
-!/app/.env
-build/
-
+.env.dev
 test_env.list
 
-
-mediamtx.yml
-
+# Runtime
+/config/
+/img/
+/record/
 media/
+
+# Local dev
+/local/
+go2rtc
+go2rtc.exe
+coverage.out
+coverage.html

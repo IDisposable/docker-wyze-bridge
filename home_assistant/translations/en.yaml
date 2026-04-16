@@ -1,0 +1,115 @@
+configuration:
+  WYZE_EMAIL:
+    name: Wyze Email
+    description: Email address for your Wyze account
+  WYZE_PASSWORD:
+    name: Wyze Password
+    description: Password for your Wyze account
+  WYZE_API_ID:
+    name: API ID
+    description: API ID from the Wyze Developer Console
+  WYZE_API_KEY:
+    name: API Key
+    description: API Key from the Wyze Developer Console
+  TOTP_KEY:
+    name: TOTP Key
+    description: TOTP secret for two-factor authentication (optional)
+  WB_IP:
+    name: Bridge IP
+    description: Host IP address for WebRTC ICE candidates
+  WB_AUTH:
+    name: Enable WebUI Auth
+    description: Require login for the web interface
+  WB_USERNAME:
+    name: WebUI Username
+    description: Username for web interface login
+  WB_PASSWORD:
+    name: WebUI Password
+    description: Password for web interface login
+  STREAM_AUTH:
+    name: Stream Auth
+    description: "Global RTSP/WebRTC credentials (format: user:pass)"
+  QUALITY:
+    name: Default Quality
+    description: Default stream quality for all cameras
+  AUDIO:
+    name: Enable Audio
+    description: Enable audio streaming by default
+  MQTT_ENABLED:
+    name: Enable MQTT
+    description: Enable MQTT publishing (auto-detected if Mosquitto is installed)
+  MQTT_HOST:
+    name: MQTT Host
+    description: MQTT broker hostname (auto-detected from HA if blank)
+  MQTT_PORT:
+    name: MQTT Port
+    description: MQTT broker port
+  MQTT_USERNAME:
+    name: MQTT Username
+    description: MQTT broker username (auto-detected from HA if blank)
+  MQTT_PASSWORD:
+    name: MQTT Password
+    description: MQTT broker password (auto-detected from HA if blank)
+  MQTT_TOPIC:
+    name: MQTT Topic
+    description: Base MQTT topic prefix
+  MQTT_DTOPIC:
+    name: MQTT Discovery Topic
+    description: Home Assistant MQTT discovery prefix
+  FILTER_NAMES:
+    name: Filter by Name
+    description: Comma-separated camera names to include (or exclude if Filter Block is on)
+  FILTER_MODELS:
+    name: Filter by Model
+    description: Comma-separated model codes to include
+  FILTER_MACS:
+    name: Filter by MAC
+    description: Comma-separated MAC addresses to include
+  FILTER_BLOCKS:
+    name: Filter Block Mode
+    description: Invert filter — listed cameras are excluded instead of included
+  RECORD_ALL:
+    name: Record All Cameras
+    description: Enable recording for all cameras
+  RECORD_PATH:
+    name: Record Path
+    description: Recording directory template (supports {cam_name}, %Y, %m, %d)
+  RECORD_FILE_NAME:
+    name: Record File Name
+    description: Recording filename template (supports %H, %M, %S, %s)
+  RECORD_LENGTH:
+    name: Record Segment Length
+    description: Duration per recording segment (e.g. 60s, 5m)
+  RECORD_KEEP:
+    name: Record Keep Duration
+    description: Auto-delete recordings older than this (e.g. 72h, 7d; 0 = keep forever)
+  SNAPSHOT_INT:
+    name: Snapshot Interval
+    description: Seconds between snapshots (0 = disabled)
+  SNAPSHOT_FORMAT:
+    name: Snapshot Filename Format
+    description: Snapshot filename template
+  SNAPSHOT_CAMERAS:
+    name: Snapshot Cameras
+    description: Comma-separated camera names for snapshots (blank = all)
+  SNAPSHOT_KEEP:
+    name: Snapshot Keep Duration
+    description: Auto-delete snapshots older than this (0 = keep forever)
+  IMG_DIR:
+    name: Image Directory
+    description: Directory for snapshot storage
+  LATITUDE:
+    name: Latitude
+    description: Decimal degrees for sunrise/sunset snapshot scheduling
+  LONGITUDE:
+    name: Longitude
+    description: Decimal degrees for sunrise/sunset snapshot scheduling
+  LOG_LEVEL:
+    name: Log Level
+    description: Logging verbosity
+  FORCE_IOTC_DETAIL:
+    name: Verbose TUTK Logging
+    description: Enable detailed go2rtc TUTK protocol tracing
+  CAM_OPTIONS:
+    name: Per-Camera Options
+    description: Override settings for individual cameras

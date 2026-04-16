@@ -1,0 +1,15 @@
+.git
+.github
+.vscode
+.devcontainer
+.claude
+.env*
+local/
+cover.out
+*.exe
+*.test
+DOCS/
+DEVELOPER.md
+MIGRATION.md
+CLAUDE.md
+home_assistant/

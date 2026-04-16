@@ -1,0 +1,8 @@
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base:3.21
+  aarch64: ghcr.io/home-assistant/aarch64-base:3.21
+args:
+  WYZE_BRIDGE_IMAGE: ghcr.io/idisposable/docker-wyze-bridge:edge
+labels:
+  org.opencontainers.image.title: Wyze Bridge (Edge)
+  org.opencontainers.image.source: https://github.com/IDisposable/docker-wyze-bridge
