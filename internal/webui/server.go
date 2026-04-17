@@ -38,6 +38,7 @@ type Server struct {
 	version   string
 	startTime time.Time
 	onSnapReq SnapshotRequester
+	mars      MarsTokenMinter
 }
 
 // NewServer creates a new WebUI server.
@@ -207,4 +208,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Backward-compat aliases
 	mux.HandleFunc("/cams.m3u8", s.auth.Wrap(s.handleStreamsM3U8))
 	mux.HandleFunc("/stream/", s.auth.Wrap(s.handleStreamM3U8))
+
+	// wyze-shim for the gwell-proxy sidecar. Loopback-only so Mars
+	// credentials can't leak to the LAN. See internal/webui/shim.go.
+	mux.HandleFunc("/internal/wyze/Camera/CameraList", requireLoopback(s.handleShimCameraList))
+	mux.HandleFunc("/internal/wyze/Camera/DeviceInfo", requireLoopback(s.handleShimDeviceInfo))
+	mux.HandleFunc("/internal/wyze/Camera/CameraToken", requireLoopback(s.handleShimCameraToken))
 }

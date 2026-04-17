@@ -94,8 +94,22 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 			Str("fw", cam.FWVersion).
 			Msg("discovered device")
 
-		// Skip devices missing required P2P fields
-		if cam.P2PID == "" || cam.LanIP == "" || cam.ENR == "" || cam.MAC == "" || cam.Model == "" {
+		// Skip devices missing required P2P fields. The field set is
+		// protocol-specific:
+		//  - TUTK cameras: need P2PID + LanIP + ENR + MAC + Model.
+		//    LanIP comes straight from the Wyze cloud response and is
+		//    non-empty for online cameras.
+		//  - Gwell cameras (GW_BE1/GC1/GC2/DBD): Wyze returns an empty
+		//    LanIP for these — the actual IP is recovered by the proxy
+		//    during P2P discovery. P2PID is just the device MAC echoed
+		//    back. Require MAC + ENR + Model only.
+		var missing bool
+		if cam.IsGwell() {
+			missing = cam.MAC == "" || cam.ENR == "" || cam.Model == ""
+		} else {
+			missing = cam.P2PID == "" || cam.LanIP == "" || cam.ENR == "" || cam.MAC == "" || cam.Model == ""
+		}
+		if missing {
 			c.log.Warn().
 				Str("nickname", cam.Nickname).
 				Str("model", cam.Model).
@@ -103,6 +117,7 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 				Str("ip", cam.LanIP).
 				Str("p2p_id", cam.P2PID).
 				Bool("has_enr", cam.ENR != "").
+				Bool("gwell", cam.IsGwell()).
 				Msg("skipping device with missing P2P params")
 			continue
 		}

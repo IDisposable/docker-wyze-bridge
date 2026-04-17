@@ -68,7 +68,7 @@ cp .env.dev.example .env.dev
 #### Required credentials
 
 | Variable | Where to get it |
-|----------|-----------------|
+| ---------- | ----------------- |
 | `WYZE_EMAIL` | Your Wyze account email |
 | `WYZE_PASSWORD` | Your Wyze account password |
 | `WYZE_API_ID` | [Wyze Developer Console](https://developer-api-console.wyze.com/#/apikey/view) → API Keys |

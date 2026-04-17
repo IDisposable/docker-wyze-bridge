@@ -59,6 +59,17 @@ else
 fi
 go build -o wyze-bridge ./cmd/wyze-bridge
 
+# Build gwell-proxy to the repo root. cmd/wyze-bridge/gwell_spawn.go's
+# binary resolver checks ./gwell-proxy[.exe] before giving up, so
+# putting it here means `go run ./cmd/wyze-bridge` with GWELL_ENABLED=true
+# finds and spawns the sidecar exactly like the container does.
+# Cheap build — shares the same Go module cache as wyze-bridge above.
+GWELL_PROXY_BIN="$ROOT/gwell-proxy"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) GWELL_PROXY_BIN="$ROOT/gwell-proxy.exe" ;;
+esac
+go build -o "$GWELL_PROXY_BIN" ./cmd/gwell-proxy
+
 # Load Wyze credentials (and any overrides). Use POSIX `.` so this works
 # even when the script is invoked by dash. set -a auto-exports every
 # assignment in the sourced file.

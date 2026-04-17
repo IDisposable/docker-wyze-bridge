@@ -10,7 +10,9 @@ import (
 )
 
 // FFmpegPublisher pipes raw H.264 Annex B data to ffmpeg, which publishes
-// an RTSP stream to mediamtx.
+// the stream via RTSP PUSH (ANNOUNCE/RECORD). The target is any RTSP
+// server that accepts publishes — upstream targets mediamtx; our bridge
+// points it at go2rtc on loopback. Both speak the same RTSP dialect.
 type FFmpegPublisher struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
@@ -19,17 +21,69 @@ type FFmpegPublisher struct {
 }
 
 // StartFFmpegPublisher spawns an ffmpeg process that reads raw H.264 from
-// stdin and publishes to mediamtx at the given RTSP URL.
-func StartFFmpegPublisher(streamPath, mediamtxHost string, mediamtxPort int) (*FFmpegPublisher, error) {
-	rtspURL := fmt.Sprintf("rtsp://%s:%d/%s", mediamtxHost, mediamtxPort, streamPath)
+// stdin and publishes it via RTSP PUSH to rtsp://<rtspHost>:<rtspPort>/<streamPath>.
+func StartFFmpegPublisher(streamPath, rtspHost string, rtspPort int) (*FFmpegPublisher, error) {
+	rtspURL := fmt.Sprintf("rtsp://%s:%d/%s", rtspHost, rtspPort, streamPath)
 	log.Printf("[ffmpeg] Publishing to %s", rtspURL)
 
+	// Timestamp dance for raw H.264 Annex B → RTSP PUSH, go2rtc-compatible:
+	//
+	//   -use_wallclock_as_timestamps 1  — initial PTS source since
+	//     raw H.264 has no container timestamps. Alone, this produces
+	//     wallclock-based 90kHz RTP ticks that go2rtc rejects.
+	//   -fflags +genpts+igndts          — let ffmpeg's bitstream layer
+	//     synthesize monotonic PTS (ignoring DTS which is also absent);
+	//     works in concert with +use_wallclock_as_timestamps rather than
+	//     as a replacement.
+	//   -r 15                           — input framerate hint.
+	//     Doorbell Pro encodes at ~15fps; without this ffmpeg can't
+	//     compute frame duration for the RTP muxer and emits
+	//     "Timestamps are unset in a packet" errors. 15 is a safe
+	//     default for GW_* cameras; variable-rate streams still work
+	//     because the RTP timestamps stay monotonic.
+	//   -bsf:v dump_extra               — force SPS/PPS to appear
+	//     in-band in the first keyframe so go2rtc can build the SDP
+	//     without a separate sprop-parameter-sets negotiation.
+	//   -avoid_negative_ts make_zero    — rebase at stream start so
+	//     the RTP sender's first packet has timestamp 0 rather than
+	//     a gigantic wallclock-derived value that looks like a rollover
+	//     to consumers.
+	// Re-encode path chosen deliberately over the -c:v copy pass-through:
+	//
+	// Empirically, go2rtc's RTSP server closes our publish on the very
+	// first RTP data packet when we copy the gwell stream through.
+	// Debug output showed ffmpeg's input start_time resolving to raw
+	// wallclock microseconds (~2×10¹⁵), with first_dts values diverging
+	// between AVPackets in the input queue. Every timestamp-rebase
+	// option we tried (-copyts, -start_at_zero, -avoid_negative_ts,
+	// +genpts, +igndts) operates output-side, AFTER the input queue's
+	// confusion is already encoded into the first RTP timestamp.
+	//
+	// Re-encoding with libx264 ultrafast decodes the camera stream,
+	// discards its wallclock-origin timestamps entirely, and emits
+	// fresh monotonic PTS/DTS starting at 0. The RTP muxer then
+	// ticks 90kHz forward from zero — the shape every RTSP server
+	// expects and the shape go2rtc accepts.
+	//
+	// Cost: ~10-15% of one CPU core per 1440×1440@15fps camera with
+	// ultrafast+zerolatency. -g 30 gives a keyframe every 2s so new
+	// consumers can join quickly without a stale-reference wait.
+	//
+	// Loglevel stays at `debug` for one more run to confirm the full
+	// RTSP handshake completes and frames flow; dial back to `warning`
+	// once we've seen it work.
 	cmd := exec.Command("ffmpeg",
-		"-loglevel", "warning",
+		"-loglevel", "debug",
 		"-use_wallclock_as_timestamps", "1",
+		"-fflags", "+genpts+igndts+nobuffer",
+		"-r", "15",
 		"-f", "h264",
 		"-i", "pipe:0",
-		"-c:v", "copy",
+		"-c:v", "libx264",
+		"-preset", "ultrafast",
+		"-tune", "zerolatency",
+		"-g", "30",
+		"-pix_fmt", "yuv420p",
 		"-f", "rtsp",
 		"-rtsp_transport", "tcp",
 		rtspURL,

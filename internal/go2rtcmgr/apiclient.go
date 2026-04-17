@@ -80,14 +80,21 @@ func (c *APIClient) ListStreams(ctx context.Context) (map[string]*StreamInfo, er
 }
 
 // AddStream adds or updates a stream in go2rtc.
+//
+// An empty streamURL is valid — it registers the stream name without
+// a source, which is what we want for streams fed by external RTSP
+// PUSH (e.g. the gwell-proxy sidecar pushing Gwell H.264 via ffmpeg).
+// Without the pre-registration go2rtc's RTSP server accepts the
+// ANNOUNCE but closes the producer after a short grace period, which
+// manifests as `av_interleaved_write_frame(): Broken pipe` on the
+// ffmpeg side.
 func (c *APIClient) AddStream(ctx context.Context, name, streamURL string) error {
-	c.log.Debug().Str("stream", name).Msg("adding stream to go2rtc")
+	c.log.Debug().Str("stream", name).Bool("placeholder", streamURL == "").Msg("adding stream to go2rtc")
 
-	u := fmt.Sprintf("%s/api/streams?name=%s&src=%s",
-		c.baseURL,
-		url.QueryEscape(name),
-		url.QueryEscape(streamURL),
-	)
+	u := fmt.Sprintf("%s/api/streams?name=%s", c.baseURL, url.QueryEscape(name))
+	if streamURL != "" {
+		u += "&src=" + url.QueryEscape(streamURL)
+	}
 
 	// go2rtc uses PUT to create streams, POST is for redirecting
 	req, err := http.NewRequestWithContext(ctx, "PUT", u, nil)

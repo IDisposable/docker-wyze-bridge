@@ -15,30 +15,16 @@ import (
 // StateChangeFunc is called when a camera's state changes.
 type StateChangeFunc func(cam *Camera, oldState, newState State)
 
-// GwellProducer is the subset of *gwell.Producer the camera manager
-// needs. Defined as an interface to avoid an import cycle and to let
-// tests use a fake without spawning subprocesses.
-type GwellProducer interface {
-	// Enabled reports whether the Gwell integration is active.
-	Enabled() bool
-	// Connect registers the camera with the proxy and returns the
-	// RTSP URL that should be handed to go2rtc.
-	Connect(ctx context.Context, info wyzeapi.CameraInfo, camName, quality string, audio bool) (string, error)
-	// Disconnect tears down the proxy's camera session.
-	Disconnect(ctx context.Context, camName string) error
-}
-
 // Manager manages all cameras, their state machines, and integration with go2rtc.
 type Manager struct {
-	log        zerolog.Logger
-	cfg        *config.Config
-	api        *wyzeapi.Client
-	go2rtc     *go2rtcmgr.APIClient
-	gwell      GwellProducer // optional; nil ⇒ Gwell cameras are skipped
-	filter     *Filter
-	cameras    map[string]*Camera // keyed by normalized name
-	mu         sync.RWMutex
-	onChange   StateChangeFunc
+	log      zerolog.Logger
+	cfg      *config.Config
+	api      *wyzeapi.Client
+	go2rtc   *go2rtcmgr.APIClient
+	filter   *Filter
+	cameras  map[string]*Camera // keyed by normalized name
+	mu       sync.RWMutex
+	onChange StateChangeFunc
 }
 
 // NewManager creates a new camera manager.
@@ -61,14 +47,6 @@ func NewManager(
 		},
 		cameras: make(map[string]*Camera),
 	}
-}
-
-// SetGwellProducer attaches a Gwell producer so the manager can route
-// Gwell-protocol cameras (GW_BE1/GW_GC1/GW_GC2/GW_DBD) to it instead
-// of skipping them. Pass nil (or don't call it) to keep the legacy
-// skip behavior.
-func (m *Manager) SetGwellProducer(p GwellProducer) {
-	m.gwell = p
 }
 
 // OnStateChange registers a callback for camera state changes.
@@ -109,17 +87,18 @@ func (m *Manager) Discover(ctx context.Context) error {
 	}
 
 	// Filter out unsupported and user-filtered cameras.
-	// Gwell-protocol cameras are only supported when a Gwell producer
-	// is attached AND its integration flag is enabled; otherwise we
-	// preserve the legacy "skip" behavior.
-	gwellActive := m.gwell != nil && m.gwell.Enabled()
+	// Gwell-protocol cameras only get into the registry when
+	// GWELL_ENABLED=true; gwell-proxy (spawned from cmd/wyze-bridge)
+	// owns their actual streaming via the /internal/wyze/* shim.
+	// When the flag is off, we preserve the pre-4.0 "skip" behavior
+	// so folks without GW_ cameras don't pay the subprocess cost.
 	var supported []wyzeapi.CameraInfo
 	for _, cam := range cameras {
-		if cam.IsGwell() && !gwellActive {
+		if cam.IsGwell() && !m.cfg.GwellEnabled {
 			m.log.Debug().
 				Str("cam", cam.Nickname).
 				Str("model", cam.Model).
-				Msg("skipping Gwell camera (integration disabled)")
+				Msg("skipping Gwell camera (GWELL_ENABLED=false)")
 			continue
 		}
 		supported = append(supported, cam)
@@ -208,43 +187,46 @@ func (m *Manager) ConnectAll(ctx context.Context) {
 // connectCamera adds a single camera to go2rtc.
 //
 // For TUTK cameras this is a direct AddStream with the wyze:// URL.
-// For Gwell cameras (GW_BE1/GC1/GC2/DBD) we first register the camera
-// with the gwell-proxy sidecar to get a local rtsp:// URL, then hand
-// THAT to go2rtc — the downstream consumers (WebRTC/HLS/recording)
-// never know the difference.
+// Gwell cameras (GW_BE1/GC1/GC2/DBD) are handled entirely by the
+// spawned gwell-proxy sidecar — it discovers them via the bridge's
+// /internal/wyze shim, runs its own P2P handshake, and RTSP-PUSHes
+// into go2rtc directly. The bridge just tracks camera state for
+// the UI and trusts the subprocess to produce frames. If the proxy
+// is misconfigured or crashes, the stream won't appear in go2rtc
+// and WebRTC/HLS playback will fail — that's visible enough.
 func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	m.changeState(cam, StateConnecting)
 
-	var (
-		streamURL string
-		protocol  = "tutk"
-	)
-
 	if cam.Info.IsGwell() {
-		if m.gwell == nil || !m.gwell.Enabled() {
-			m.log.Warn().
-				Str("cam", cam.Name()).
-				Str("model", cam.Info.Model).
-				Msg("Gwell camera discovered but Gwell integration disabled, skipping")
-			m.changeState(cam, StateError)
-			return
-		}
-		protocol = "gwell"
-		url, err := m.gwell.Connect(ctx, cam.Info, cam.Name(), cam.Quality, cam.AudioOn)
-		if err != nil {
+		// Pre-register an empty-source stream in go2rtc so (a) the
+		// gwell-proxy's ffmpeg RTSP PUSH to rtsp://127.0.0.1:8554/<name>
+		// lands in an existing slot instead of being closed after the
+		// producer-without-consumer grace window, and (b) our health
+		// check finds the stream rather than flipping the camera back
+		// to "stream lost" between the camera-manager state change and
+		// the proxy's first successful publish.
+		if err := m.go2rtc.AddStream(ctx, cam.Name(), ""); err != nil {
 			backoff := cam.IncrementError()
 			m.log.Error().Err(err).
 				Str("cam", cam.Name()).
-				Str("ip", cam.Info.LanIP).
+				Str("model", cam.Info.Model).
 				Dur("backoff", backoff).
-				Int("errors", cam.ErrorCount).
-				Msg("failed to register gwell camera")
+				Msg("failed to pre-register Gwell stream slot in go2rtc")
 			return
 		}
-		streamURL = url
-	} else {
-		streamURL = cam.StreamURL()
+		m.log.Info().
+			Str("cam", cam.Name()).
+			Str("model", cam.Info.ModelName()).
+			Str("protocol", "gwell").
+			Msg("Gwell camera — go2rtc slot reserved, awaiting gwell-proxy publish")
+		m.changeState(cam, StateStreaming)
+		return
 	}
+
+	var (
+		streamURL = cam.StreamURL()
+		protocol  = "tutk"
+	)
 
 	m.log.Info().
 		Str("cam", cam.Name()).
@@ -294,6 +276,20 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 
 	for _, cam := range cams {
 		if cam.GetState() != StateStreaming {
+			continue
+		}
+
+		// Gwell cameras are fed by the gwell-proxy subprocess which
+		// already has a deadman timer (no-data timeout) on its own
+		// ffmpeg publisher. The go2rtc-side producer count is legitimately
+		// zero during the 5-6 second window between our pre-registered
+		// empty-src AddStream and the proxy's P2P handshake finishing.
+		// Health-checking on go2rtc's Producers list would flap the
+		// camera to Offline during that window, which triggers a reconnect
+		// that re-PUTs the stream slot and kicks the in-flight publish —
+		// the exact dance that caused gwell-proxy's ffmpeg to die with
+		// av_interleaved_write_frame(): Broken pipe during bring-up.
+		if cam.Info.IsGwell() {
 			continue
 		}
 

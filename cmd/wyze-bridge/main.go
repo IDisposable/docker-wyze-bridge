@@ -17,7 +17,6 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
-	"github.com/IDisposable/docker-wyze-bridge/internal/gwell"
 	"github.com/IDisposable/docker-wyze-bridge/internal/mqtt"
 	"github.com/IDisposable/docker-wyze-bridge/internal/recording"
 	"github.com/IDisposable/docker-wyze-bridge/internal/snapshot"
@@ -160,31 +159,11 @@ func main() {
 	camLog := log.With().Str("c", "camera").Logger()
 	camMgr := camera.NewManager(cfg, apiClient, go2rtcAPI, camLog)
 
-	// Gwell (IoTVideo) P2P proxy for GW_* cameras.
-	// Built lazily — no subprocess is spawned until the first Gwell
-	// camera is connected. If GWELL_ENABLED=false, the manager is
-	// never attached and Gwell cameras are skipped as before.
+	// Gwell (IoTVideo) P2P proxy status — the actual subprocess is
+	// spawned below, after the WebUI server is constructed so we
+	// know the shim URL to hand the child.
 	if cfg.GwellEnabled {
-		gwellLog := log.With().Str("c", "gwell").Logger()
-		gwellCfg := gwell.Config{
-			Enabled:     true,
-			BinaryPath:  cfg.GwellBinary,
-			RTSPPort:    cfg.GwellRTSPPort,
-			ControlPort: cfg.GwellControlPort,
-			StateDir:    cfg.StateDir + "/gwell",
-			LogLevel:    cfg.GwellLogLevel,
-		}
-		if err := gwellCfg.Validate(); err != nil {
-			log.Error().Err(err).Msg("invalid GWELL_* configuration; Gwell integration disabled")
-		} else {
-			gwellMgr := gwell.NewManager(gwellCfg, gwellLog)
-			gwellProd := gwell.NewProducer(gwellMgr, apiClient, Version, gwellLog)
-			camMgr.SetGwellProducer(gwellProd)
-			log.Info().
-				Int("rtsp_port", cfg.GwellRTSPPort).
-				Int("control_port", cfg.GwellControlPort).
-				Msg("Gwell producer attached (proxy will be spawned on first GW_ camera)")
-		}
+		log.Info().Msg("GWELL_ENABLED=true; gwell-proxy will be spawned after webui ready")
 	} else {
 		log.Info().Msg("GWELL_ENABLED=false; GW_ cameras will be skipped")
 	}
@@ -197,6 +176,19 @@ func main() {
 	// WebUI server
 	webuiLog := log.With().Str("c", "webui").Logger()
 	webServer := webui.NewServer(cfg, camMgr, go2rtcAPI, Version, webuiLog)
+
+	// Wire Mars credential minter into the /internal/wyze/Camera/CameraToken
+	// shim endpoint. The wyzeapi.Client satisfies webui.MarsTokenMinter.
+	// Safe to call before the web server starts listening.
+	webServer.SetMarsMinter(apiClient)
+
+	// Spawn gwell-proxy sidecar when Gwell support is enabled.
+	// The subprocess polls our wyze-shim for Gwell cameras; if none
+	// ever appear it just idles harmlessly.
+	if cfg.GwellEnabled {
+		gwellLog := log.With().Str("c", "gwell-proxy").Logger()
+		go spawnGwellProxy(ctx, cfg, gwellLog)
+	}
 
 	// MQTT (optional)
 	var mqttClient *mqtt.Client
