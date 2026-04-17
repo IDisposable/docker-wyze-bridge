@@ -33,55 +33,55 @@ func (c *Client) PublishDiscovery(cam *camera.Camera) {
 
 	// Camera entity
 	c.publishDiscoveryConfig(fmt.Sprintf("%s/camera/%s/config", c.dtopic, mac), map[string]interface{}{
-		"name":                 cam.Info.Nickname,
-		"unique_id":            "wyze_" + mac,
-		"topic":                fmt.Sprintf("%s/%s/", c.topic, name),
-		"availability_topic":   fmt.Sprintf("%s/%s/state", c.topic, name),
-		"payload_available":    "connected",
+		"name":                  cam.Info.Nickname,
+		"unique_id":             "wyze_" + mac,
+		"topic":                 fmt.Sprintf("%s/%s/", c.topic, name),
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
 		"payload_not_available": "disconnected",
-		"device":               device,
+		"device":                device,
 	})
 
 	// Quality select entity
 	c.publishDiscoveryConfig(fmt.Sprintf("%s/select/%s_quality/config", c.dtopic, mac), map[string]interface{}{
-		"name":             cam.Info.Nickname + " Quality",
-		"unique_id":        "wyze_" + mac + "_quality",
-		"state_topic":      fmt.Sprintf("%s/%s/quality", c.topic, name),
-		"command_topic":    fmt.Sprintf("%s/%s/set/quality", c.topic, name),
-		"options":          []string{"hd", "sd"},
-		"availability_topic":   fmt.Sprintf("%s/%s/state", c.topic, name),
-		"payload_available":    "connected",
+		"name":                  cam.Info.Nickname + " Quality",
+		"unique_id":             "wyze_" + mac + "_quality",
+		"state_topic":           fmt.Sprintf("%s/%s/quality", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/quality", c.topic, name),
+		"options":               []string{"hd", "sd"},
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
 		"payload_not_available": "disconnected",
-		"device":           device,
+		"device":                device,
 	})
 
 	// Audio switch entity
 	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_audio/config", c.dtopic, mac), map[string]interface{}{
-		"name":             cam.Info.Nickname + " Audio",
-		"unique_id":        "wyze_" + mac + "_audio",
-		"state_topic":      fmt.Sprintf("%s/%s/audio", c.topic, name),
-		"command_topic":    fmt.Sprintf("%s/%s/set/audio", c.topic, name),
-		"payload_on":       "true",
-		"payload_off":      "false",
-		"state_on":         "true",
-		"state_off":        "false",
-		"availability_topic":   fmt.Sprintf("%s/%s/state", c.topic, name),
-		"payload_available":    "connected",
+		"name":                  cam.Info.Nickname + " Audio",
+		"unique_id":             "wyze_" + mac + "_audio",
+		"state_topic":           fmt.Sprintf("%s/%s/audio", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/audio", c.topic, name),
+		"payload_on":            "true",
+		"payload_off":           "false",
+		"state_on":              "true",
+		"state_off":             "false",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
 		"payload_not_available": "disconnected",
-		"device":           device,
+		"device":                device,
 	})
 
 	// Night vision select entity
 	c.publishDiscoveryConfig(fmt.Sprintf("%s/select/%s_night_vision/config", c.dtopic, mac), map[string]interface{}{
-		"name":             cam.Info.Nickname + " Night Vision",
-		"unique_id":        "wyze_" + mac + "_night_vision",
-		"state_topic":      fmt.Sprintf("%s/%s/night_vision", c.topic, name),
-		"command_topic":    fmt.Sprintf("%s/%s/set/night_vision", c.topic, name),
-		"options":          []string{"auto", "on", "off"},
-		"availability_topic":   fmt.Sprintf("%s/%s/state", c.topic, name),
-		"payload_available":    "connected",
+		"name":                  cam.Info.Nickname + " Night Vision",
+		"unique_id":             "wyze_" + mac + "_night_vision",
+		"state_topic":           fmt.Sprintf("%s/%s/night_vision", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/night_vision", c.topic, name),
+		"options":               []string{"auto", "on", "off"},
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
 		"payload_not_available": "disconnected",
-		"device":           device,
+		"device":                device,
 	})
 }
 

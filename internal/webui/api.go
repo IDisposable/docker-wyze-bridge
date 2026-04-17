@@ -33,7 +33,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
-		"version":         s.version,
+		"version":        s.version,
 		"go2rtc_version": "1.9.14",
 	})
 }
@@ -106,6 +106,16 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 		}
 		cam.AudioOn = body.Enabled
 		writeJSON(w, map[string]interface{}{"status": "ok", "audio": body.Enabled})
+
+	case action == "snapshot" && r.Method == "POST":
+		if s.onSnapReq == nil {
+			http.Error(w, "snapshot manager not wired", http.StatusServiceUnavailable)
+			return
+		}
+		// Fire-and-forget — capture can take up to the go2rtc snapshot
+		// timeout, don't block the HTTP response on it.
+		go s.onSnapReq(context.Background(), name)
+		writeJSON(w, map[string]string{"status": "ok", "camera": name})
 
 	default:
 		http.Error(w, "not found", http.StatusNotFound)

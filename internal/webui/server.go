@@ -21,6 +21,11 @@ import (
 //go:embed static/*
 var staticFS embed.FS
 
+// SnapshotRequester triggers an on-demand capture-to-disk for a camera.
+// Supplied by main.go via OnSnapshotRequest so the webui package stays
+// decoupled from the snapshot package (which depends on us via SSE).
+type SnapshotRequester func(ctx context.Context, camName string)
+
 // Server is the WebUI HTTP server.
 type Server struct {
 	log       zerolog.Logger
@@ -32,6 +37,7 @@ type Server struct {
 	srv       *http.Server
 	version   string
 	startTime time.Time
+	onSnapReq SnapshotRequester
 }
 
 // NewServer creates a new WebUI server.
@@ -53,10 +59,10 @@ func NewServer(
 	}
 
 	s.auth = NewAuthMiddleware(
-		cfg.WBAuth,
-		cfg.WBUsername,
-		cfg.WBPassword,
-		cfg.WBAPI,
+		cfg.BridgeAuth,
+		cfg.BridgeUsername,
+		cfg.BridgePassword,
+		cfg.BridgeAPIToken,
 	)
 
 	return s
@@ -65,6 +71,13 @@ func NewServer(
 // SSE returns the SSE hub for sending events.
 func (s *Server) SSE() *SSEHub {
 	return s.sseHub
+}
+
+// OnSnapshotRequest registers a callback that fires when the WebUI's
+// snapshot button is clicked. main.go wires this to snapMgr.CaptureOne.
+// Nil is safe — the button just returns 503 until the hook is attached.
+func (s *Server) OnSnapshotRequest(fn SnapshotRequester) {
+	s.onSnapReq = fn
 }
 
 // StartTime returns when the server was created.
@@ -78,14 +91,14 @@ func (s *Server) Start() error {
 	s.registerRoutes(mux)
 
 	s.srv = &http.Server{
-		Addr:         fmt.Sprintf(":%d", s.cfg.WBPort),
+		Addr:         fmt.Sprintf(":%d", s.cfg.BridgePort),
 		Handler:      s.corsMiddleware(s.logMiddleware(mux)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	s.log.Info().Int("port", s.cfg.WBPort).Msg("WebUI server starting")
+	s.log.Info().Int("port", s.cfg.BridgePort).Msg("WebUI server starting")
 	return s.srv.ListenAndServe()
 }
 

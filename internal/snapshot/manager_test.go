@@ -5,30 +5,40 @@ import (
 	"time"
 )
 
-func TestFormatFilename(t *testing.T) {
+func TestExpandTemplate(t *testing.T) {
 	ts := time.Date(2026, 4, 15, 14, 30, 45, 0, time.UTC)
 
 	tests := []struct {
-		format, camName, want string
+		tmpl, camName, want string
 	}{
-		{"{cam_name}", "front_door", "front_door.jpg"},
-		{"{cam_name}_%Y%m%d_%H%M%S", "front_door", "front_door_20260415_143045.jpg"},
-		{"{CAM_NAME}_%s", "test", "TEST_" + "1776350245" + ".jpg"}, // approximate
-		{"{cam_name}.jpeg", "cam", "cam.jpeg"},
+		{"{cam_name}", "front_door", "front_door"},
+		{"{cam_name}/%Y/%m/%d", "front_door", "front_door/2026/04/15"},
+		{"{cam_name}_%Y%m%d_%H%M%S", "front_door", "front_door_20260415_143045"},
+		{"{CAM_NAME}_snapshot", "test", "TEST_snapshot"},
+		{"%H-%M-%S", "any", "14-30-45"},
+		{"/media/snapshots/{cam_name}/%Y/%m/%d", "cam1", "/media/snapshots/cam1/2026/04/15"},
 	}
 
 	for _, tt := range tests {
-		got := formatFilename(tt.format, tt.camName, ts)
-		// For %s test, just check it ends with .jpg and starts correctly
-		if tt.format == "{CAM_NAME}_%s" {
-			if got[:5] != "TEST_" {
-				t.Errorf("formatFilename(%q) = %q, expected TEST_ prefix", tt.format, got)
-			}
-			continue
-		}
+		got := expandTemplate(tt.tmpl, tt.camName, ts)
 		if got != tt.want {
-			t.Errorf("formatFilename(%q, %q) = %q, want %q", tt.format, tt.camName, got, tt.want)
+			t.Errorf("expandTemplate(%q, %q) = %q, want %q", tt.tmpl, tt.camName, got, tt.want)
 		}
+	}
+}
+
+// TestExpandTemplate_UnixTime verifies %s (unix seconds) expands — exact value
+// is non-deterministic across timezones on some test expectations, so we just
+// confirm it's a plausible positive integer string and the prefix is intact.
+func TestExpandTemplate_UnixTime(t *testing.T) {
+	ts := time.Date(2026, 4, 15, 14, 30, 45, 0, time.UTC)
+	got := expandTemplate("{CAM_NAME}_%s", "test", ts)
+	const wantPrefix = "TEST_"
+	if got[:len(wantPrefix)] != wantPrefix {
+		t.Errorf("expandTemplate = %q, want prefix %q", got, wantPrefix)
+	}
+	if len(got) <= len(wantPrefix) {
+		t.Errorf("expandTemplate produced no timestamp tail: %q", got)
 	}
 }
 

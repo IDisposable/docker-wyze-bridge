@@ -1,27 +1,31 @@
 # Go Rewrite: Review Notes
 
-**Date:** April 16, 2026 (updated)
+**Date:** April 17, 2026 (updated)
 **Branch:** `go-rewrite`
-**Status:** 194 tests passing, `go vet` clean, old Python code removed
+**Status:** all tests passing, `go vet` clean, old Python code removed, 4.0-beta HA addon shipping
 
 ---
 
 ## What Was Built
 
-65 files across all three design phases:
+~70 Go files + HA addon + Dockerfiles across all three design phases.
 
-| Package | Source | Tests | Coverage |
-| ------- | ------ | ----- | -------- |
-| `internal/config/` | 4 | 4 | 95.2% |
-| `internal/wyzeapi/` | 6 | 7 | 44.4% |
-| `internal/go2rtcmgr/` | 3 | 4 | 61.4% |
-| `internal/camera/` | 3 | 4 | 68.7% |
-| `internal/mqtt/` | 5 | 5 | 10.3% |
-| `internal/webui/` | 6 + static | 5 | 66.7% |
-| `internal/snapshot/` | 2 | 3 | 47.6% |
-| `internal/recording/` | 1 | 2 | 81.2% |
-| `cmd/wyze-bridge/` | 1 | — | (integration) |
-| Docker + compose | 2 | — | — |
+| Package | Source | Tests |
+| ------- | ------ | ----- |
+| `internal/config/` | 4 | 4 |
+| `internal/wyzeapi/` | 6 | 7 |
+| `internal/go2rtcmgr/` | 3 | 4 |
+| `internal/camera/` | 3 | 4 |
+| `internal/mqtt/` | 5 | 5 |
+| `internal/webui/` | 6 + static | 5 |
+| `internal/snapshot/` | 2 | 3 |
+| `internal/recording/` | 1 | 2 |
+| `internal/webhooks/` | 1 | 1 |
+| `internal/gwell/` | 5 | 4 |
+| `internal/gwell/upstream/` | 14 (vendored) | vendored upstream |
+| `cmd/wyze-bridge/` | 1 | (integration) |
+| `home_assistant/` | config + run.sh + Dockerfile + translations | — |
+| `docker/` | Dockerfile | — |
 
 ---
 
@@ -46,7 +50,7 @@
 - [x] WebUI: single camera page with go2rtc WebRTC player (`video-rtc.js`)
 - [x] WebUI: REST API — `/api/cameras`, `/api/cameras/{name}/{action}`, `/api/snapshot/{name}`
 - [x] WebUI: M3U8 playlist generation + `/cams.m3u8` and `/stream/{name}.m3u8` compat aliases
-- [x] WebUI: Basic Auth + Bearer token + `WB_AUTH` toggle
+- [x] WebUI: Basic Auth + Bearer token + `BRIDGE_AUTH` toggle
 - [x] WebUI: SSE (`/events`) with camera_state, camera_added, camera_removed, snapshot_ready, bridge_status
 - [x] WebUI: request logging middleware (method, path, status, duration)
 - [x] Dockerfile: 3-stage Alpine, multi-arch via `TARGETARCH`, `video-rtc.js` fetched + embedded at build
@@ -57,6 +61,7 @@
 - [x] MQTT: paho client, auto-reconnect, LWT (`{topic}/bridge/state`)
 - [x] MQTT: publish state, quality, audio, net_mode, camera_info, stream_info, thumbnail
 - [x] MQTT: subscribe to `set/quality`, `set/audio`, `set/night_vision`, `snapshot/take`, `stream/restart`
+- [x] MQTT: snapshot trigger wired to `snapMgr.CaptureOne` via `OnSnapshotRequest` callback
 - [x] MQTT: night_vision command wired through to `wyzeapi.SetProperty("P3", ...)` with PID mapping
 - [x] MQTT: Home Assistant discovery — camera, quality select, audio switch, night vision select entities
 - [x] MQTT: MQTT Client carries `*wyzeapi.Client` reference for cloud API commands
@@ -67,81 +72,67 @@
 - [x] STREAM_AUTH: single-user global auth injected into go2rtc `RTSP.Username`/`RTSP.Password`
 - [x] SSE heartbeat + `bridge_status` (uptime, streaming count, total) every 30s
 
-### Phase 3 — Snapshots + Polish: Mostly Complete
+### Phase 3 — Snapshots, Polish, Packaging: Complete
 
 - [x] Snapshots: interval-based capture via go2rtc `GET /api/frame.jpeg`
 - [x] Snapshots: sunrise/sunset scheduling (`go-sunrise`, reschedule after each event)
 - [x] Snapshots: file pruning by age (5min tick, JPEG only)
 - [x] Snapshots: per-camera filtering (`SNAPSHOT_CAMERAS`)
 - [x] Snapshots: `OnCapture` callback → MQTT thumbnail publish
+- [x] Snapshots: `SNAPSHOT_PATH` + `SNAPSHOT_FILE_NAME` split mirroring `RECORD_*`; MkdirAll full parent chain
 - [x] Per-camera overrides: `QUALITY_{CAM}`, `AUDIO_{CAM}`, `RECORD_{CAM}` env vars
 - [x] `CAM_OPTIONS` in `config.yml` (YAML per-camera overrides)
-- [ ] Webhook support (not started — Phase 3 stretch)
-- [ ] HA add-on manifest update (`home_assistant/config.json`)
-- [ ] Unraid template update (`unraid/wyze-bridge.xml`)
-- [x] `MIGRATION.md` — created with full breaking changes, env var reference, STREAM_AUTH limitation
-- [ ] `README.md` rewrite
+- [x] Webhooks: `internal/webhooks/` — POST JSON on state change (offline/streaming/error), `WEBHOOK_URLS` CSV
+- [x] HA add-on: nested config schema (wyze / bridge / camera / snapshot / record / mqtt / filter / location / webhooks / gwell / debug)
+- [x] HA add-on: `init: false` for s6-overlay, Dockerfile pulls pre-built binaries from CI GHCR image
+- [x] HA add-on: `run.sh` bashio → env with jq fan-out for `camera.options` + list-typed fields
+- [x] HA add-on: `/media/wyze_bridge/{snapshots,recordings}/...` defaults via run.sh
+- [x] HA add-on: translations/en.yaml with nested labels + descriptions
+- [x] `MIGRATION.md` — full 4.0 rename table, snapshot layout change, removed features
+- [x] `README.md` — rewritten for Go bridge
+- [ ] ~~Unraid template~~ — intentionally dropped; see MIGRATION.md "Removed: Unraid Template"
+
+### Phase 4 — Gwell Protocol Cameras (GW_BE1/GC1/GC2/DBD): Scaffolded, not runtime-ready
+
+- [x] `internal/gwell/`: Manager (subprocess lifecycle), Producer (per-camera register), APIClient (HTTP control API), Config
+- [x] `internal/camera/manager.go`: routes `IsGwell()` cameras to the producer
+- [x] Upstream `github.com/wlatic/hacky-wyze-gwell` vendored at `internal/gwell/upstream/` (pinned SHA 9c1b99f8)
+- [x] `GWELL_ENABLED` defaults to `false` — current 4.0-beta silently skips GW_* cameras (matches 3.x behavior)
+- [ ] `cmd/gwell-proxy/main.go` — needs ~400 LOC of glue: HTTP control API + session orchestration + ffmpeg publisher
+- [ ] Mars credentials endpoint — upstream `ParseAccessToken` wants a device-scoped accessId/accessToken minted via `POST wyze-mars-service.wyzecam.com/plugin/mars/v2/regist_gw_user/<deviceID>` (Wpk-signed). Not currently in `internal/wyzeapi/`.
+- [ ] Dockerfile stage to `go build ./cmd/gwell-proxy` and ship the binary
+
+See [GWELL_INTEGRATION.md](GWELL_INTEGRATION.md) for the full design; note that doc predated the upstream-reality discovery and is partially aspirational — specifically the `cmd/gwell-proxy` binary and its `POST /cameras` HTTP API are our design, not upstream's.
 
 ---
 
 ## Remaining Actionable Work
 
-### Must Do Before First Test With Real Cameras
+### Blocks Gwell camera support (not a 4.0 blocker)
 
-1. **MQTT snapshot trigger wiring** — `handleSnapshotCommand` logs the request but doesn't call the snapshot manager. Fix: add `OnSnapshotRequest` callback to MQTT Client, wire `snapMgr.CaptureOne` in `main.go`. (~10 lines)
+1. **Mars credential minting in `internal/wyzeapi/`** — implement `MarsRegisterGWUser(deviceID) (accessID, accessToken string)` hitting `wyze-mars-service.wyzecam.com` with Wyze's Wpk HMAC request signing. This is the one non-mechanical piece.
 
-2. **Wyze API base URL injectability** — `Login()`, `RefreshToken()`, `GetCameraList()`, `SetProperty()` use hardcoded `const` URLs. Make `authAPI`, `wyzeAPI`, `cloudAPI` fields on `Client` with production defaults. This unblocks both real-camera testing (no code change needed there) and full unit test coverage (~40% more wyzeapi coverage). (~15 lines)
+2. **`cmd/gwell-proxy/main.go`** — HTTP control API, per-camera session lifecycle around `gwell.NewSession(...)`, spawn `stream.FFmpegPublisher` per camera pushing to loopback go2rtc:8554, shut down cleanly on DELETE. Glue only once #1 lands.
 
-### Should Do Before Users See This
+3. **Dockerfile** — add `RUN go build -o /gwell-proxy ./cmd/gwell-proxy` in the existing `builder` stage; `COPY --from=builder /gwell-proxy /usr/local/bin/gwell-proxy` in runtime. Flip `GWELL_ENABLED` default back to `true`.
 
-3. ~~MIGRATION.md~~ — Done. Covers env var changes, STREAM_AUTH limitation, removed features, new variables.
+4. **Integration test** on real OG / Doorbell Pro hardware.
 
-4. **README.md rewrite** — Replace Python-focused content with Go rewrite docs.
+### Coverage (low priority, not tracked here)
 
-5. **HA add-on manifest** — Update `home_assistant/config.json` for Go binary entrypoint, remove Python deps, update port list.
-
-6. **Unraid template** — Update `unraid/wyze-bridge.xml`.
-
-### Nice to Have
-
-7. ~~go2rtc version detection~~ — Dropped. Hardcoded version is fine; pinned in Dockerfile.
-
-8. ~~STREAM_AUTH per-camera~~ — Resolved. go2rtc source confirms single global RTSP credentials only (loopback exempt). Per-camera scoping documented as a feature loss in MIGRATION.md.
-
-9. **Webhook support** — `internal/webhooks/` package that POSTs camera state changes to user-configured URLs. Last remaining feature.
-
-10. ~~Config hot-reload~~ — Dropped. Not in design, not needed.
+Wyze API client's const URLs still make a chunk of that package untestable without network. Not a release blocker — defer until we need the coverage number.
 
 ---
 
-## Coverage Improvement Roadmap
-
-The biggest unlock is item #2 (wyzeapi URL injectability). With that single change:
-
-| Package | Current | After URL fix | Limiting factor |
-| ------- | ------- | ------------- | --------------- |
-| config | 95.2% | 95.2% | loadYAML edge cases |
-| recording | 81.2% | 81.2% | `RunPruner` loop |
-| camera | 68.7% | ~75% | `Discover()` needs mock Wyze API |
-| webui | 66.7% | ~70% | `logMiddleware` + serve loop |
-| go2rtcmgr | 61.4% | 61.4% | `Start()`/`Stop()` need real binary |
-| snapshot | 47.6% | ~50% | `Run()` loop, `runSunEvents()` |
-| **wyzeapi** | **44.4%** | **~85%** | Currently blocked by const URLs |
-| mqtt | 10.3% | 10.3% | paho methods need broker |
-
-The mqtt 10.3% is structural — the tested code is `format.go` (pure functions) while the remaining ~90% is paho glue (`Connect`, `publish`, `subscribe`). Options to improve:
-- In-process test broker (`github.com/mochi-mqtt/server`) — adds a dep but enables full integration tests
-- Accept 10% and rely on end-to-end Docker testing
-
----
-
-## Architecture Notes (unchanged observations)
+## Architecture Notes
 
 **Clean separation** — each package has a single responsibility, no circular imports, all dependencies flow downward from `cmd/` through `internal/`.
 
 **Design deviations** — documented in `IMPLEMENTATION_NOTES.md`. Key ones: `Streams` type changed to `interface{}` for recording support, WebUI templates inline instead of embedded HTML files, `mqtt/format.go` added for testability.
 
-**Deliberately dropped** from Python bridge: remote P2P, binary TUTK SDK, FFmpeg, MediaMTX, Flask/Jinja, pickle caching.
+**Deliberately dropped** from Python bridge: remote P2P, binary TUTK SDK, FFmpeg (in the bridge), MediaMTX, Flask/Jinja, pickle caching, Unraid template.
+
+**4.0 rename pass (breaking)**: env vars reorganized by subsystem (`WB_*`→`BRIDGE_*`, `TOTP_KEY`→`WYZE_TOTP_KEY`, `IMG_DIR`→`SNAPSHOT_PATH`, `SNAPSHOT_INT`→`SNAPSHOT_INTERVAL`, `MQTT_DTOPIC`→`MQTT_DISCOVERY_TOPIC`, dropped `SNAPSHOT_FORMAT`). No aliases — 3.x configs must update. Full table in `MIGRATION.md`.
 
 ---
 

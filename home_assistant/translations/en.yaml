@@ -1,115 +1,197 @@
 configuration:
-  WYZE_EMAIL:
-    name: Wyze Email
+  wyze:
+    name: Wyze Account
+    description: >-
+      Credentials for your Wyze account. API ID / Key come from the
+      [Wyze Developer Console](https://developer-api-console.wyze.com/#/apikey/view).
+  wyze.email:
+    name: Email
     description: Email address for your Wyze account
-  WYZE_PASSWORD:
-    name: Wyze Password
+  wyze.password:
+    name: Password
     description: Password for your Wyze account
-  WYZE_API_ID:
+  wyze.api_id:
     name: API ID
     description: API ID from the Wyze Developer Console
-  WYZE_API_KEY:
+  wyze.api_key:
     name: API Key
     description: API Key from the Wyze Developer Console
-  TOTP_KEY:
+  wyze.totp_key:
     name: TOTP Key
     description: TOTP secret for two-factor authentication (optional)
-  WB_IP:
-    name: Bridge IP
-    description: Host IP address for WebRTC ICE candidates
-  WB_AUTH:
+
+  bridge:
+    name: Bridge (WebUI + REST API)
+    description: >-
+      The bridge's own HTTP server settings. IP is the one most users
+      need to set; the rest are advanced auth controls.
+  bridge.ip:
+    name: Host IP
+    description: >-
+      Home Assistant host IP address. Required for in-browser WebRTC
+      playback to work through ingress.
+  bridge.auth:
     name: Enable WebUI Auth
-    description: Require login for the web interface
-  WB_USERNAME:
+    description: Require HTTP Basic auth for the WebUI and REST API
+  bridge.username:
     name: WebUI Username
-    description: Username for web interface login
-  WB_PASSWORD:
+    description: Username when Enable WebUI Auth is on
+  bridge.password:
     name: WebUI Password
-    description: Password for web interface login
-  STREAM_AUTH:
+    description: Password when Enable WebUI Auth is on
+  bridge.api_token:
+    name: REST API Token
+    description: >-
+      Bearer token required on REST API calls. Independent of the
+      WebUI auth above.
+  bridge.stream_auth:
     name: Stream Auth
-    description: "Global RTSP/WebRTC credentials (format: user:pass)"
-  QUALITY:
+    description: "Global RTSP/WebRTC consumer credentials (format: user:pass)"
+  bridge.go2rtc_url:
+    name: External go2rtc URL
+    description: >-
+      Use an existing go2rtc instance (e.g. Frigate's) instead of
+      spawning our own. Format: http://host:1984. When set, recording
+      and STREAM_AUTH are ignored — configure those on the remote
+      go2rtc yaml.
+
+  camera:
+    name: Camera Defaults
+    description: Defaults applied to every camera unless overridden below.
+  camera.quality:
     name: Default Quality
-    description: Default stream quality for all cameras
-  AUDIO:
+    description: hd or sd
+  camera.audio:
     name: Enable Audio
     description: Enable audio streaming by default
-  MQTT_ENABLED:
-    name: Enable MQTT
-    description: Enable MQTT publishing (auto-detected if Mosquitto is installed)
-  MQTT_HOST:
-    name: MQTT Host
-    description: MQTT broker hostname (auto-detected from HA if blank)
-  MQTT_PORT:
-    name: MQTT Port
-    description: MQTT broker port
-  MQTT_USERNAME:
-    name: MQTT Username
-    description: MQTT broker username (auto-detected from HA if blank)
-  MQTT_PASSWORD:
-    name: MQTT Password
-    description: MQTT broker password (auto-detected from HA if blank)
-  MQTT_TOPIC:
-    name: MQTT Topic
-    description: Base MQTT topic prefix
-  MQTT_DTOPIC:
-    name: MQTT Discovery Topic
-    description: Home Assistant MQTT discovery prefix
-  FILTER_NAMES:
-    name: Filter by Name
-    description: Comma-separated camera names to include (or exclude if Filter Block is on)
-  FILTER_MODELS:
-    name: Filter by Model
-    description: Comma-separated model codes to include
-  FILTER_MACS:
-    name: Filter by MAC
-    description: Comma-separated MAC addresses to include
-  FILTER_BLOCKS:
-    name: Filter Block Mode
-    description: Invert filter — listed cameras are excluded instead of included
-  RECORD_ALL:
+  camera.options:
+    name: Per-Camera Overrides
+    description: >-
+      Override quality, audio, or record per camera. CAM_NAME matches
+      the Wyze-account name normalized (lowercase, spaces → underscores).
+
+  snapshot:
+    name: Snapshots
+    description: >-
+      Periodic JPEG captures. Path and file_name are templates
+      accepting {cam_name}, {CAM_NAME}, and strftime tokens
+      (%Y %m %d %H %M %S %s).
+  snapshot.path:
+    name: Directory Template
+    description: >-
+      Directory for snapshot files. HA default
+      `/media/wyze_bridge/snapshots/{cam_name}/%Y/%m/%d`.
+  snapshot.file_name:
+    name: Filename Template
+    description: Filename stem; .jpg auto-appended. Default `%H-%M-%S`.
+  snapshot.interval:
+    name: Interval (seconds)
+    description: 0 disables periodic capture
+  snapshot.keep:
+    name: Keep Duration
+    description: Auto-delete snapshots older than this (e.g. 72h, 7d; 0 = keep forever)
+  snapshot.cameras:
+    name: Cameras
+    description: Camera names to snapshot (one per entry; empty list = all cameras)
+
+  record:
+    name: Recording
+    description: Continuous on-disk recording via go2rtc.
+  record.all:
     name: Record All Cameras
-    description: Enable recording for all cameras
-  RECORD_PATH:
-    name: Record Path
-    description: Recording directory template (supports {cam_name}, %Y, %m, %d)
-  RECORD_FILE_NAME:
-    name: Record File Name
-    description: Recording filename template (supports %H, %M, %S, %s)
-  RECORD_LENGTH:
-    name: Record Segment Length
-    description: Duration per recording segment (e.g. 60s, 5m)
-  RECORD_KEEP:
-    name: Record Keep Duration
-    description: Auto-delete recordings older than this (e.g. 72h, 7d; 0 = keep forever)
-  SNAPSHOT_INT:
-    name: Snapshot Interval
-    description: Seconds between snapshots (0 = disabled)
-  SNAPSHOT_FORMAT:
-    name: Snapshot Filename Format
-    description: Snapshot filename template
-  SNAPSHOT_CAMERAS:
-    name: Snapshot Cameras
-    description: Comma-separated camera names for snapshots (blank = all)
-  SNAPSHOT_KEEP:
-    name: Snapshot Keep Duration
-    description: Auto-delete snapshots older than this (0 = keep forever)
-  IMG_DIR:
-    name: Image Directory
-    description: Directory for snapshot storage
-  LATITUDE:
+    description: Enable recording for every camera by default
+  record.path:
+    name: Directory Template
+    description: >-
+      Recording directory. HA default
+      `/media/wyze_bridge/recordings/{cam_name}/%Y/%m/%d`.
+  record.file_name:
+    name: Filename Template
+    description: Filename stem; .mp4 auto-appended. Default `%H-%M-%S`.
+  record.length:
+    name: Segment Length
+    description: Duration per recording segment (e.g. 60s, 5m, 1h)
+  record.keep:
+    name: Keep Duration
+    description: Auto-delete recordings older than this (e.g. 7d; 0 = keep forever)
+
+  mqtt:
+    name: MQTT
+    description: >-
+      MQTT broker settings. If the Mosquitto broker add-on is
+      installed, leave these blank — host/username/password are
+      auto-discovered.
+  mqtt.enabled:
+    name: Enable MQTT
+    description: Force-enable MQTT publishing
+  mqtt.host:
+    name: Host
+    description: MQTT broker hostname
+  mqtt.port:
+    name: Port
+    description: MQTT broker port
+  mqtt.username:
+    name: Username
+    description: MQTT broker username
+  mqtt.password:
+    name: Password
+    description: MQTT broker password
+  mqtt.topic:
+    name: Base Topic
+    description: MQTT topic prefix for bridge / camera messages
+  mqtt.discovery_topic:
+    name: Discovery Topic
+    description: Home Assistant MQTT discovery prefix
+
+  filter:
+    name: Camera Filter
+    description: Limit which cameras the bridge exposes.
+  filter.names:
+    name: Names
+    description: Camera names to include (one per entry; click + to add)
+  filter.models:
+    name: Models
+    description: Model codes to include (one per entry)
+  filter.macs:
+    name: MAC addresses
+    description: MAC addresses to include (one per entry)
+  filter.blocks:
+    name: Block Mode
+    description: Invert filter — listed cameras are excluded instead of included
+
+  location:
+    name: Location
+    description: Geographic coordinates for sunrise/sunset snapshot scheduling.
+  location.latitude:
     name: Latitude
-    description: Decimal degrees for sunrise/sunset snapshot scheduling
-  LONGITUDE:
+    description: Decimal degrees (e.g. 38.627)
+  location.longitude:
     name: Longitude
-    description: Decimal degrees for sunrise/sunset snapshot scheduling
-  LOG_LEVEL:
+    description: Decimal degrees (e.g. -90.199)
+
+  webhooks:
+    name: Webhooks
+    description: HTTP notifications on camera state changes.
+  webhooks.urls:
+    name: URLs
+    description: URLs to notify (one per entry; HA validates each as a URL)
+
+  gwell:
+    name: Gwell Protocol Cameras
+    description: >-
+      Support for OG / Doorbell Pro / Doorbell Duo via a sidecar proxy.
+      Off by default in 4.0-beta because the proxy binary is not yet
+      shipped in the image.
+  gwell.enabled:
+    name: Enable Gwell Proxy
+    description: Toggle Gwell/IoTVideo P2P support for GW_* camera models
+
+  debug:
+    name: Debugging
+    description: Log verbosity and protocol tracing.
+  debug.log_level:
     name: Log Level
-    description: Logging verbosity
-  FORCE_IOTC_DETAIL:
+    description: trace, debug, info, warn, or error
+  debug.force_iotc_detail:
     name: Verbose TUTK Logging
     description: Enable detailed go2rtc TUTK protocol tracing
-  CAM_OPTIONS:
-    name: Per-Camera Options
-    description: Override settings for individual cameras

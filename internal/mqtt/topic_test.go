@@ -9,10 +9,10 @@ import (
 func TestCommandTopicParsing(t *testing.T) {
 	// Simulate the topic parsing logic from handleSetCommand
 	tests := []struct {
-		topic      string
-		wantCam    string
-		wantProp   string
-		wantParts  int
+		topic     string
+		wantCam   string
+		wantProp  string
+		wantParts int
 	}{
 		{"wyzebridge/front_door/set/quality", "front_door", "quality", 4},
 		{"wyzebridge/backyard/set/audio", "backyard", "audio", 4},
@@ -95,10 +95,10 @@ func TestTopicConstruction(t *testing.T) {
 
 func TestConfigDefaults(t *testing.T) {
 	cfg := Config{
-		Host:   "mosquitto",
-		Port:   1883,
-		Topic:  "wyzebridge",
-		DTopic: "homeassistant",
+		Host:           "mosquitto",
+		Port:           1883,
+		Topic:          "wyzebridge",
+		DiscoveryTopic: "homeassistant",
 	}
 
 	if cfg.Host != "mosquitto" {

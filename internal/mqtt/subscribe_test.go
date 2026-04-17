@@ -16,8 +16,8 @@ func TestParseSetCommandTopic(t *testing.T) {
 		{"wyzebridge/front_door/set/quality", "front_door", "quality", true},
 		{"wyzebridge/backyard/set/audio", "backyard", "audio", true},
 		{"wyzebridge/garage/set/night_vision", "garage", "night_vision", true},
-		{"wyzebridge/set/quality", "", "", false},                // too short
-		{"x/y", "", "", false},                                    // too short
+		{"wyzebridge/set/quality", "", "", false}, // too short
+		{"x/y", "", "", false}, // too short
 	}
 
 	for _, tt := range tests {
@@ -90,7 +90,7 @@ func TestAudioBoolParsing(t *testing.T) {
 	}{
 		{"true", true},
 		{"false", false},
-		{"1", false},  // strict string match
+		{"1", false}, // strict string match
 		{"yes", false},
 		{"", false},
 	}

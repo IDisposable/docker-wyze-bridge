@@ -12,6 +12,8 @@ arch:
   - aarch64
 startup: application
 boot: auto
+init: false
+hassio_api: true
 host_network: true
 ingress: true
 ingress_port: 5080
@@ -37,52 +39,85 @@ map:
 services:
   - mqtt:want
 options:
-  QUALITY: hd
-  AUDIO: true
-  CAM_OPTIONS: []
+  wyze:
+    email: ""
+    password: ""
+    api_id: ""
+    api_key: ""
+  bridge:
+    ip: ""
+  camera:
+    quality: hd
+    audio: true
+    options: []
+  snapshot: {}
+  record: {}
+  mqtt: {}
+  filter: {}
+  location: {}
+  webhooks: {}
+  gwell: {}
+  debug: {}
 schema:
-  WYZE_EMAIL: email?
-  WYZE_PASSWORD: password?
-  WYZE_API_ID: str?
-  WYZE_API_KEY: str?
-  TOTP_KEY: str?
-  WB_IP: str?
-  WB_AUTH: bool?
-  WB_USERNAME: str?
-  WB_PASSWORD: str?
-  STREAM_AUTH: str?
-  QUALITY: list(hd|sd)?
-  AUDIO: bool?
-  MQTT_ENABLED: bool?
-  MQTT_HOST: str?
-  MQTT_PORT: port?
-  MQTT_USERNAME: str?
-  MQTT_PASSWORD: password?
-  MQTT_TOPIC: str?
-  MQTT_DTOPIC: str?
-  FILTER_NAMES: str?
-  FILTER_MODELS: str?
-  FILTER_MACS: str?
-  FILTER_BLOCKS: bool?
-  RECORD_ALL: bool?
-  RECORD_PATH: str?
-  RECORD_FILE_NAME: str?
-  RECORD_LENGTH: str?
-  RECORD_KEEP: str?
-  SNAPSHOT_INT: int?
-  SNAPSHOT_FORMAT: str?
-  SNAPSHOT_CAMERAS: str?
-  SNAPSHOT_KEEP: str?
-  IMG_DIR: str?
-  LATITUDE: float?
-  LONGITUDE: float?
-  LOG_LEVEL: list(trace|debug|info|warn|error)?
-  FORCE_IOTC_DETAIL: bool?
-  WEBHOOK_URLS: str?
-  WB_API: str?
-  GWELL_ENABLED: bool?
-  CAM_OPTIONS:
-    - CAM_NAME: str?
-      QUALITY: str?
-      AUDIO: bool?
-      RECORD: bool?
+  wyze:
+    email: email?
+    password: password?
+    api_id: str?
+    api_key: str?
+    totp_key: str?
+  bridge:
+    ip: 'match(^($|[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$))?'
+    auth: bool?
+    username: str?
+    password: password?
+    api_token: str?
+    stream_auth: str?
+    go2rtc_url: url?
+  camera:
+    quality: list(hd|sd)?
+    audio: bool?
+    options:
+      - cam_name: str?
+        quality: list(hd|sd)?
+        audio: bool?
+        record: bool?
+  snapshot:
+    path: str?
+    file_name: str?
+    interval: int?
+    keep: 'match(^\d+[smhd]?$)?'
+    cameras:
+      - str?
+  record:
+    all: bool?
+    path: str?
+    file_name: str?
+    length: 'match(^\d+[smhd]?$)?'
+    keep: 'match(^\d+[smhd]?$)?'
+  mqtt:
+    enabled: bool?
+    host: str?
+    port: port?
+    username: str?
+    password: password?
+    topic: str?
+    discovery_topic: str?
+  filter:
+    names:
+      - str?
+    models:
+      - str?
+    macs:
+      - str?
+    blocks: bool?
+  location:
+    latitude: float?
+    longitude: float?
+  webhooks:
+    urls:
+      - url?
+  gwell:
+    enabled: bool?
+  debug:
+    log_level: list(trace|debug|info|warn|error)?
+    force_iotc_detail: bool?

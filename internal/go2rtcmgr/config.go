@@ -18,7 +18,6 @@ type Go2RTCConfig struct {
 	Record  *RecordGlobalConfig    `yaml:"record,omitempty"`
 }
 
-
 // LogConfig controls go2rtc logging.
 type LogConfig struct {
 	Level string `yaml:"level"`

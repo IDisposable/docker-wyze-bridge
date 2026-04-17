@@ -1,172 +1,106 @@
 #!/usr/bin/env bashio
 
-# Read HA add-on options and export as environment variables
-# bashio provides access to the add-on config via bashio::config
+# HA add-on options (nested under wyze/bridge/camera/snapshot/record/
+# mqtt/filter/location/webhooks/gwell/debug) → flat env vars for the Go
+# bridge. Bashio's jq-backed bashio::config accepts dotted keys.
 
-# Wyze credentials
-if bashio::config.has_value 'WYZE_EMAIL'; then
-    export WYZE_EMAIL="$(bashio::config 'WYZE_EMAIL')"
-fi
-if bashio::config.has_value 'WYZE_PASSWORD'; then
-    export WYZE_PASSWORD="$(bashio::config 'WYZE_PASSWORD')"
-fi
-if bashio::config.has_value 'WYZE_API_ID'; then
-    export WYZE_API_ID="$(bashio::config 'WYZE_API_ID')"
-fi
-if bashio::config.has_value 'WYZE_API_KEY'; then
-    export WYZE_API_KEY="$(bashio::config 'WYZE_API_KEY')"
-fi
-if bashio::config.has_value 'TOTP_KEY'; then
-    export TOTP_KEY="$(bashio::config 'TOTP_KEY')"
-fi
+# Export the value at <key> to <env_var> if the user populated it.
+export_opt() {
+    local key=$1
+    local var=$2
+    if bashio::config.has_value "$key"; then
+        export "$var=$(bashio::config "$key")"
+    fi
+}
 
-# Network
-if bashio::config.has_value 'WB_IP'; then
-    export WB_IP="$(bashio::config 'WB_IP')"
-fi
+# Join a schema array at <jq_path> into a comma-separated env var. Empty
+# arrays and missing paths produce no export so Go falls back to defaults.
+# Example: export_array '.filter.names' FILTER_NAMES
+export_array() {
+    local jq_path=$1
+    local var=$2
+    local joined
+    joined=$(jq -r "${jq_path}? // [] | map(select(. != null and . != \"\")) | join(\",\")" /data/options.json)
+    if [ -n "$joined" ]; then
+        export "$var=$joined"
+    fi
+}
 
-# Auth
-if bashio::config.has_value 'WB_AUTH'; then
-    export WB_AUTH="$(bashio::config 'WB_AUTH')"
-fi
-if bashio::config.has_value 'WB_USERNAME'; then
-    export WB_USERNAME="$(bashio::config 'WB_USERNAME')"
-fi
-if bashio::config.has_value 'WB_PASSWORD'; then
-    export WB_PASSWORD="$(bashio::config 'WB_PASSWORD')"
-fi
-if bashio::config.has_value 'WB_API'; then
-    export WB_API="$(bashio::config 'WB_API')"
-fi
-if bashio::config.has_value 'STREAM_AUTH'; then
-    export STREAM_AUTH="$(bashio::config 'STREAM_AUTH')"
-fi
+# ── Wyze account ────────────────────────────────────────────────────────────
+export_opt 'wyze.email'      WYZE_EMAIL
+export_opt 'wyze.password'   WYZE_PASSWORD
+export_opt 'wyze.api_id'     WYZE_API_ID
+export_opt 'wyze.api_key'    WYZE_API_KEY
+export_opt 'wyze.totp_key'   WYZE_TOTP_KEY
 
-# Camera
-if bashio::config.has_value 'QUALITY'; then
-    export QUALITY="$(bashio::config 'QUALITY')"
-fi
-if bashio::config.has_value 'AUDIO'; then
-    export AUDIO="$(bashio::config 'AUDIO')"
-fi
+# ── Bridge HTTP server + auth ───────────────────────────────────────────────
+export_opt 'bridge.ip'          BRIDGE_IP
+export_opt 'bridge.auth'        BRIDGE_AUTH
+export_opt 'bridge.username'    BRIDGE_USERNAME
+export_opt 'bridge.password'    BRIDGE_PASSWORD
+export_opt 'bridge.api_token'   BRIDGE_API_TOKEN
+export_opt 'bridge.stream_auth' STREAM_AUTH
+export_opt 'bridge.go2rtc_url'  GO2RTC_URL
 
-# MQTT — auto-detect from HA if available
+# ── Camera defaults ─────────────────────────────────────────────────────────
+export_opt 'camera.quality' QUALITY
+export_opt 'camera.audio'   AUDIO
+
+# ── MQTT — auto-detect Mosquitto addon if the user didn't set a host ───────
 if bashio::services.available "mqtt"; then
     export MQTT_ENABLED=true
-    if ! bashio::config.has_value 'MQTT_HOST'; then
+    if ! bashio::config.has_value 'mqtt.host'; then
         export MQTT_HOST="$(bashio::services mqtt "host")"
         export MQTT_PORT="$(bashio::services mqtt "port")"
         export MQTT_USERNAME="$(bashio::services mqtt "username")"
         export MQTT_PASSWORD="$(bashio::services mqtt "password")"
     fi
 fi
-if bashio::config.has_value 'MQTT_ENABLED'; then
-    export MQTT_ENABLED="$(bashio::config 'MQTT_ENABLED')"
-fi
-if bashio::config.has_value 'MQTT_HOST'; then
-    export MQTT_HOST="$(bashio::config 'MQTT_HOST')"
-fi
-if bashio::config.has_value 'MQTT_PORT'; then
-    export MQTT_PORT="$(bashio::config 'MQTT_PORT')"
-fi
-if bashio::config.has_value 'MQTT_USERNAME'; then
-    export MQTT_USERNAME="$(bashio::config 'MQTT_USERNAME')"
-fi
-if bashio::config.has_value 'MQTT_PASSWORD'; then
-    export MQTT_PASSWORD="$(bashio::config 'MQTT_PASSWORD')"
-fi
-if bashio::config.has_value 'MQTT_TOPIC'; then
-    export MQTT_TOPIC="$(bashio::config 'MQTT_TOPIC')"
-fi
-if bashio::config.has_value 'MQTT_DTOPIC'; then
-    export MQTT_DTOPIC="$(bashio::config 'MQTT_DTOPIC')"
-fi
+export_opt 'mqtt.enabled'         MQTT_ENABLED
+export_opt 'mqtt.host'            MQTT_HOST
+export_opt 'mqtt.port'            MQTT_PORT
+export_opt 'mqtt.username'        MQTT_USERNAME
+export_opt 'mqtt.password'        MQTT_PASSWORD
+export_opt 'mqtt.topic'           MQTT_TOPIC
+export_opt 'mqtt.discovery_topic' MQTT_DISCOVERY_TOPIC
 
-# Filtering
-if bashio::config.has_value 'FILTER_NAMES'; then
-    export FILTER_NAMES="$(bashio::config 'FILTER_NAMES')"
-fi
-if bashio::config.has_value 'FILTER_MODELS'; then
-    export FILTER_MODELS="$(bashio::config 'FILTER_MODELS')"
-fi
-if bashio::config.has_value 'FILTER_MACS'; then
-    export FILTER_MACS="$(bashio::config 'FILTER_MACS')"
-fi
-if bashio::config.has_value 'FILTER_BLOCKS'; then
-    export FILTER_BLOCKS="$(bashio::config 'FILTER_BLOCKS')"
-fi
+# ── Filter ──────────────────────────────────────────────────────────────────
+export_array '.filter.names'  FILTER_NAMES
+export_array '.filter.models' FILTER_MODELS
+export_array '.filter.macs'   FILTER_MACS
+export_opt   'filter.blocks'  FILTER_BLOCKS
 
-# Recording
-if bashio::config.has_value 'RECORD_ALL'; then
-    export RECORD_ALL="$(bashio::config 'RECORD_ALL')"
-fi
-if bashio::config.has_value 'RECORD_PATH'; then
-    export RECORD_PATH="$(bashio::config 'RECORD_PATH')"
-fi
-if bashio::config.has_value 'RECORD_FILE_NAME'; then
-    export RECORD_FILE_NAME="$(bashio::config 'RECORD_FILE_NAME')"
-fi
-if bashio::config.has_value 'RECORD_LENGTH'; then
-    export RECORD_LENGTH="$(bashio::config 'RECORD_LENGTH')"
-fi
-if bashio::config.has_value 'RECORD_KEEP'; then
-    export RECORD_KEEP="$(bashio::config 'RECORD_KEEP')"
-fi
+# ── Recording ───────────────────────────────────────────────────────────────
+export_opt 'record.all'       RECORD_ALL
+export_opt 'record.path'      RECORD_PATH
+export_opt 'record.file_name' RECORD_FILE_NAME
+export_opt 'record.length'    RECORD_LENGTH
+export_opt 'record.keep'      RECORD_KEEP
 
-# Snapshots
-if bashio::config.has_value 'SNAPSHOT_INT'; then
-    export SNAPSHOT_INT="$(bashio::config 'SNAPSHOT_INT')"
-fi
-if bashio::config.has_value 'SNAPSHOT_FORMAT'; then
-    export SNAPSHOT_FORMAT="$(bashio::config 'SNAPSHOT_FORMAT')"
-fi
-if bashio::config.has_value 'SNAPSHOT_CAMERAS'; then
-    export SNAPSHOT_CAMERAS="$(bashio::config 'SNAPSHOT_CAMERAS')"
-fi
-if bashio::config.has_value 'SNAPSHOT_KEEP'; then
-    export SNAPSHOT_KEEP="$(bashio::config 'SNAPSHOT_KEEP')"
-fi
-if bashio::config.has_value 'IMG_DIR'; then
-    export IMG_DIR="$(bashio::config 'IMG_DIR')"
-fi
+# ── Snapshots ───────────────────────────────────────────────────────────────
+export_opt 'snapshot.path'      SNAPSHOT_PATH
+export_opt 'snapshot.file_name' SNAPSHOT_FILE_NAME
+export_opt 'snapshot.interval'  SNAPSHOT_INTERVAL
+export_opt 'snapshot.keep'      SNAPSHOT_KEEP
+export_array '.snapshot.cameras' SNAPSHOT_CAMERAS
 
-# Location
-if bashio::config.has_value 'LATITUDE'; then
-    export LATITUDE="$(bashio::config 'LATITUDE')"
-fi
-if bashio::config.has_value 'LONGITUDE'; then
-    export LONGITUDE="$(bashio::config 'LONGITUDE')"
-fi
+# ── Location (sunrise/sunset snapshots) ─────────────────────────────────────
+export_opt 'location.latitude'  LATITUDE
+export_opt 'location.longitude' LONGITUDE
 
-# Debugging
-if bashio::config.has_value 'LOG_LEVEL'; then
-    export LOG_LEVEL="$(bashio::config 'LOG_LEVEL')"
-fi
-if bashio::config.has_value 'FORCE_IOTC_DETAIL'; then
-    export FORCE_IOTC_DETAIL="$(bashio::config 'FORCE_IOTC_DETAIL')"
-fi
+# ── Webhooks + Gwell + Debug ────────────────────────────────────────────────
+export_array '.webhooks.urls'        WEBHOOK_URLS
+export_opt 'gwell.enabled'           GWELL_ENABLED
+export_opt 'debug.log_level'         LOG_LEVEL
+export_opt 'debug.force_iotc_detail' FORCE_IOTC_DETAIL
 
-# Webhooks
-if bashio::config.has_value 'WEBHOOK_URLS'; then
-    export WEBHOOK_URLS="$(bashio::config 'WEBHOOK_URLS')"
-fi
-
-# Gwell (IoTVideo) P2P proxy — master toggle for GW_* cameras
-# (OG, Doorbell Pro, Doorbell Duo). Defaults to enabled in the bridge;
-# users only need to flip this to disable.
-if bashio::config.has_value 'GWELL_ENABLED'; then
-    export GWELL_ENABLED="$(bashio::config 'GWELL_ENABLED')"
-fi
-
-# Per-camera overrides from CAM_OPTIONS array.
-# HA stores the add-on options as JSON in /data/options.json. bashio's
-# scalar helpers don't iterate arrays, so we fan CAM_OPTIONS out with jq
-# into the same QUALITY_{CAM}/AUDIO_{CAM}/RECORD_{CAM} env vars the Go
-# bridge already consumes (internal/config/yaml.go:loadCamOverrides).
-# Camera-name normalization matches Go's normalizeCamName:
-# uppercase, spaces→underscores.
-if bashio::config.has_value 'CAM_OPTIONS'; then
-    bashio::log.info "Applying per-camera CAM_OPTIONS overrides..."
+# ── Per-camera overrides ────────────────────────────────────────────────────
+# Fan camera.options[] out to QUALITY_<NAME>/AUDIO_<NAME>/RECORD_<NAME> env
+# vars that internal/config/yaml.go:loadCamOverrides consumes. Bashio has no
+# native array iterator so we go straight to jq. Name normalization matches
+# Go's normalizeCamName (uppercase, spaces→underscores, strip non-alnum_).
+if bashio::config.has_value 'camera.options'; then
+    bashio::log.info "Applying per-camera overrides from camera.options..."
     while IFS=$'\t' read -r cam_name quality audio record; do
         [ -z "$cam_name" ] && continue
         key="$(printf '%s' "$cam_name" | tr '[:lower:]' '[:upper:]' | tr ' ' '_' | tr -cd 'A-Z0-9_')"
@@ -180,11 +114,28 @@ if bashio::config.has_value 'CAM_OPTIONS'; then
         if [ "$record" != "null" ] && [ -n "$record" ]; then
             export "RECORD_${key}=${record}"
         fi
-    done < <(jq -r '.CAM_OPTIONS[]? | [.CAM_NAME, (.QUALITY // "null"), (.AUDIO // "null"), (.RECORD // "null")] | @tsv' /data/options.json)
+    done < <(jq -r '.camera.options[]? | [.cam_name, (.quality // "null"), (.audio // "null"), (.record // "null")] | @tsv' /data/options.json)
 fi
 
-# State dir — use HA add-on config directory
+# ── State dir — HA persists /config ─────────────────────────────────────────
 export STATE_DIR="/config"
+
+# HA-specific defaults for paths that land on disk. The Go bridge's flat
+# defaults (/img snapshots, /record recordings) assume bare-Docker with
+# explicit volume mounts. In HA only /config and /media are persisted;
+# anything else is ephemeral. Structured layouts below mirror RECORD_* so
+# snapshots and recordings have parallel on-disk shapes. Base dirs are
+# created up front so first write doesn't trip on a missing parent.
+if ! bashio::config.has_value 'snapshot.path'; then
+    export SNAPSHOT_PATH="/media/wyze_bridge/snapshots/{cam_name}/%Y/%m/%d"
+fi
+if ! bashio::config.has_value 'snapshot.file_name'; then
+    export SNAPSHOT_FILE_NAME="%H-%M-%S"
+fi
+if ! bashio::config.has_value 'record.path'; then
+    export RECORD_PATH="/media/wyze_bridge/recordings/{cam_name}/%Y/%m/%d"
+fi
+mkdir -p /media/wyze_bridge/snapshots /media/wyze_bridge/recordings
 
 bashio::log.info "Starting Wyze Bridge..."
 exec /usr/local/bin/wyze-bridge

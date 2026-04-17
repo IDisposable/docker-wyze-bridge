@@ -50,14 +50,13 @@ services:
       - 8189:8189/udp
     volumes:
       - ./config:/config
-      - ./img:/img
-      - ./record:/record
+      - ./media:/media      # snapshots land in /media/snapshots, recordings in /media/recordings
     environment:
       - WYZE_EMAIL=you@example.com
       - WYZE_PASSWORD=yourpass
       - WYZE_API_ID=your-api-id
       - WYZE_API_KEY=your-api-key
-      # - WB_IP=192.168.1.50  # Required for WebRTC
+      # - BRIDGE_IP=192.168.1.50  # Required for WebRTC
 ```
 
 ## Home Assistant
@@ -102,7 +101,7 @@ All configuration is via environment variables. See [MIGRATION.md](MIGRATION.md)
 | `WYZE_PASSWORD` | Yes | Wyze account password |
 | `WYZE_API_ID` | Yes | API ID from Wyze Developer Console |
 | `WYZE_API_KEY` | Yes | API Key from Wyze Developer Console |
-| `WB_IP` | For WebRTC | Host IP for WebRTC ICE candidates |
+| `BRIDGE_IP` | For WebRTC | Host IP for WebRTC ICE candidates |
 | `MQTT_HOST` | For MQTT | MQTT broker hostname (enables MQTT) |
 | `LOG_LEVEL` | No | trace/debug/info/warn/error (default: info) |
 

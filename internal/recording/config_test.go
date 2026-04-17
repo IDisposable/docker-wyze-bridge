@@ -11,14 +11,14 @@ import (
 
 func TestRecordPathForCamera(t *testing.T) {
 	cfg := &config.Config{
-		RecordPath:     "/record/{cam_name}/%Y/%m/%d",
+		RecordPath:     "/media/recordings/{cam_name}/%Y/%m/%d",
 		RecordFileName: "%H-%M-%S",
 		CamOverrides:   make(map[string]config.CamOverride),
 	}
 	m := NewManager(cfg, zerolog.Nop())
 
 	got := m.RecordPathForCamera("front_door")
-	want := "/record/front_door/%Y/%m/%d"
+	want := "/media/recordings/front_door/%Y/%m/%d"
 	if got != want {
 		t.Errorf("RecordPathForCamera() = %q, want %q", got, want)
 	}
@@ -26,7 +26,7 @@ func TestRecordPathForCamera(t *testing.T) {
 
 func TestRecordFileNameForCamera(t *testing.T) {
 	cfg := &config.Config{
-		RecordPath:     "/record/{cam_name}/%Y/%m/%d",
+		RecordPath:     "/media/recordings/{cam_name}/%Y/%m/%d",
 		RecordFileName: "%H-%M-%S",
 		CamOverrides:   make(map[string]config.CamOverride),
 	}
@@ -43,7 +43,7 @@ func TestRecordFileNameForCamera(t *testing.T) {
 func TestRecordFileNameValidation(t *testing.T) {
 	// Missing time variables should auto-append _%s
 	cfg := &config.Config{
-		RecordPath:     "/record/{cam_name}",
+		RecordPath:     "/media/recordings/{cam_name}",
 		RecordFileName: "recording",
 		CamOverrides:   make(map[string]config.CamOverride),
 	}

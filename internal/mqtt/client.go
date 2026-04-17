@@ -16,26 +16,26 @@ import (
 
 // Client manages the MQTT broker connection and message handling.
 type Client struct {
-	log         zerolog.Logger
-	paho        paho.Client
-	topic       string // MQTT_TOPIC, default "wyzebridge"
-	dtopic      string // MQTT_DTOPIC, default "homeassistant"
-	camMgr      *camera.Manager
-	wyzeAPI     *wyzeapi.Client
-	bridgeIP    string
-	onSnapshot  func(ctx context.Context, camName string) // snapshot trigger callback
-	mu          sync.Mutex
-	connected   bool
+	log        zerolog.Logger
+	paho       paho.Client
+	topic      string // MQTT_TOPIC, default "wyzebridge"
+	dtopic     string // MQTT_DISCOVERY_TOPIC, default "homeassistant"
+	camMgr     *camera.Manager
+	wyzeAPI    *wyzeapi.Client
+	bridgeIP   string
+	onSnapshot func(ctx context.Context, camName string) // snapshot trigger callback
+	mu         sync.Mutex
+	connected  bool
 }
 
 // Config holds MQTT connection settings.
 type Config struct {
-	Host     string
-	Port     int
-	Username string
-	Password string
-	Topic    string
-	DTopic   string
+	Host           string
+	Port           int
+	Username       string
+	Password       string
+	Topic          string
+	DiscoveryTopic string
 }
 
 // NewClient creates a new MQTT client.
@@ -43,7 +43,7 @@ func NewClient(cfg Config, camMgr *camera.Manager, api *wyzeapi.Client, bridgeIP
 	c := &Client{
 		log:      log,
 		topic:    cfg.Topic,
-		dtopic:   cfg.DTopic,
+		dtopic:   cfg.DiscoveryTopic,
 		camMgr:   camMgr,
 		wyzeAPI:  api,
 		bridgeIP: bridgeIP,

@@ -137,10 +137,45 @@
         document.body.removeChild(ta);
     }
 
+    // Snapshot button: POST to /api/cameras/{name}/snapshot, flash "Saved!"
+    // on the button. Capture is async on the server side — the 200 just
+    // acknowledges the request was accepted, not that the file is on disk
+    // yet. For snap-ready feedback we already have the SSE snapshot_ready
+    // event which refreshes the card's preview.
+    function wireSnapButtons() {
+        document.querySelectorAll('.snap-btn').forEach(function(btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                const cam = btn.getAttribute('data-cam');
+                if (!cam || btn.disabled) return;
+                const original = btn.textContent;
+                btn.disabled = true;
+                fetch('/api/cameras/' + cam + '/snapshot', { method: 'POST' })
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        btn.textContent = '✓ Saved';
+                        btn.classList.add('snapped');
+                    })
+                    .catch(function(err) {
+                        console.error('Snapshot failed:', err);
+                        btn.textContent = '⚠ Failed';
+                    })
+                    .finally(function() {
+                        setTimeout(function() {
+                            btn.textContent = original;
+                            btn.classList.remove('snapped');
+                            btn.disabled = false;
+                        }, 1500);
+                    });
+            });
+        });
+    }
+
     // Initialize
     function init() {
         connectSSE();
         wireCopyButtons();
+        wireSnapButtons();
     }
 
     if (document.readyState === 'loading') {

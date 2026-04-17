@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func testServer(t *testing.T) (*Server, *go2rtcmgr.APIClient) {
 	t.Cleanup(go2rtcSrv.Close)
 
 	cfg := &config.Config{
-		WBPort:       5080,
+		BridgePort:   5080,
 		Quality:      "hd",
 		Audio:        true,
 		CamOverrides: make(map[string]config.CamOverride),
@@ -140,6 +141,56 @@ func TestHandleSnapshot_Missing(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("missing cam should be 400, got %d", w.Code)
+	}
+}
+
+// TestHandleAPICameraAction_Snapshot verifies the webui button → HTTP →
+// snapshot-manager wiring. The action handler fires the registered
+// OnSnapshotRequest callback in a goroutine; we sync via a channel so
+// the test isn't flaky.
+func TestHandleAPICameraAction_Snapshot(t *testing.T) {
+	srv, _ := testServer(t)
+
+	cam := camera.NewCamera(wyzeapi.CameraInfo{Name: "front_door"}, "hd", true, false)
+	srv.camMgr.InjectCamera("front_door", cam)
+
+	fired := make(chan string, 1)
+	srv.OnSnapshotRequest(func(_ context.Context, name string) {
+		fired <- name
+	})
+
+	req := httptest.NewRequest("POST", "/api/cameras/front_door/snapshot", nil)
+	w := httptest.NewRecorder()
+	srv.handleAPICameraAction(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	select {
+	case got := <-fired:
+		if got != "front_door" {
+			t.Errorf("callback got %q, want front_door", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("snapshot callback never fired")
+	}
+}
+
+// TestHandleAPICameraAction_SnapshotNoHandler returns 503 when main.go
+// hasn't wired the callback — protects against silent no-ops.
+func TestHandleAPICameraAction_SnapshotNoHandler(t *testing.T) {
+	srv, _ := testServer(t)
+
+	cam := camera.NewCamera(wyzeapi.CameraInfo{Name: "front_door"}, "hd", true, false)
+	srv.camMgr.InjectCamera("front_door", cam)
+
+	req := httptest.NewRequest("POST", "/api/cameras/front_door/snapshot", nil)
+	w := httptest.NewRecorder()
+	srv.handleAPICameraAction(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
 	}
 }
 

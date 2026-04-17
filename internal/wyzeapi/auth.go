@@ -148,7 +148,7 @@ func (c *Client) Login() (*AuthState, error) {
 			return c.completeMFA(auth, mfaDetails)
 		}
 		if len(mfaOpts) > 0 {
-			return nil, fmt.Errorf("MFA required but no TOTP_KEY configured — set TOTP_KEY env var")
+			return nil, fmt.Errorf("MFA required but no TOTP key configured — set WYZE_TOTP_KEY env var")
 		}
 	}
 

@@ -36,7 +36,7 @@ FROM alpine:3.21
 # snapshot endpoint will return 500 instead; all other stream protocols
 # (RTSP/HLS/WebRTC) work without it.
 RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
-    mkdir -p /config /img /record
+    mkdir -p /config /media/snapshots /media/recordings
 
 COPY --from=builder      /wyze-bridge   /usr/local/bin/wyze-bridge
 COPY --from=go2rtc-fetch /go2rtc        /usr/local/bin/go2rtc
@@ -48,6 +48,6 @@ EXPOSE 8888
 EXPOSE 8889
 EXPOSE 8189/udp
 
-VOLUME ["/config", "/img", "/record"]
+VOLUME ["/config", "/media"]
 
 ENTRYPOINT ["/usr/local/bin/wyze-bridge"]

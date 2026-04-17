@@ -52,12 +52,12 @@ func (m *Manager) OnCapture(fn SnapshotFunc) {
 
 // Run starts the snapshot scheduling loop.
 func (m *Manager) Run(ctx context.Context) {
-	if m.cfg.SnapshotInt <= 0 {
+	if m.cfg.SnapshotInterval <= 0 {
 		m.log.Info().Msg("snapshot interval disabled")
 		return
 	}
 
-	interval := time.Duration(m.cfg.SnapshotInt) * time.Second
+	interval := time.Duration(m.cfg.SnapshotInterval) * time.Second
 	m.log.Info().Dur("interval", interval).Msg("snapshot manager started")
 
 	ticker := time.NewTicker(interval)
@@ -119,10 +119,11 @@ func (m *Manager) captureOne(ctx context.Context, name string) {
 	}
 
 	// Save to disk
-	if err := m.saveSnapshot(name, jpeg); err != nil {
+	path, err := m.saveSnapshot(name, jpeg)
+	if err != nil {
 		m.log.Warn().Err(err).Str("cam", name).Msg("snapshot save to disk failed")
 	} else {
-		m.log.Debug().Str("cam", name).Int("bytes", len(jpeg)).Str("dir", m.cfg.ImgDir).Msg("snapshot saved")
+		m.log.Debug().Str("cam", name).Int("bytes", len(jpeg)).Str("path", path).Msg("snapshot saved")
 	}
 
 	// Notify callback (e.g., MQTT thumbnail)
@@ -132,19 +133,38 @@ func (m *Manager) captureOne(ctx context.Context, name string) {
 	}
 }
 
-func (m *Manager) saveSnapshot(name string, jpeg []byte) error {
-	dir := m.cfg.ImgDir
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
+// saveSnapshot resolves the snapshot path from the configured templates,
+// ensures every intermediate directory exists, and writes the JPEG bytes.
+// Returns the fully-resolved absolute-or-relative path the file landed at
+// so callers can surface it in logs.
+//
+// Both SnapshotPath (directory) and SnapshotFileName (filename stem)
+// are templates that accept {cam_name}/{CAM_NAME} and the strftime
+// tokens %Y %m %d %H %M %S %s. .jpg is auto-appended if the filename
+// doesn't already carry a jpg/jpeg extension. MkdirAll on the full
+// parent chain means strftime subdirectories in either template Just
+// Work.
+func (m *Manager) saveSnapshot(name string, jpeg []byte) (string, error) {
+	now := time.Now()
 
-	filename := name + ".jpg"
-	if m.cfg.SnapshotFormat != "" {
-		filename = formatFilename(m.cfg.SnapshotFormat, name, time.Now())
+	dir := expandTemplate(m.cfg.SnapshotPath, name, now)
+	fileName := m.cfg.SnapshotFileName
+	if fileName == "" {
+		fileName = name
 	}
-
+	filename := expandTemplate(fileName, name, now)
+	if !strings.HasSuffix(filename, ".jpg") && !strings.HasSuffix(filename, ".jpeg") {
+		filename += ".jpg"
+	}
 	path := filepath.Join(dir, filename)
-	return os.WriteFile(path, jpeg, 0644)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, jpeg, 0644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // runSunEvents schedules snapshots at sunrise and sunset.
@@ -204,7 +224,11 @@ func containsName(list []string, name string) bool {
 	return false
 }
 
-func formatFilename(format, camName string, t time.Time) string {
+// expandTemplate substitutes {cam_name}/{CAM_NAME} and the strftime-style
+// tokens %Y %m %d %H %M %S %s that both SNAPSHOT_PATH and
+// SNAPSHOT_FILE_NAME accept. No extension handling — the caller is
+// responsible for that.
+func expandTemplate(template, camName string, t time.Time) string {
 	r := strings.NewReplacer(
 		"{cam_name}", camName,
 		"{CAM_NAME}", strings.ToUpper(camName),
@@ -216,9 +240,5 @@ func formatFilename(format, camName string, t time.Time) string {
 		"%S", fmt.Sprintf("%02d", t.Second()),
 		"%s", fmt.Sprintf("%d", t.Unix()),
 	)
-	result := r.Replace(format)
-	if !strings.HasSuffix(result, ".jpg") && !strings.HasSuffix(result, ".jpeg") {
-		result += ".jpg"
-	}
-	return result
+	return r.Replace(template)
 }

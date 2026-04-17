@@ -5,27 +5,27 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	// Clear any env that might interfere (devcontainer sets STATE_DIR, IMG_DIR, LOG_LEVEL)
+	// Clear any env that might interfere (devcontainer sets STATE_DIR, LOG_LEVEL, etc.)
 	t.Setenv("WYZE_EMAIL", "")
 	t.Setenv("WYZE_PASSWORD", "")
 	t.Setenv("WYZE_API_ID", "")
 	t.Setenv("WYZE_API_KEY", "")
 	t.Setenv("STATE_DIR", "")
-	t.Setenv("IMG_DIR", "")
+	t.Setenv("SNAPSHOT_PATH", "")
 	t.Setenv("LOG_LEVEL", "")
-	t.Setenv("WB_PORT", "")
+	t.Setenv("BRIDGE_PORT", "")
 	t.Setenv("QUALITY", "")
 	t.Setenv("AUDIO", "")
 	t.Setenv("MQTT_TOPIC", "")
-	t.Setenv("MQTT_DTOPIC", "")
+	t.Setenv("MQTT_DISCOVERY_TOPIC", "")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.WBPort != 5080 {
-		t.Errorf("WBPort = %d, want 5080", cfg.WBPort)
+	if cfg.BridgePort != 5080 {
+		t.Errorf("BridgePort = %d, want 5080", cfg.BridgePort)
 	}
 	if cfg.Quality != "hd" {
 		t.Errorf("Quality = %q, want hd", cfg.Quality)
@@ -36,8 +36,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MQTTTopic != "wyzebridge" {
 		t.Errorf("MQTTTopic = %q, want wyzebridge", cfg.MQTTTopic)
 	}
-	if cfg.MQTTDTopic != "homeassistant" {
-		t.Errorf("MQTTDTopic = %q, want homeassistant", cfg.MQTTDTopic)
+	if cfg.MQTTDiscoveryTopic != "homeassistant" {
+		t.Errorf("MQTTDiscoveryTopic = %q, want homeassistant", cfg.MQTTDiscoveryTopic)
 	}
 	if cfg.StateDir != "/config" {
 		t.Errorf("StateDir = %q, want /config", cfg.StateDir)
@@ -46,15 +46,15 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadPasswordDerivation(t *testing.T) {
 	t.Setenv("WYZE_EMAIL", "user@example.com")
-	t.Setenv("WB_PASSWORD", "")
+	t.Setenv("BRIDGE_PASSWORD", "")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.WBPassword != "user" {
-		t.Errorf("WBPassword = %q, want 'user' derived from email", cfg.WBPassword)
+	if cfg.BridgePassword != "user" {
+		t.Errorf("BridgePassword = %q, want 'user' derived from email", cfg.BridgePassword)
 	}
 }
 

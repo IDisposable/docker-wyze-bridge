@@ -12,10 +12,10 @@ import (
 
 // displayHost picks the hostname used to build stream URLs shown to the user.
 // We prefer r.Host (whatever the browser is currently connected to) so the
-// copy-to-clipboard URLs route back the same way. WB_IP is only a fallback —
-// its real job is being advertised as a WebRTC ICE candidate, not driving UI
-// links. Without this, browsing at localhost (WSL2 dev) showed a LAN IP that
-// wasn't reachable from the host.
+// copy-to-clipboard URLs route back the same way. BRIDGE_IP is only a
+// fallback — its real job is being advertised as a WebRTC ICE candidate,
+// not driving UI links. Without this, browsing at localhost (WSL2 dev)
+// showed a LAN IP that wasn't reachable from the host.
 func (s *Server) displayHost(r *http.Request) string {
 	h := r.Host
 	if idx := strings.Index(h, ":"); idx >= 0 {
@@ -24,7 +24,7 @@ func (s *Server) displayHost(r *http.Request) string {
 	if h != "" {
 		return h
 	}
-	return s.cfg.WBIP
+	return s.cfg.BridgeIP
 }
 
 // renderIndex renders the camera grid page.
@@ -51,18 +51,18 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 	for _, cam := range cameras {
 		name := cam.Name()
 		cams = append(cams, camData{
-			Name:        name,
-			Nickname:    cam.Info.Nickname,
-			Model:       cam.Info.Model,
-			ModelName:   cam.Info.ModelName(),
-			State:       cam.GetState().String(),
-			Quality:     cam.Quality,
-			IP:          cam.Info.LanIP,
-			RTSPURL:     template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
+			Name:      name,
+			Nickname:  cam.Info.Nickname,
+			Model:     cam.Info.Model,
+			ModelName: cam.Info.ModelName(),
+			State:     cam.GetState().String(),
+			Quality:   cam.Quality,
+			IP:        cam.Info.LanIP,
+			RTSPURL:   template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
 			// Absolute URL through our bridge so it's usable when copied into
 			// an external HLS player. Relative paths work in-browser too but
 			// break when pasted elsewhere.
-			HLSURL:      fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.WBPort, name),
+			HLSURL:      fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
 			WebRTCURL:   fmt.Sprintf("http://%s:1984/api/webrtc?src=%s", bridgeIP, name),
 			SnapshotURL: fmt.Sprintf("/api/snapshot/%s", name),
 			Go2RTCURL:   fmt.Sprintf("/ws?src=%s", name),
@@ -93,21 +93,21 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 	bridgeIP := s.displayHost(r)
 	name := cam.Name()
 	data := map[string]interface{}{
-		"Version":    s.version,
-		"Name":       name,
-		"Nickname":   cam.Info.Nickname,
-		"Model":      cam.Info.Model,
-		"ModelName":  cam.Info.ModelName(),
-		"State":      cam.GetState().String(),
-		"Quality":    cam.Quality,
-		"Audio":      cam.AudioOn,
-		"IP":         cam.Info.LanIP,
-		"MAC":        cam.Info.MAC,
-		"FWVersion":  cam.Info.FWVersion,
-		"RTSPURL":    template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
-		"HLSURL":     fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.WBPort, name),
-		"Go2RTCURL":  fmt.Sprintf("/ws?src=%s", name),
-		"BridgeIP":   bridgeIP,
+		"Version":   s.version,
+		"Name":      name,
+		"Nickname":  cam.Info.Nickname,
+		"Model":     cam.Info.Model,
+		"ModelName": cam.Info.ModelName(),
+		"State":     cam.GetState().String(),
+		"Quality":   cam.Quality,
+		"Audio":     cam.AudioOn,
+		"IP":        cam.Info.LanIP,
+		"MAC":       cam.Info.MAC,
+		"FWVersion": cam.Info.FWVersion,
+		"RTSPURL":   template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
+		"HLSURL":    fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
+		"Go2RTCURL": fmt.Sprintf("/ws?src=%s", name),
+		"BridgeIP":  bridgeIP,
 	}
 
 	tmpl, err := template.New("camera").Parse(cameraHTML)
@@ -155,6 +155,7 @@ const indexHTML = `<!DOCTYPE html>
                 <div class="camera-links">
                     <button type="button" class="copy-btn" data-url="{{.RTSPURL}}" title="Click to copy RTSP URL (paste into VLC or ffmpeg)">RTSP</button>
                     <button type="button" class="copy-btn" data-url="{{.HLSURL}}" title="Click to copy HLS URL (paste into VLC or an HLS player — Chrome/Firefox can't play HLS natively)">HLS</button>
+                    <button type="button" class="snap-btn" data-cam="{{.Name}}" title="Take snapshot (saves to SNAPSHOT_PATH)" aria-label="Take snapshot">📷</button>
                 </div>
             </div>
         {{else}}
@@ -206,6 +207,7 @@ const cameraHTML = `<!DOCTYPE html>
                 <button onclick="restartStream('{{.Name}}')">Restart Stream</button>
                 <button onclick="setQuality('{{.Name}}', 'hd')">HD</button>
                 <button onclick="setQuality('{{.Name}}', 'sd')">SD</button>
+                <button type="button" class="snap-btn" data-cam="{{.Name}}" title="Take snapshot (saves to SNAPSHOT_PATH)">📷 Snapshot</button>
             </div>
         </div>
     </main>

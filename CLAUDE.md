@@ -85,7 +85,7 @@ Ported from Python `wyzecam/api.py`:
 
 All env vars documented in `DOCS/DESIGN.md` section 5.8. Key ones:
 - `WYZE_EMAIL`, `WYZE_PASSWORD`, `WYZE_API_ID`, `WYZE_API_KEY` — auth (required)
-- `WB_IP` — host IP for WebRTC ICE candidates
+- `BRIDGE_IP` — host IP for WebRTC ICE candidates
 - `MQTT_HOST` — enables MQTT (presence implies `MQTT_ENABLED=true`)
 - `LOG_LEVEL` — trace/debug/info/warn/error
 - `FORCE_IOTC_DETAIL` — verbose go2rtc + bridge logging

@@ -17,7 +17,7 @@ MQTT_TOPIC: custom-topic
 LATITUDE: 38.627
 LONGITUDE: -90.199
 RECORD_ALL: true
-SNAPSHOT_INT: 300
+SNAPSHOT_INTERVAL: 300
 CAM_OPTIONS:
   - CAM_NAME: garage
     QUALITY: sd
@@ -59,8 +59,8 @@ CAM_OPTIONS:
 	if !cfg.RecordAll {
 		t.Error("RecordAll should be true from YAML")
 	}
-	if cfg.SnapshotInt != 300 {
-		t.Errorf("SnapshotInt = %d", cfg.SnapshotInt)
+	if cfg.SnapshotInterval != 300 {
+		t.Errorf("SnapshotInterval = %d", cfg.SnapshotInterval)
 	}
 
 	ov, ok := cfg.CamOverrides["GARAGE"]

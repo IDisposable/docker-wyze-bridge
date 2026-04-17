@@ -272,7 +272,7 @@ webrtc:
   listen: :8889
   ice_servers:
     - urls: [stun:stun.l.google.com:19302]
-  # WB_IP: candidates: ["192.168.1.50:8889"]
+  # BRIDGE_IP: candidates: ["192.168.1.50:8889"]
 
 streams:
   front_door:
@@ -380,7 +380,7 @@ type Client struct {
     log        zerolog.Logger
     paho       paho.Client
     topic      string         // MQTT_TOPIC, default "wyzebridge"
-    dtopic     string         // MQTT_DTOPIC, default "homeassistant"
+    dtopic     string         // MQTT_DISCOVERY_TOPIC, default "homeassistant"
     cams       *camera.Manager
 }
 ```
@@ -494,7 +494,7 @@ Per-camera page embeds go2rtc's `video-rtc.js` custom element:
 <video-rtc src="http://BRIDGE_HOST:1984/api/webrtc?src=front_door"></video-rtc>
 ```
 
-If `WB_IP` is set, the `src` attribute uses that host instead of `localhost`. This is the only reason go2rtc port 1984 needs to be accessible to the browser — the bridge WebUI itself doesn't handle WebRTC, it delegates to go2rtc.
+If `BRIDGE_IP` is set, the `src` attribute uses that host instead of `localhost`. This is the only reason go2rtc port 1984 needs to be accessible to the browser — the bridge WebUI itself doesn't handle WebRTC, it delegates to go2rtc.
 
 End users interact only with port 5080. Port 1984 is also exposed in Docker for power users who want go2rtc's native interface, but nothing in the normal flow requires it.
 
@@ -509,7 +509,7 @@ type AuthMiddleware struct {
 }
 ```
 
-All routes except `/api/health` are behind auth when `WB_AUTH=true`.
+All routes except `/api/health` are behind auth when `BRIDGE_AUTH=true`.
 
 Default password: derived from the username part of `WYZE_EMAIL` (same as current bridge behavior — backward compatible).
 
@@ -549,9 +549,9 @@ Also generates an enhanced variant with `#EXT-X-STREAM-INF` for multi-quality (h
 
 ```go
 type SnapshotConfig struct {
-    Interval   time.Duration  // SNAPSHOT_INT seconds, 0=off
-    Format     string         // supports {cam_name} %Y %m %d %H %M %S %s
-    Dir        string         // IMG_DIR, default "/img"
+    Interval   time.Duration  // SNAPSHOT_INTERVAL seconds, 0=off
+    Path       string         // dir template, default "/media/snapshots/{cam_name}/%Y/%m/%d"
+    FileName   string         // filename template, default "%H-%M-%S"; .jpg appended
     Keep       time.Duration  // SNAPSHOT_KEEP, 0=never prune
     Cameras    []string       // SNAPSHOT_CAMERAS, empty=all
     Latitude   float64        // for sunrise/sunset
@@ -565,7 +565,7 @@ Snapshot acquisition: `GET http://localhost:1984/api/frame.jpeg?src={name}`. The
 
 Sunrise/sunset: `github.com/nathan-osman/go-sunrise` (pure Go, no CGO). Compute next event, schedule one-shot timer, reschedule after firing.
 
-Pruning goroutine runs every 5 min, removes files in `IMG_DIR` older than `SNAPSHOT_KEEP`. Publishes new JPEG to MQTT `{topic}/{cam}/thumbnail` after each successful snapshot.
+Pruning goroutine runs every 5 min, removes files in `SNAPSHOT_PATH` older than `SNAPSHOT_KEEP`. Publishes new JPEG to MQTT `{topic}/{cam}/thumbnail` after each successful snapshot.
 
 ### 5.7 Recording (`internal/recording/`)
 
@@ -638,18 +638,18 @@ WYZE_EMAIL          string   Wyze account email
 WYZE_PASSWORD       string   Wyze account password
 WYZE_API_ID         string   API ID from developer.wyze.com  (REQUIRED)
 WYZE_API_KEY        string   API Key from developer.wyze.com (REQUIRED)
-TOTP_KEY            string   TOTP seed for 2FA (optional)
+WYZE_TOTP_KEY            string   TOTP seed for 2FA (optional)
 
 # ── Network ──────────────────────────────────────────────────────────────────
-WB_IP               string   Host IP for WebRTC ICE candidates
-WB_PORT             int      WebUI port, default 5080
+BRIDGE_IP               string   Host IP for WebRTC ICE candidates
+BRIDGE_PORT             int      WebUI port, default 5080
 STUN_SERVER         string   default "stun:stun.l.google.com:19302"
 
 # ── WebUI Auth ───────────────────────────────────────────────────────────────
-WB_AUTH             bool     Enable WebUI auth, default false
-WB_USERNAME         string   default "wyze"
-WB_PASSWORD         string   default = username-part of WYZE_EMAIL
-WB_API              string   Bearer token for REST API
+BRIDGE_AUTH             bool     Enable WebUI auth, default false
+BRIDGE_USERNAME         string   default "wyze"
+BRIDGE_PASSWORD         string   default = username-part of WYZE_EMAIL
+BRIDGE_API_TOKEN              string   Bearer token for REST API
 
 # ── Stream Auth ──────────────────────────────────────────────────────────────
 STREAM_AUTH         string   "user:pass@cam1,cam2|user2:pass2"
@@ -661,7 +661,7 @@ MQTT_PORT           int      default 1883
 MQTT_USERNAME       string
 MQTT_PASSWORD       string
 MQTT_TOPIC          string   default "wyzebridge"
-MQTT_DTOPIC         string   HA discovery prefix, default "homeassistant"
+MQTT_DISCOVERY_TOPIC         string   HA discovery prefix, default "homeassistant"
 
 # ── Camera Filtering ─────────────────────────────────────────────────────────
 FILTER_NAMES        string   comma-separated camera names to include
@@ -676,18 +676,18 @@ OFFLINE_TIME        int      seconds before marked offline, default 30
 
 # ── Recording ────────────────────────────────────────────────────────────────
 RECORD_ALL          bool     enable recording for all cameras
-RECORD_PATH         string   dir template, default "/record/{cam_name}/%Y/%m/%d"
+RECORD_PATH         string   dir template, default "/media/recordings/{cam_name}/%Y/%m/%d"
 RECORD_FILE_NAME    string   filename template, default "%H-%M-%S"
 RECORD_LENGTH       string   segment duration "60s"/"1h", default "60s"
 RECORD_KEEP         string   auto-delete age "0s"(never)/"72h"/"7d", default "0s"
 RECORD_{CAM_NAME}   bool     per-camera recording (uppercase, spaces→underscores)
 
 # ── Snapshots ────────────────────────────────────────────────────────────────
-SNAPSHOT_INT        int      interval seconds, 0=disabled
-SNAPSHOT_FORMAT     string   filename format
-SNAPSHOT_CAMERAS    string   comma-separated camera names, empty=all
+SNAPSHOT_PATH       string   dir template, default "/media/snapshots/{cam_name}/%Y/%m/%d"
+SNAPSHOT_FILE_NAME  string   filename template, default "%H-%M-%S"; .jpg auto-appended
+SNAPSHOT_INTERVAL   int      interval seconds, 0=disabled
 SNAPSHOT_KEEP       string   auto-delete age, default "0s"
-IMG_DIR             string   snapshot directory, default "/img"
+SNAPSHOT_CAMERAS    string   comma-separated camera names, empty=all
 
 # ── Sunrise/Sunset ───────────────────────────────────────────────────────────
 LATITUDE            float    decimal degrees (for sunrise/sunset snapshots)
@@ -708,7 +708,7 @@ FORCE_IOTC_DETAIL   bool     verbose TUTK tracing (sets go2rtc debug + our trace
 
 #### 5.8.2 Docker Secrets
 
-If any credential env var is unset, the loader checks `/run/secrets/{VAR_NAME}` (case-insensitive). Supported: `WYZE_EMAIL`, `WYZE_PASSWORD`, `WYZE_API_ID`, `WYZE_API_KEY`, `MQTT_PASSWORD`, `WB_PASSWORD`.
+If any credential env var is unset, the loader checks `/run/secrets/{VAR_NAME}` (case-insensitive). Supported: `WYZE_EMAIL`, `WYZE_PASSWORD`, `WYZE_API_ID`, `WYZE_API_KEY`, `MQTT_PASSWORD`, `BRIDGE_PASSWORD`.
 
 #### 5.8.3 config.yml (HA Add-on)
 
@@ -720,11 +720,11 @@ WYZE_API_ID: "your-id"
 WYZE_API_KEY: "your-key"
 MQTT_HOST: core-mosquitto
 MQTT_ENABLED: true
-MQTT_DTOPIC: homeassistant
+MQTT_DISCOVERY_TOPIC: homeassistant
 LATITUDE: 38.6270
 LONGITUDE: -90.1994
 RECORD_ALL: false
-SNAPSHOT_INT: 0
+SNAPSHOT_INTERVAL: 0
 CAM_OPTIONS:
   - CAM_NAME: front-door
     RECORD: true
@@ -883,7 +883,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates tzdata && \
     rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /config /img /record
+    mkdir -p /config /media/snapshots /media/recordings
 
 COPY --from=builder      /wyze-bridge   /usr/local/bin/wyze-bridge
 COPY --from=go2rtc-fetch /go2rtc        /usr/local/bin/go2rtc
@@ -895,7 +895,7 @@ EXPOSE 8888        # HLS
 EXPOSE 8889        # WebRTC HTTP
 EXPOSE 8189/udp    # WebRTC ICE
 
-VOLUME ["/config", "/img", "/record"]
+VOLUME ["/config", "/media"]
 
 ENTRYPOINT ["/usr/local/bin/wyze-bridge"]
 ```
@@ -925,7 +925,7 @@ No web framework. No ORM. No reflection-heavy dependency. `net/http` stdlib for 
 
 | Port | Protocol | Purpose | Configurable | Exposed to users? |
 | ------ | ---------- | --------- | ------------ | ------------------- |
-| 5080 | TCP | Bridge WebUI + REST API | `WB_PORT` | Yes (primary) |
+| 5080 | TCP | Bridge WebUI + REST API | `BRIDGE_PORT` | Yes (primary) |
 | 1984 | TCP | go2rtc API + native WebUI | — | Optional (power users) |
 | 8554 | TCP | RTSP streaming | — | Yes |
 | 8888 | TCP | HLS streaming | — | Yes |

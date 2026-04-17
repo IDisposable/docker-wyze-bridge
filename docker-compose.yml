@@ -16,8 +16,7 @@ services:
             - 8189:8189/udp # WebRTC ICE
         volumes:
             - ./config:/config
-            - ./img:/img
-            - ./record:/record
+            - ./media:/media      # snapshots land in /media/snapshots, recordings in /media/recordings
         environment:
             # Wyze credentials (required)
             - WYZE_EMAIL=
@@ -26,12 +25,13 @@ services:
             - WYZE_API_KEY=
 
             # Network
-            # - WB_IP=192.168.1.50  # Required for WebRTC
+            # - BRIDGE_IP=192.168.1.50  # Required for WebRTC
 
             # WebUI auth (default: false)
-            # - WB_AUTH=true
-            # - WB_USERNAME=wyze
-            # - WB_PASSWORD=
+            # - BRIDGE_AUTH=true
+            # - BRIDGE_USERNAME=wyze
+            # - BRIDGE_PASSWORD=
+            # - BRIDGE_API_TOKEN=          # bearer token for REST API
 
             # MQTT (optional)
             # - MQTT_HOST=mosquitto
@@ -50,8 +50,9 @@ services:
             # - RECORD_KEEP=0s
 
             # Snapshots (disabled by default)
-            # - SNAPSHOT_INT=0
-            # - IMG_DIR=/img
+            # - SNAPSHOT_INTERVAL=0
+            # - SNAPSHOT_PATH=/img
+            # - SNAPSHOT_FILE_NAME={cam_name}
 
             # Debugging
             # - LOG_LEVEL=info

@@ -116,7 +116,8 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
     padding: 0 1rem 0.8rem;
 }
 .camera-links a,
-.camera-links .copy-btn {
+.camera-links .copy-btn,
+.camera-links .snap-btn {
     font-size: 0.7rem;
     padding: 0.2rem 0.6rem;
     background: var(--accent);
@@ -127,8 +128,14 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
     font-family: inherit;
 }
 .camera-links a:hover,
-.camera-links .copy-btn:hover { color: var(--text); text-decoration: none; }
-.camera-links .copy-btn.copied { background: var(--success); color: #fff; }
+.camera-links .copy-btn:hover,
+.camera-links .snap-btn:hover { color: var(--text); text-decoration: none; }
+.camera-links .copy-btn.copied,
+.camera-links .snap-btn.snapped { background: var(--success); color: #fff; }
+/* Push the snapshot icon to the right edge so RTSP/HLS stay grouped. */
+.camera-links .snap-btn { margin-left: auto; padding: 0.15rem 0.4rem; }
+.snap-btn:disabled { opacity: 0.6; cursor: wait; }
+.actions .snap-btn.snapped { background: var(--success); color: #fff; }
 
 .no-cameras {
     grid-column: 1 / -1;

@@ -9,7 +9,7 @@ FROM ${BUILD_FROM}
 # ffmpeg is only needed by go2rtc's JPEG snapshot endpoint.
 # ca-certificates + tzdata for Wyze API TLS and timestamp handling.
 RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
-    mkdir -p /config /img /record
+    mkdir -p /config /media/wyze_bridge/snapshots /media/wyze_bridge/recordings
 
 COPY --from=bridge-bin /usr/local/bin/wyze-bridge /usr/local/bin/wyze-bridge
 COPY --from=bridge-bin /usr/local/bin/go2rtc      /usr/local/bin/go2rtc

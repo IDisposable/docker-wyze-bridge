@@ -21,8 +21,8 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/mqtt"
 	"github.com/IDisposable/docker-wyze-bridge/internal/recording"
 	"github.com/IDisposable/docker-wyze-bridge/internal/snapshot"
-	"github.com/IDisposable/docker-wyze-bridge/internal/webui"
 	"github.com/IDisposable/docker-wyze-bridge/internal/webhooks"
+	"github.com/IDisposable/docker-wyze-bridge/internal/webui"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -76,7 +76,7 @@ func main() {
 		Password: cfg.WyzePassword,
 		APIID:    cfg.WyzeAPIID,
 		APIKey:   cfg.WyzeAPIKey,
-		TOTPKey:  cfg.TOTPKey,
+		TOTPKey:  cfg.WyzeTOTPKey,
 	}
 	apiClient := wyzeapi.NewClient(creds, Version, apiLog)
 
@@ -86,44 +86,75 @@ func main() {
 		log.Info().Msg("restored auth from state file")
 	}
 
-	// Generate go2rtc config
 	go2rtcLog := log.With().Str("c", "go2rtc").Logger()
-	logLevel := "warn"
-	if cfg.ForceIOTCDetail {
-		logLevel = "debug"
-	}
-	configBuilder := go2rtcmgr.NewConfigBuilder(logLevel, cfg.STUNServer, cfg.WBIP)
 
-	// Apply STREAM_AUTH if configured
-	if cfg.StreamAuth != "" {
-		entries := go2rtcmgr.ParseStreamAuth(cfg.StreamAuth)
-		configBuilder.SetStreamAuth(entries)
-		log.Info().Int("users", len(entries)).Msg("STREAM_AUTH configured")
-	}
+	// Two go2rtc modes:
+	//  1. External (GO2RTC_URL set) — talk to an existing instance
+	//     (e.g. Frigate's). Skip spawn, skip yaml write, skip
+	//     STREAM_AUTH (that's on their side). Recording is ignored
+	//     with a warning; it would write into their config which
+	//     we don't own.
+	//  2. Embedded (default) — generate yaml, spawn subprocess,
+	//     wait for readiness, then connect via the local API URL.
+	var go2rtcAPI *go2rtcmgr.APIClient
+	var mgr *go2rtcmgr.Manager
+	if cfg.Go2RTCURL != "" {
+		log.Info().Str("url", cfg.Go2RTCURL).Msg("using external go2rtc")
+		perCamRecord := false
+		for _, ov := range cfg.CamOverrides {
+			if ov.Record != nil && *ov.Record {
+				perCamRecord = true
+				break
+			}
+		}
+		if cfg.RecordAll || perCamRecord {
+			log.Warn().Msg("RECORD_* settings are ignored in external go2rtc mode — configure recording in the remote go2rtc yaml")
+		}
+		if cfg.StreamAuth != "" {
+			log.Warn().Msg("STREAM_AUTH is ignored in external go2rtc mode — configure auth in the remote go2rtc yaml")
+		}
+		go2rtcAPI = go2rtcmgr.NewAPIClient(cfg.Go2RTCURL, go2rtcLog)
+		// Probe once to fail fast if the URL is unreachable.
+		probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+		if _, err := go2rtcAPI.ListStreams(probeCtx); err != nil {
+			probeCancel()
+			log.Fatal().Err(err).Str("url", cfg.Go2RTCURL).Msg("external go2rtc unreachable")
+		}
+		probeCancel()
+	} else {
+		logLevel := "warn"
+		if cfg.ForceIOTCDetail {
+			logLevel = "debug"
+		}
+		configBuilder := go2rtcmgr.NewConfigBuilder(logLevel, cfg.STUNServer, cfg.BridgeIP)
 
-	go2rtcConfigPath := cfg.StateDir + "/go2rtc.yaml"
-	if err := configBuilder.WriteConfig(go2rtcConfigPath); err != nil {
-		log.Fatal().Err(err).Msg("write go2rtc config")
-	}
+		if cfg.StreamAuth != "" {
+			entries := go2rtcmgr.ParseStreamAuth(cfg.StreamAuth)
+			configBuilder.SetStreamAuth(entries)
+			log.Info().Int("users", len(entries)).Msg("STREAM_AUTH configured")
+		}
 
-	// Start go2rtc subprocess
-	go2rtcBinary := findGo2RTCBinary()
-	mgr := go2rtcmgr.NewManager(go2rtcBinary, go2rtcConfigPath, go2rtcLog)
+		go2rtcConfigPath := cfg.StateDir + "/go2rtc.yaml"
+		if err := configBuilder.WriteConfig(go2rtcConfigPath); err != nil {
+			log.Fatal().Err(err).Msg("write go2rtc config")
+		}
 
-	if err := mgr.Start(ctx); err != nil {
-		log.Fatal().Err(err).Msg("start go2rtc")
-	}
+		go2rtcBinary := findGo2RTCBinary()
+		mgr = go2rtcmgr.NewManager(go2rtcBinary, go2rtcConfigPath, go2rtcLog)
 
-	// Wait for go2rtc to be ready
-	readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
-	if err := mgr.WaitReady(readyCtx, 10*time.Second); err != nil {
+		if err := mgr.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("start go2rtc")
+		}
+
+		readyCtx, readyCancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := mgr.WaitReady(readyCtx, 10*time.Second); err != nil {
+			readyCancel()
+			log.Fatal().Err(err).Msg("go2rtc not ready")
+		}
 		readyCancel()
-		log.Fatal().Err(err).Msg("go2rtc not ready")
-	}
-	readyCancel()
 
-	// Create go2rtc API client
-	go2rtcAPI := go2rtcmgr.NewAPIClient(mgr.APIURL(), go2rtcLog)
+		go2rtcAPI = go2rtcmgr.NewAPIClient(mgr.APIURL(), go2rtcLog)
+	}
 
 	// Camera manager
 	camLog := log.With().Str("c", "camera").Logger()
@@ -172,13 +203,13 @@ func main() {
 	if cfg.MQTTEnabled {
 		mqttLog := log.With().Str("c", "mqtt").Logger()
 		mqttClient = mqtt.NewClient(mqtt.Config{
-			Host:     cfg.MQTTHost,
-			Port:     cfg.MQTTPort,
-			Username: cfg.MQTTUsername,
-			Password: cfg.MQTTPassword,
-			Topic:    cfg.MQTTTopic,
-			DTopic:   cfg.MQTTDTopic,
-		}, camMgr, apiClient, cfg.WBIP, mqttLog)
+			Host:           cfg.MQTTHost,
+			Port:           cfg.MQTTPort,
+			Username:       cfg.MQTTUsername,
+			Password:       cfg.MQTTPassword,
+			Topic:          cfg.MQTTTopic,
+			DiscoveryTopic: cfg.MQTTDiscoveryTopic,
+		}, camMgr, apiClient, cfg.BridgeIP, mqttLog)
 
 		if err := mqttClient.Connect(); err != nil {
 			log.Error().Err(err).Msg("MQTT connect failed (non-fatal)")
@@ -251,8 +282,13 @@ func main() {
 		})
 	}
 
+	// Wire the WebUI's snapshot button to the same capture path MQTT uses.
+	webServer.OnSnapshotRequest(func(ctx context.Context, camName string) {
+		snapMgr.CaptureOne(ctx, camName)
+	})
+
 	// Snapshot pruner
-	snapPruner := snapshot.NewPruner(cfg.ImgDir, cfg.SnapshotKeep, snapLog)
+	snapPruner := snapshot.NewPruner(cfg.SnapshotPath, cfg.SnapshotKeep, snapLog)
 
 	// SSE heartbeat + bridge_status goroutine
 	go func() {
@@ -305,7 +341,9 @@ func main() {
 	if mqttClient != nil {
 		mqttClient.Disconnect()
 	}
-	mgr.Stop()
+	if mgr != nil {
+		mgr.Stop()
+	}
 
 	// Save final state
 	state.Auth = apiClient.Auth()
@@ -335,8 +373,8 @@ func initLogging(cfg *config.Config) {
 func findGo2RTCBinary() string {
 	// Check common locations, then PATH
 	paths := []string{
-		"./go2rtc",        // local dev (current dir)
-		"./go2rtc.exe",    // local dev (Windows)
+		"./go2rtc",     // local dev (current dir)
+		"./go2rtc.exe", // local dev (Windows)
 		"/usr/local/bin/go2rtc",
 		"/usr/bin/go2rtc",
 	}

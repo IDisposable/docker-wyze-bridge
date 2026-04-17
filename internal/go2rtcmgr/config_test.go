@@ -103,7 +103,7 @@ func TestConfigBuilder_RecordingStream(t *testing.T) {
 		Name:           "front_door",
 		URL:            "wyze://10.0.0.1?uid=X",
 		Record:         true,
-		RecordPath:     "/record/front_door/%Y/%m/%d/%H-%M-%S",
+		RecordPath:     "/media/recordings/front_door/%Y/%m/%d/%H-%M-%S",
 		RecordDuration: "60s",
 	})
 	b.AddStream(StreamEntry{
@@ -121,7 +121,7 @@ func TestConfigBuilder_RecordingStream(t *testing.T) {
 	if fd["record"] != true {
 		t.Errorf("record = %v", fd["record"])
 	}
-	if fd["record_path"] != "/record/front_door/%Y/%m/%d/%H-%M-%S" {
+	if fd["record_path"] != "/media/recordings/front_door/%Y/%m/%d/%H-%M-%S" {
 		t.Errorf("record_path = %v", fd["record_path"])
 	}
 

@@ -21,20 +21,20 @@ type APIClient struct {
 
 // StreamInfo contains details about a go2rtc stream.
 type StreamInfo struct {
-	Name      string          `json:"name"`
-	Producers []ProducerInfo  `json:"producers,omitempty"`
-	Consumers []ConsumerInfo  `json:"consumers,omitempty"`
+	Name      string         `json:"name"`
+	Producers []ProducerInfo `json:"producers,omitempty"`
+	Consumers []ConsumerInfo `json:"consumers,omitempty"`
 }
 
 // ProducerInfo describes a stream producer (source).
 type ProducerInfo struct {
-	URL    string `json:"url,omitempty"`
+	URL    string        `json:"url,omitempty"`
 	Medias []interface{} `json:"medias,omitempty"`
 }
 
 // ConsumerInfo describes a stream consumer.
 type ConsumerInfo struct {
-	URL    string `json:"url,omitempty"`
+	URL    string        `json:"url,omitempty"`
 	Medias []interface{} `json:"medias,omitempty"`
 }
 

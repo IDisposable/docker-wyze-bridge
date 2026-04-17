@@ -90,6 +90,67 @@ go2rtc's RTSP server uses a single username/password for all streams. Per-camera
 
 The WebUI is a complete rewrite — dark theme, grid layout, WebRTC player via go2rtc. The URL structure is similar, but the default port moved from 5000 to **5080** (to avoid conflicting with Frigate, AirPlay, and Flask's dev default), and the look and feel is different. Override with `WB_PORT` if you need 5000 back.
 
+### Changed: Env Variable Renames (4.0 reorg)
+
+4.0 reorganizes the env-var namespace for clarity. Names are grouped by subsystem (Wyze / Bridge / Camera / Snapshot / Record / MQTT / Filter / Location / …) and the HA addon schema is nested under those same groups (Configuration tab shows collapsible sections). **No aliases** — old names are silently ignored; update your docker-compose / env file.
+
+| Old (3.x) | New (4.0) | Notes |
+| ----------- | ----------- | ------- |
+| `TOTP_KEY` | `WYZE_TOTP_KEY` | grouped with Wyze creds |
+| `WB_IP` | `BRIDGE_IP` | bridge HTTP server group |
+| `WB_PORT` | `BRIDGE_PORT` | same |
+| `WB_AUTH` | `BRIDGE_AUTH` | same |
+| `WB_USERNAME` | `BRIDGE_USERNAME` | same |
+| `WB_PASSWORD` | `BRIDGE_PASSWORD` | same |
+| `WB_API` | `BRIDGE_API_TOKEN` | "api" was ambiguous; now clearly a bearer token |
+| `IMG_DIR` | `SNAPSHOT_PATH` | parallels `RECORD_PATH` |
+| `SNAPSHOT_INT` | `SNAPSHOT_INTERVAL` | "INT" was cryptic |
+| `SNAPSHOT_FORMAT` | **removed** | split into `SNAPSHOT_PATH` + `SNAPSHOT_FILE_NAME` |
+| `MQTT_DTOPIC` | `MQTT_DISCOVERY_TOPIC` | "DTOPIC" was opaque |
+
+Unchanged: `WYZE_EMAIL`/`PASSWORD`/`API_ID`/`API_KEY`, `STREAM_AUTH`, `QUALITY`, `AUDIO`, all `MQTT_*` (except DTOPIC), `FILTER_*`, all `RECORD_*`, `LATITUDE`/`LONGITUDE`, `WEBHOOK_URLS`, `LOG_LEVEL`, `FORCE_IOTC_DETAIL`, `STATE_DIR`, `STUN_SERVER`, `GWELL_*`. Per-camera overrides (`QUALITY_<CAM>`, `AUDIO_<CAM>`, `RECORD_<CAM>`) also unchanged.
+
+### External go2rtc Mode
+
+Set `GO2RTC_URL=http://host:1984` (or `bridge.go2rtc_url` in the HA addon) to have the bridge feed into an existing go2rtc instance — useful when you're already running go2rtc for Frigate, Scrypted, or another consumer and don't want two copies fighting. When set:
+
+- The bridge **does not spawn** its own go2rtc subprocess.
+- The bridge **does not write** a `go2rtc.yaml`.
+- Streams are registered via the remote go2rtc's `/api/streams` endpoint (same code path as embedded mode).
+- **Recording (`RECORD_*`) is ignored** — the remote yaml controls recording; a warning is logged at startup if you have `RECORD_ALL=true` or any `RECORD_<CAM>=true` while `GO2RTC_URL` is set.
+- **`STREAM_AUTH` is ignored** — same reason; configure RTSP auth on the remote.
+- Stream name collisions: if the remote go2rtc already has a stream named `front_door`, our `PUT /api/streams?name=front_door` overwrites it. Namespace your Wyze camera names (or the remote's) if this is a concern.
+
+The bridge probes the URL with a `ListStreams` call at startup and fails fast if unreachable, so a bad URL shows up as a clear boot error instead of silent "no cameras."
+
+### Changed: Default On-Disk Layout
+
+Bare-Docker defaults collapsed to a single `/media` volume:
+
+| | 3.x | 4.0 |
+| --- | --- | --- |
+| snapshots | `/img/{cam_name}.jpg` (flat, overwrites) | `/media/snapshots/{cam_name}/%Y/%m/%d/%H-%M-%S.jpg` (structured, time-lapse) |
+| recordings | `/record/{cam_name}/%Y/%m/%d/%H-%M-%S.mp4` | `/media/recordings/{cam_name}/%Y/%m/%d/%H-%M-%S.mp4` |
+| docker-compose volumes | `./img:/img`, `./record:/record` | `./media:/media` |
+| VOLUME directive | `/config`, `/img`, `/record` | `/config`, `/media` |
+
+Single-volume mount is the main win — one host directory holds everything. Override any of `SNAPSHOT_PATH`, `SNAPSHOT_FILE_NAME`, `RECORD_PATH` to keep the 3.x layout if you need to.
+
+HA addon unaffected — it continues to write under `/media/wyze_bridge/` (scoped sub-path because HA's `/media` is shared across addons).
+
+### Changed: Snapshot Path Layout
+
+The single-field `SNAPSHOT_FORMAT` is gone. Two replacement fields mirror the recording side:
+
+| Field | Purpose | Tokens | Default (bare Docker) | Default (HA add-on) |
+| ------- | --------- | -------- | ----------------------- | --------------------- |
+| `SNAPSHOT_PATH` | directory template | `{cam_name}`, `{CAM_NAME}`, `%Y %m %d %H %M %S %s` | `/img` | `/media/wyze_bridge/snapshots/{cam_name}/%Y/%m/%d` |
+| `SNAPSHOT_FILE_NAME` | filename template; `.jpg` auto-appended | same tokens | `{cam_name}` | `%H-%M-%S` |
+
+The bridge `MkdirAll`s the full parent chain, so nested strftime subdirs in either field Just Work.
+
+**HA users:** snapshots now land under `/media/wyze_bridge/snapshots/<cam>/<YYYY>/<MM>/<DD>/<HH-MM-SS>.jpg` by default — a real time-lapse instead of one overwriting file — parallel to recordings at `/media/wyze_bridge/recordings/...`.
+
 ### Changed: State Persistence
 
 Python bridge: pickle files in `/tokens/`
@@ -109,10 +170,10 @@ Same as before — OG, Doorbell Pro, Pan v4, Battery Cam Pro use the Gwell proto
 | ---------- | --------- | ------------- |
 | `WYZE_API_ID` | — | Canonical name for API ID (alias: `API_ID`) |
 | `WYZE_API_KEY` | — | Canonical name for API Key (alias: `API_KEY`) |
-| `TOTP_KEY` | — | TOTP secret for MFA login |
+| `WYZE_TOTP_KEY` | — | TOTP secret for MFA login (renamed from `TOTP_KEY` in 4.0) |
 | `STATE_DIR` | `/config` | Directory for state file and go2rtc config |
 | `STUN_SERVER` | `stun:stun.l.google.com:19302` | STUN server for WebRTC |
-| `WB_API` | — | Bearer token for REST API access |
+| `BRIDGE_API_TOKEN` | — | Bearer token for REST API access (renamed from `WB_API` in 4.0) |
 | `FORCE_IOTC_DETAIL` | `false` | Verbose TUTK/go2rtc logging |
 
 ### Ignored Variables (silently dropped)

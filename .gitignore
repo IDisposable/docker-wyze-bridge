@@ -24,9 +24,7 @@ test_env.list
 
 # Runtime
 /config/
-/img/
-/record/
-media/
+/media/
 
 # Local dev
 /local/

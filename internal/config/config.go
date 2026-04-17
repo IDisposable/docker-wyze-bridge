@@ -12,35 +12,40 @@ import (
 
 // Config holds the canonical, validated configuration for the bridge.
 type Config struct {
-	// Wyze Auth
+	// Wyze account credentials
 	WyzeEmail    string
 	WyzePassword string
 	WyzeAPIID    string
 	WyzeAPIKey   string
-	TOTPKey      string
+	WyzeTOTPKey  string
 
-	// Network
-	WBIP       string
-	WBPort     int
-	STUNServer string
+	// Bridge HTTP server (WebUI + REST API)
+	BridgeIP       string // host IP used in WebRTC ICE candidates and URL generation
+	BridgePort     int
+	BridgeAuth     bool
+	BridgeUsername string
+	BridgePassword string
+	BridgeAPIToken string // bearer token for REST API
+	STUNServer     string
 
-	// WebUI Auth
-	WBAuth     bool
-	WBUsername string
-	WBPassword string
-	WBAPI      string // Bearer token for REST API
-
-	// Stream Auth
+	// Stream Auth — go2rtc RTSP/WebRTC consumer credentials
 	StreamAuth string
 
+	// External go2rtc. When non-empty the bridge uses this as its
+	// go2rtc instead of spawning one — e.g. a shared go2rtc already
+	// running for Frigate. Format: "http://host:1984". In this mode
+	// the bridge does NOT write go2rtc.yaml and does NOT configure
+	// recording; the user manages that upstream.
+	Go2RTCURL string
+
 	// MQTT
-	MQTTEnabled  bool
-	MQTTHost     string
-	MQTTPort     int
-	MQTTUsername string
-	MQTTPassword string
-	MQTTTopic    string
-	MQTTDTopic   string // HA discovery prefix
+	MQTTEnabled        bool
+	MQTTHost           string
+	MQTTPort           int
+	MQTTUsername       string
+	MQTTPassword       string
+	MQTTTopic          string
+	MQTTDiscoveryTopic string // HA discovery prefix
 
 	// Camera Filtering
 	FilterNames  []string
@@ -60,12 +65,14 @@ type Config struct {
 	RecordLength   time.Duration
 	RecordKeep     time.Duration
 
-	// Snapshots
-	SnapshotInt     int
-	SnapshotFormat  string
-	SnapshotCameras []string
-	SnapshotKeep    time.Duration
-	ImgDir          string
+	// Snapshots — SnapshotPath is the directory template (strftime +
+	// {cam_name} subdirs OK); SnapshotFileName is the filename stem
+	// template (.jpg auto-appended). Both accept the same tokens.
+	SnapshotPath     string
+	SnapshotFileName string
+	SnapshotInterval int
+	SnapshotKeep     time.Duration
+	SnapshotCameras  []string
 
 	// Sunrise/Sunset
 	Latitude  float64
@@ -104,37 +111,41 @@ type CamOverride struct {
 
 // Load reads configuration from environment variables, Docker secrets,
 // and an optional YAML config file, returning a validated Config.
+//
+// Env var naming was reorganized in 4.0 — see MIGRATION.md for the
+// full rename table. No aliases are kept; 3.x configs must be updated.
 func Load() (*Config, error) {
 	cfg := &Config{
-		// Wyze Auth
+		// Wyze account credentials
 		WyzeEmail:    secret("WYZE_EMAIL"),
 		WyzePassword: secret("WYZE_PASSWORD"),
 		WyzeAPIID:    secretWithAlias("WYZE_API_ID", "API_ID"),
 		WyzeAPIKey:   secretWithAlias("WYZE_API_KEY", "API_KEY"),
-		TOTPKey:      env("TOTP_KEY", ""),
+		WyzeTOTPKey:  env("WYZE_TOTP_KEY", ""),
 
-		// Network
-		WBIP:       env("WB_IP", ""),
-		WBPort:     envInt("WB_PORT", 5080),
-		STUNServer: env("STUN_SERVER", "stun:stun.l.google.com:19302"),
-
-		// WebUI Auth
-		WBAuth:     envBool("WB_AUTH", false),
-		WBUsername: env("WB_USERNAME", "wyze"),
-		WBPassword: env("WB_PASSWORD", ""),
-		WBAPI:      env("WB_API", ""),
+		// Bridge HTTP server
+		BridgeIP:       env("BRIDGE_IP", ""),
+		BridgePort:     envInt("BRIDGE_PORT", 5080),
+		BridgeAuth:     envBool("BRIDGE_AUTH", false),
+		BridgeUsername: env("BRIDGE_USERNAME", "wyze"),
+		BridgePassword: env("BRIDGE_PASSWORD", ""),
+		BridgeAPIToken: env("BRIDGE_API_TOKEN", ""),
+		STUNServer:     env("STUN_SERVER", "stun:stun.l.google.com:19302"),
 
 		// Stream Auth
 		StreamAuth: env("STREAM_AUTH", ""),
 
+		// External go2rtc (empty = spawn our own)
+		Go2RTCURL: env("GO2RTC_URL", ""),
+
 		// MQTT
-		MQTTEnabled:  envBool("MQTT_ENABLED", false),
-		MQTTHost:     env("MQTT_HOST", ""),
-		MQTTPort:     envInt("MQTT_PORT", 1883),
-		MQTTUsername: secret("MQTT_USERNAME"),
-		MQTTPassword: secret("MQTT_PASSWORD"),
-		MQTTTopic:    env("MQTT_TOPIC", "wyzebridge"),
-		MQTTDTopic:   env("MQTT_DTOPIC", "homeassistant"),
+		MQTTEnabled:        envBool("MQTT_ENABLED", false),
+		MQTTHost:           env("MQTT_HOST", ""),
+		MQTTPort:           envInt("MQTT_PORT", 1883),
+		MQTTUsername:       secret("MQTT_USERNAME"),
+		MQTTPassword:       secret("MQTT_PASSWORD"),
+		MQTTTopic:          env("MQTT_TOPIC", "wyzebridge"),
+		MQTTDiscoveryTopic: env("MQTT_DISCOVERY_TOPIC", "homeassistant"),
 
 		// Camera Filtering
 		FilterNames:  envList("FILTER_NAMES"),
@@ -147,19 +158,26 @@ func Load() (*Config, error) {
 		Audio:       envBool("AUDIO", true),
 		OfflineTime: envInt("OFFLINE_TIME", 30),
 
-		// Recording
+		// Recording — default under /media/recordings so bare-Docker
+		// users can mount a single host directory at /media and get
+		// both recordings and snapshots. HA addon scopes its shared
+		// /media via run.sh to /media/wyze_bridge/ subdirs.
 		RecordAll:      envBool("RECORD_ALL", false),
-		RecordPath:     env("RECORD_PATH", "/record/{cam_name}/%Y/%m/%d"),
+		RecordPath:     env("RECORD_PATH", "/media/recordings/{cam_name}/%Y/%m/%d"),
 		RecordFileName: env("RECORD_FILE_NAME", "%H-%M-%S"),
 		RecordLength:   envDuration("RECORD_LENGTH", 60*time.Second),
 		RecordKeep:     envDuration("RECORD_KEEP", 0),
 
-		// Snapshots
-		SnapshotInt:     envInt("SNAPSHOT_INT", 0),
-		SnapshotFormat:  env("SNAPSHOT_FORMAT", ""),
-		SnapshotCameras: envList("SNAPSHOT_CAMERAS"),
-		SnapshotKeep:    envDuration("SNAPSHOT_KEEP", 0),
-		ImgDir:          env("IMG_DIR", "/img"),
+		// Snapshots — structured layout (per-camera per-day subdirs)
+		// under /media/snapshots mirrors the recording tree. Filename
+		// template defaults to %H-%M-%S so each capture gets its own
+		// file; override SNAPSHOT_FILE_NAME to {cam_name} for the old
+		// flat-overwrite shape.
+		SnapshotPath:     env("SNAPSHOT_PATH", "/media/snapshots/{cam_name}/%Y/%m/%d"),
+		SnapshotFileName: env("SNAPSHOT_FILE_NAME", "%H-%M-%S"),
+		SnapshotInterval: envInt("SNAPSHOT_INTERVAL", 0),
+		SnapshotKeep:     envDuration("SNAPSHOT_KEEP", 0),
+		SnapshotCameras:  envList("SNAPSHOT_CAMERAS"),
 
 		// Sunrise/Sunset
 		Latitude:  envFloat("LATITUDE", 0),
@@ -176,10 +194,12 @@ func Load() (*Config, error) {
 		ForceIOTCDetail: envBool("FORCE_IOTC_DETAIL", false),
 
 		// Gwell (IoTVideo) P2P proxy. See internal/gwell and
-		// DOCS/GWELL_INTEGRATION.md for details. Disabled-safe:
-		// if the binary is missing the camera manager logs a
-		// warning and falls back to skip-behavior.
-		GwellEnabled:     envBool("GWELL_ENABLED", true),
+		// DOCS/GWELL_INTEGRATION.md for details. Defaults off in
+		// 4.0.x because the cmd/gwell-proxy binary isn't shipped
+		// yet — enabling it with GW_* cameras present would put
+		// them in a permanent error+retry loop. Flip back to true
+		// once the proxy binary lands in the Docker image.
+		GwellEnabled:     envBool("GWELL_ENABLED", false),
 		GwellBinary:      env("GWELL_BINARY", ""),
 		GwellRTSPPort:    envInt("GWELL_RTSP_PORT", 8564),
 		GwellControlPort: envInt("GWELL_CONTROL_PORT", 18564),
@@ -190,10 +210,10 @@ func Load() (*Config, error) {
 		RefreshInterval: envDuration("REFRESH_INTERVAL", 30*time.Minute),
 	}
 
-	// Derive default WB_PASSWORD from WYZE_EMAIL if not set
-	if cfg.WBPassword == "" && cfg.WyzeEmail != "" {
+	// Derive default BRIDGE_PASSWORD from WYZE_EMAIL if not set
+	if cfg.BridgePassword == "" && cfg.WyzeEmail != "" {
 		parts := strings.SplitN(cfg.WyzeEmail, "@", 2)
-		cfg.WBPassword = parts[0]
+		cfg.BridgePassword = parts[0]
 	}
 
 	// MQTT_HOST presence implies MQTT_ENABLED
@@ -201,7 +221,9 @@ func Load() (*Config, error) {
 		cfg.MQTTEnabled = true
 	}
 
-	// Load optional YAML config (HA add-on)
+	// Load optional YAML config (for bare-Docker users who prefer
+	// a config file to env vars; HA addon bashios options.json
+	// into env vars before we get here).
 	if err := cfg.loadYAML(); err != nil {
 		// YAML is optional; log but don't fail
 		fmt.Printf("warning: config.yml: %v\n", err)

@@ -7,29 +7,33 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// yamlConfig represents the optional config.yml file (primarily for HA add-on users).
+// yamlConfig represents the optional config.yml file. Primarily useful
+// for bare-Docker users who prefer a config file to env vars; HA addon
+// bashios options.json into env vars before Load() runs.
+//
+// YAML keys mirror env var names (renamed in 4.0 — see MIGRATION.md).
 type yamlConfig struct {
 	WyzeEmail    string `yaml:"WYZE_EMAIL"`
 	WyzePassword string `yaml:"WYZE_PASSWORD"`
 	WyzeAPIID    string `yaml:"WYZE_API_ID"`
 	WyzeAPIKey   string `yaml:"WYZE_API_KEY"`
-	TOTPKey      string `yaml:"TOTP_KEY"`
+	WyzeTOTPKey  string `yaml:"WYZE_TOTP_KEY"`
 
-	MQTTHost     string `yaml:"MQTT_HOST"`
-	MQTTPort     int    `yaml:"MQTT_PORT"`
-	MQTTUsername string `yaml:"MQTT_USERNAME"`
-	MQTTPassword string `yaml:"MQTT_PASSWORD"`
-	MQTTEnabled  *bool  `yaml:"MQTT_ENABLED"`
-	MQTTTopic    string `yaml:"MQTT_TOPIC"`
-	MQTTDTopic   string `yaml:"MQTT_DTOPIC"`
+	MQTTHost           string `yaml:"MQTT_HOST"`
+	MQTTPort           int    `yaml:"MQTT_PORT"`
+	MQTTUsername       string `yaml:"MQTT_USERNAME"`
+	MQTTPassword       string `yaml:"MQTT_PASSWORD"`
+	MQTTEnabled        *bool  `yaml:"MQTT_ENABLED"`
+	MQTTTopic          string `yaml:"MQTT_TOPIC"`
+	MQTTDiscoveryTopic string `yaml:"MQTT_DISCOVERY_TOPIC"`
 
 	Latitude  *float64 `yaml:"LATITUDE"`
 	Longitude *float64 `yaml:"LONGITUDE"`
 
-	RecordAll bool   `yaml:"RECORD_ALL"`
-	RecordDir string `yaml:"RECORD_PATH"`
+	RecordAll  bool   `yaml:"RECORD_ALL"`
+	RecordPath string `yaml:"RECORD_PATH"`
 
-	SnapshotInt int `yaml:"SNAPSHOT_INT"`
+	SnapshotInterval int `yaml:"SNAPSHOT_INTERVAL"`
 
 	CamOptions []yamlCamOption `yaml:"CAM_OPTIONS"`
 }
@@ -63,13 +67,13 @@ func (c *Config) loadYAML() error {
 	setIfEmpty(&c.WyzePassword, yc.WyzePassword)
 	setIfEmpty(&c.WyzeAPIID, yc.WyzeAPIID)
 	setIfEmpty(&c.WyzeAPIKey, yc.WyzeAPIKey)
-	setIfEmpty(&c.TOTPKey, yc.TOTPKey)
+	setIfEmpty(&c.WyzeTOTPKey, yc.WyzeTOTPKey)
 
 	setIfEmpty(&c.MQTTHost, yc.MQTTHost)
 	setIfEmpty(&c.MQTTUsername, yc.MQTTUsername)
 	setIfEmpty(&c.MQTTPassword, yc.MQTTPassword)
 	setIfEmpty(&c.MQTTTopic, yc.MQTTTopic)
-	setIfEmpty(&c.MQTTDTopic, yc.MQTTDTopic)
+	setIfEmpty(&c.MQTTDiscoveryTopic, yc.MQTTDiscoveryTopic)
 	if yc.MQTTPort != 0 && c.MQTTPort == 1883 {
 		c.MQTTPort = yc.MQTTPort
 	}
@@ -87,10 +91,10 @@ func (c *Config) loadYAML() error {
 	if yc.RecordAll && !c.RecordAll {
 		c.RecordAll = true
 	}
-	setIfEmpty(&c.RecordPath, yc.RecordDir)
+	setIfEmpty(&c.RecordPath, yc.RecordPath)
 
-	if yc.SnapshotInt != 0 && c.SnapshotInt == 0 {
-		c.SnapshotInt = yc.SnapshotInt
+	if yc.SnapshotInterval != 0 && c.SnapshotInterval == 0 {
+		c.SnapshotInterval = yc.SnapshotInterval
 	}
 
 	// Per-camera overrides from YAML

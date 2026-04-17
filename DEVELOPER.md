@@ -74,14 +74,14 @@ cp .env.dev.example .env.dev
 | `WYZE_API_ID` | [Wyze Developer Console](https://developer-api-console.wyze.com/#/apikey/view) → API Keys |
 | `WYZE_API_KEY` | Same page as API ID |
 
-#### Optional: TOTP_KEY (for accounts with 2FA)
+#### Optional: WYZE_TOTP_KEY (for accounts with 2FA)
 
 If your Wyze account has two-factor authentication enabled, the bridge needs the TOTP secret to generate login codes automatically. This is the base32-encoded seed your authenticator app uses — not the 6-digit code itself.
 
 To get it: go to your Wyze account's 2FA setup and choose "can't scan QR code" to reveal the raw secret (looks like `JBSWY3DPEHPK3PXP`). Set it in `.env.dev`:
 
 ```
-TOTP_KEY=JBSWY3DPEHPK3PXP
+WYZE_TOTP_KEY=JBSWY3DPEHPK3PXP
 ```
 
 If your account does **not** have 2FA enabled, leave it blank.
