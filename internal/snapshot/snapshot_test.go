@@ -133,7 +133,7 @@ func TestManager_SaveSnapshot(t *testing.T) {
 // SNAPSHOT_FILE_NAME split API: both fields are templates (with
 // {cam_name} and strftime tokens), and MkdirAll has to create the
 // chain of strftime subdirs before the write lands. This is what HA
-// users get by default via home_assistant/run.sh.
+// users get by default via home_assistant/*/run.sh.
 func TestManager_SaveSnapshot_SplitTemplates(t *testing.T) {
 	root := t.TempDir()
 	cfg := &config.Config{

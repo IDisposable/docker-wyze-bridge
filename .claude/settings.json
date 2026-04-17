@@ -28,7 +28,25 @@
       "Bash(git -C * blame *)",
       "Bash(git -C * grep *)",
       "Bash(git -C * describe *)",
-      "Bash(git -C * shortlog *)"
+      "Bash(git -C * shortlog *)",
+      "Bash(echo \"--- build: $?\")",
+      "Bash(echo \"--- whep_proxy: $?\")",
+      "Bash(echo \"--- main: $?\")",
+      "Bash(echo \"--- vet: $?\")",
+      "Bash(echo \"--- whep_proxy build: $?\")",
+      "Bash(git -C /workspaces/docker-wyze-bridge add -A)",
+      "Bash(git -C /workspaces/docker-wyze-bridge commit -m ' *)",
+      "Bash(curl -sS -o /tmp/whep_test_status -w \"HTTP=%{http_code}\\\\n\" -X GET http://127.0.0.1:8080/status/front_door)",
+      "Bash(curl -sS -o /tmp/whep_test_status -w \"HTTP=%{http_code}\\\\n\" -X POST -H \"Content-Type: application/sdp\" --data \"v=0\" http://127.0.0.1:8080/whep/front_door)",
+      "Bash(curl -sS -o /dev/null -w \"status=%{http_code} time=%{time_total}s\\\\n\" http://127.0.0.1:8080/status/front_door)",
+      "Bash(curl -sS -o /tmp/wp_post -w 'status=%{http_code}\\\\n' -X POST -H 'Content-Type: application/sdp' --data-binary 'v=0 *)",
+      "Read(//tmp/**)",
+      "Bash(curl -sS http://127.0.0.1:1984/api/streams)",
+      "Bash(curl -sS \"http://127.0.0.1:1984/api/streams?src=front_door\")",
+      "Bash(curl -sS -o /tmp/m3u8 -w \"status=%{http_code}\\\\n\" \"http://127.0.0.1:1984/api/stream.m3u8?src=front_door\")"
+    ],
+    "additionalDirectories": [
+      "/tmp"
     ]
   }
 }

@@ -24,11 +24,23 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	uptime := int(time.Since(s.startTime).Seconds())
-	writeJSON(w, map[string]interface{}{
+	body := map[string]interface{}{
 		"status":  "ok",
 		"version": s.version,
 		"uptime":  uptime,
-	})
+	}
+	// Surface the active issue count so HA users can wire a binary
+	// sensor ("config OK / problems") off /api/health without having
+	// to parse individual metric topics. Zero = no problems; any
+	// non-zero means operators should check /metrics.
+	if s.issues != nil {
+		body["config_errors"] = s.issues.Count()
+		if issueList := s.issues.List(); len(issueList) > 0 {
+			body["issues"] = issueList
+			body["status"] = "degraded"
+		}
+	}
+	writeJSON(w, body)
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +57,23 @@ func (s *Server) handleAPICameras(w http.ResponseWriter, r *http.Request) {
 		result = append(result, cam.StatusJSON())
 	}
 	writeJSON(w, result)
+}
+
+// handleAPIDiscover triggers a bridge-wide Wyze API rediscovery on
+// demand (POST-only to keep it out of accidental prefetch/preview).
+// The actual work runs asynchronously — we acknowledge and let
+// runDiscover write its completion Event to the metrics log.
+func (s *Server) handleAPIDiscover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.onDiscoverReq == nil {
+		http.Error(w, "discover hook not wired", http.StatusServiceUnavailable)
+		return
+	}
+	go s.onDiscoverReq(context.Background())
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +133,7 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
-		cam.AudioOn = body.Enabled
+		cam.SetAudioOn(body.Enabled)
 		writeJSON(w, map[string]interface{}{"status": "ok", "audio": body.Enabled})
 
 	case action == "snapshot" && r.Method == "POST":
@@ -117,9 +146,46 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 		go s.onSnapReq(context.Background(), name)
 		writeJSON(w, map[string]string{"status": "ok", "camera": name})
 
+	case action == "record" && r.Method == "POST":
+		if s.recMgr == nil {
+			http.Error(w, "recording manager not wired", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Action string `json:"action"` // "start" | "stop"
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body) // body optional; "start" default
+		controller, ok := s.recMgr.(recordingController)
+		if !ok {
+			http.Error(w, "recording manager does not support start/stop", http.StatusNotImplemented)
+			return
+		}
+		switch body.Action {
+		case "stop":
+			controller.Stop(name)
+		default:
+			if err := controller.Start(context.Background(), name); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		writeJSON(w, map[string]interface{}{
+			"status":    "ok",
+			"camera":    name,
+			"recording": s.recMgr.IsRecording(name),
+		})
+
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// recordingController is satisfied by recording.Manager. Kept as an
+// inline interface (rather than in server.go) so the HTTP handler
+// doesn't force the RecordingObserver interface to also expose mutation.
+type recordingController interface {
+	Start(ctx context.Context, camName string) error
+	Stop(camName string)
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -129,8 +195,13 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go2rtc := s.go2rtc()
+	if go2rtc == nil {
+		http.Error(w, "bridge still starting; go2rtc not yet ready", http.StatusServiceUnavailable)
+		return
+	}
 	ctx := r.Context()
-	jpeg, err := s.go2rtcAPI.GetSnapshot(ctx, name)
+	jpeg, err := go2rtc.GetSnapshot(ctx, name)
 	if err != nil {
 		s.log.Warn().Err(err).Str("cam", name).Msg("snapshot failed")
 		http.Error(w, "snapshot unavailable", http.StatusServiceUnavailable)
@@ -172,7 +243,7 @@ func (s *Server) handleStreamsM3U8(w http.ResponseWriter, r *http.Request) {
 
 	bridgeIP := s.displayHost(r)
 	for _, cam := range s.camMgr.Cameras() {
-		fmt.Fprintf(w, "#EXTINF:-1,%s\n", cam.Info.Nickname)
+		fmt.Fprintf(w, "#EXTINF:-1,%s\n", cam.GetInfo().Nickname)
 		fmt.Fprintf(w, "rtsp://%s:8554/%s\n", bridgeIP, cam.Name())
 	}
 }
@@ -194,7 +265,7 @@ func (s *Server) handleStreamM3U8(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	fmt.Fprintln(w, "#EXTM3U")
 	fmt.Fprintln(w, "#EXT-X-VERSION:3")
-	fmt.Fprintf(w, "#EXTINF:-1,%s\n", cam.Info.Nickname)
+	fmt.Fprintf(w, "#EXTINF:-1,%s\n", cam.GetInfo().Nickname)
 	fmt.Fprintf(w, "rtsp://%s:8554/%s\n", bridgeIP, cam.Name())
 }
 

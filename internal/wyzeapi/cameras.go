@@ -3,6 +3,7 @@ package wyzeapi
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // GetCameraList fetches the list of cameras from the Wyze API.
@@ -94,8 +95,22 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 			Str("fw", cam.FWVersion).
 			Msg("discovered device")
 
-		// Skip devices missing required P2P fields
-		if cam.P2PID == "" || cam.LanIP == "" || cam.ENR == "" || cam.MAC == "" || cam.Model == "" {
+		// Skip devices missing required P2P fields. The field set is
+		// protocol-specific:
+		//  - TUTK cameras: need P2PID + LanIP + ENR + MAC + Model.
+		//    LanIP comes straight from the Wyze cloud response and is
+		//    non-empty for online cameras.
+		//  - Gwell cameras (GW_BE1/GC1/GC2/DBD): Wyze returns an empty
+		//    LanIP for these — the actual IP is recovered by the proxy
+		//    during P2P discovery. P2PID is just the device MAC echoed
+		//    back. Require MAC + ENR + Model only.
+		var missing bool
+		if cam.IsGwell() {
+			missing = cam.MAC == "" || cam.ENR == "" || cam.Model == ""
+		} else {
+			missing = cam.P2PID == "" || cam.LanIP == "" || cam.ENR == "" || cam.MAC == "" || cam.Model == ""
+		}
+		if missing {
 			c.log.Warn().
 				Str("nickname", cam.Nickname).
 				Str("model", cam.Model).
@@ -103,6 +118,7 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 				Str("ip", cam.LanIP).
 				Str("p2p_id", cam.P2PID).
 				Bool("has_enr", cam.ENR != "").
+				Bool("gwell", cam.IsGwell()).
 				Msg("skipping device with missing P2P params")
 			continue
 		}
@@ -192,4 +208,42 @@ func getInt(m map[string]interface{}, key string) int {
 		}
 	}
 	return 0
+}
+
+// GetCameraStream calls /v4/camera/get_streams to mint a Wyze KVS WebRTC
+// signaling URL + ICE servers for a camera. Consumed by the shim handler
+// at /internal/wyze/webrtc/<cam> which go2rtc's native #format=wyze
+// source fetches when it needs to start a stream. Returns the raw
+// response map; shape:
+//
+//	{"code":"1","data":[{"params":{"signaling_url":"wss://...",
+//	                              "ice_servers":[{"url":"...","username":"...","credential":"..."}],
+//	                              "auth_token":""}}]}
+func (c *Client) GetCameraStream(cam CameraInfo) (map[string]interface{}, error) {
+	if err := c.EnsureAuth(); err != nil {
+		return nil, err
+	}
+	payload := map[string]interface{}{
+		"device_list": []interface{}{
+			map[string]interface{}{
+				"device_id":    cam.MAC,
+				"device_model": cam.Model,
+				"provider":     "webrtc",
+				"parameters":   map[string]interface{}{"use_trickle": true},
+			},
+		},
+		"nonce": time.Now().UnixMilli(),
+	}
+	sorted := sortDict(payload)
+	headers := c.signPayloadHeaders("9319141212m2ik", sorted)
+	// Wyze's v4 front door also checks lowercase `authorization`; the
+	// HMAC-signed `access_token` header alone isn't enough.
+	headers["authorization"] = c.auth.AccessToken
+
+	url := c.NewWyzeURL + "/v4/camera/get_streams"
+	resp, err := c.postRaw(url, headers, sorted)
+	if err != nil {
+		return nil, fmt.Errorf("get_streams: %w", err)
+	}
+	return resp, nil
 }

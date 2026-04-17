@@ -64,6 +64,11 @@ type Config struct {
 	RecordFileName string
 	RecordLength   time.Duration
 	RecordKeep     time.Duration
+	// RecordCmd overrides the default ffmpeg recording argv. Empty =
+	// use the built-in default. See recording/template.go for the
+	// supported token list. Per-camera overrides via RECORD_CMD_<CAM>
+	// land on CamOverride.RecordCmd.
+	RecordCmd string
 
 	// Snapshots — SnapshotPath is the directory template (strftime +
 	// {cam_name} subdirs OK); SnapshotFileName is the filename stem
@@ -89,11 +94,14 @@ type Config struct {
 	ForceIOTCDetail bool
 
 	// Gwell (IoTVideo) P2P proxy for GW_* cameras.
-	GwellEnabled     bool
-	GwellBinary      string
-	GwellRTSPPort    int
-	GwellControlPort int
-	GwellLogLevel    string
+	GwellEnabled        bool
+	GwellBinary         string
+	GwellRTSPPort       int
+	GwellControlPort    int
+	GwellLogLevel       string
+	GwellFFmpegLogLevel string // ffmpeg -loglevel inside gwell-proxy (quiet/panic/fatal/error/warning/info/verbose/debug/trace)
+	GwellDumpDir        string // if non-empty, gwell-proxy tees raw H.264 to this dir for offline ffprobe
+	GwellDeadmanTimeout time.Duration
 
 	// Per-camera overrides keyed by normalized camera name (UPPER_CASE)
 	CamOverrides map[string]CamOverride
@@ -104,9 +112,10 @@ type Config struct {
 
 // CamOverride holds per-camera setting overrides.
 type CamOverride struct {
-	Quality *string
-	Audio   *bool
-	Record  *bool
+	Quality   *string
+	Audio     *bool
+	Record    *bool
+	RecordCmd *string // per-camera RECORD_CMD_<CAM> — overrides global
 }
 
 // Load reads configuration from environment variables, Docker secrets,
@@ -167,13 +176,15 @@ func Load() (*Config, error) {
 		RecordFileName: env("RECORD_FILE_NAME", "%H-%M-%S"),
 		RecordLength:   envDuration("RECORD_LENGTH", 60*time.Second),
 		RecordKeep:     envDuration("RECORD_KEEP", 0),
+		RecordCmd:      env("RECORD_CMD", ""),
 
-		// Snapshots — structured layout (per-camera per-day subdirs)
-		// under /media/snapshots mirrors the recording tree. Filename
-		// template defaults to %H-%M-%S so each capture gets its own
-		// file; override SNAPSHOT_FILE_NAME to {cam_name} for the old
-		// flat-overwrite shape.
-		SnapshotPath:     env("SNAPSHOT_PATH", "/media/snapshots/{cam_name}/%Y/%m/%d"),
+		// Snapshots — per-camera/ per-day layout under /media/snapshots.
+		// One date directory because snapshots are JPEGs, not multi-gig
+		// recordings, and nesting Y/m/d is overkill for the file volume.
+		// Override SNAPSHOT_FILE_NAME to {cam_name} for the old
+		// flat-overwrite shape (single "latest" JPEG per camera) —
+		// useful for integrations that poll for the current frame.
+		SnapshotPath:     env("SNAPSHOT_PATH", "/media/snapshots/{cam_name}/%Y-%m-%d"),
 		SnapshotFileName: env("SNAPSHOT_FILE_NAME", "%H-%M-%S"),
 		SnapshotInterval: envInt("SNAPSHOT_INTERVAL", 0),
 		SnapshotKeep:     envDuration("SNAPSHOT_KEEP", 0),
@@ -193,17 +204,23 @@ func Load() (*Config, error) {
 		LogLevel:        parseLogLevel(env("LOG_LEVEL", "info")),
 		ForceIOTCDetail: envBool("FORCE_IOTC_DETAIL", false),
 
-		// Gwell (IoTVideo) P2P proxy. See internal/gwell and
-		// DOCS/GWELL_INTEGRATION.md for details. Defaults off in
-		// 4.0.x because the cmd/gwell-proxy binary isn't shipped
-		// yet — enabling it with GW_* cameras present would put
-		// them in a permanent error+retry loop. Flip back to true
-		// once the proxy binary lands in the Docker image.
-		GwellEnabled:     envBool("GWELL_ENABLED", false),
-		GwellBinary:      env("GWELL_BINARY", ""),
-		GwellRTSPPort:    envInt("GWELL_RTSP_PORT", 8564),
-		GwellControlPort: envInt("GWELL_CONTROL_PORT", 18564),
-		GwellLogLevel:    env("GWELL_LOG_LEVEL", ""),
+		// Gwell (IoTVideo) P2P sidecar for OG-family cameras
+		// (GW_GC1 / GW_GC2). Doorbell-lineage Gwell models
+		// (GW_BE1 / GW_DBD) stream via go2rtc's native Wyze WebRTC
+		// handler instead and don't need gwell-proxy at all; see
+		// internal/wyzeapi/models.go IsWebRTCStreamer. Default ON —
+		// the sidecar only spawns when an OG camera is actually
+		// discovered, so users without OG cameras pay zero cost and
+		// see no log spam. Set GWELL_ENABLED=false to opt out
+		// entirely (skips OG discovery and any future Gwell work).
+		GwellEnabled:        envBool("GWELL_ENABLED", true),
+		GwellBinary:         env("GWELL_BINARY", ""),
+		GwellRTSPPort:       envInt("GWELL_RTSP_PORT", 8564),
+		GwellControlPort:    envInt("GWELL_CONTROL_PORT", 18564),
+		GwellLogLevel:       env("GWELL_LOG_LEVEL", ""),
+		GwellFFmpegLogLevel: env("GWELL_FFMPEG_LOGLEVEL", "warning"),
+		GwellDumpDir:        env("GWELL_DUMP_DIR", ""),
+		GwellDeadmanTimeout: envDuration("GWELL_DEADMAN_TIMEOUT", 2*time.Minute),
 
 		// Internals
 		CamOverrides:    make(map[string]CamOverride),

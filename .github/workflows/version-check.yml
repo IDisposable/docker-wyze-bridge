@@ -28,7 +28,6 @@ jobs:
         if: steps.go2rtc.outputs.current != steps.go2rtc.outputs.latest
         run: |
           sed -i "s/GO2RTC_VERSION=.*/GO2RTC_VERSION=${{ steps.go2rtc.outputs.latest }}/" docker/Dockerfile
-          sed -i "s/GO2RTC_VERSION=.*/GO2RTC_VERSION=${{ steps.go2rtc.outputs.latest }}/" home_assistant/Dockerfile
 
       - name: Create Pull Request
         if: steps.go2rtc.outputs.current != steps.go2rtc.outputs.latest
@@ -46,47 +45,6 @@ jobs:
             - [ ] RTSP output works
           add-paths: |
             docker/Dockerfile
-            home_assistant/Dockerfile
-          base: go-rewrite
+          base: dev
           delete-branch: true
 
-  update-wyze-app-version:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Get latest Wyze iOS app version
-        id: wyze
-        run: |
-          latest=$(curl -s 'https://itunes.apple.com/lookup?id=1288415553' | jq -r '.results[0].version')
-          if [[ ! $latest =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "Invalid version: ${latest}"
-            exit 1
-          fi
-          current=$(grep 'appVersion' internal/wyzeapi/auth.go | head -1 | sed 's/.*= "//' | sed 's/"//')
-          echo "latest=$latest" >> $GITHUB_OUTPUT
-          echo "current=$current" >> $GITHUB_OUTPUT
-
-      - name: Update app version constant
-        if: steps.wyze.outputs.current != steps.wyze.outputs.latest
-        run: |
-          sed -i "s/appVersion = \".*\"/appVersion = \"${{ steps.wyze.outputs.latest }}\"/" internal/wyzeapi/auth.go
-
-      - name: Create Pull Request
-        if: steps.wyze.outputs.current != steps.wyze.outputs.latest
-        uses: peter-evans/create-pull-request@v7
-        with:
-          title: 'Bump Wyze app version to ${{ steps.wyze.outputs.latest }}'
-          commit-message: 'deps: update Wyze iOS app version from ${{ steps.wyze.outputs.current }} to ${{ steps.wyze.outputs.latest }}'
-          branch: wyze-app-version
-          body: |
-            Updates the Wyze iOS app version used in API User-Agent headers.
-
-            Current: `${{ steps.wyze.outputs.current }}`
-            Latest: `${{ steps.wyze.outputs.latest }}`
-
-            This keeps our API requests consistent with the official Wyze app.
-          add-paths: internal/wyzeapi/auth.go
-          base: go-rewrite
-          delete-branch: true

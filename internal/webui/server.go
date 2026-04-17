@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -16,6 +17,8 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
+	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
 //go:embed static/*
@@ -26,21 +29,101 @@ var staticFS embed.FS
 // decoupled from the snapshot package (which depends on us via SSE).
 type SnapshotRequester func(ctx context.Context, camName string)
 
+// DiscoverRequester triggers a bridge-wide Wyze API rediscovery.
+// Supplied by main.go via OnDiscoverRequest so the webui stays
+// decoupled from camera.Manager.
+type DiscoverRequester func(ctx context.Context)
+
 // Server is the WebUI HTTP server.
+//
+// go2rtcAPI is late-bound: NewServer accepts nil so the WebUI can come
+// up immediately (showing the UI, serving SSE, accepting the shim
+// endpoints) while main() is still running Wyze discovery and booting
+// go2rtc. Once go2rtc is ready, main() calls SetGo2RTCAPI to attach
+// the client. Handlers that need it use s.go2rtc() and return 503 if
+// the client isn't attached yet.
 type Server struct {
 	log       zerolog.Logger
 	cfg       *config.Config
 	camMgr    *camera.Manager
-	go2rtcAPI *go2rtcmgr.APIClient
+	go2rtcAPI atomic.Pointer[go2rtcmgr.APIClient]
 	sseHub    *SSEHub
 	auth      *AuthMiddleware
 	srv       *http.Server
 	version   string
 	startTime time.Time
-	onSnapReq SnapshotRequester
+	onSnapReq     SnapshotRequester
+	onDiscoverReq DiscoverRequester
+	mars      MarsTokenMinter
+	kvs       KVSStreamProvider
+	issues    *issues.Registry // optional
+	// Metrics data sources — all optional so tests and partial-setup
+	// paths (bring-up before every subsystem wires in) stay legal.
+	recMgr   RecordingObserver
+	storage  StorageObserver
+	apiStats EndpointStatsProvider
+	events   *EventLog
+	// authPhoneID returns the current Wyze PhoneID for /kvs-config
+	// responses. Optional — nil leaves phone_id empty, which whep_proxy
+	// tolerates.
+	authPhoneID func() string
 }
 
-// NewServer creates a new WebUI server.
+// RecordingObserver surfaces the bits of recording.Manager the metrics
+// page needs — scoped to an interface so webui doesn't have to import
+// the recording package (breaks a potential cycle; recording already
+// imports config, and main.go builds both).
+type RecordingObserver interface {
+	IsRecording(camName string) bool
+	ActiveRecorders() []string
+	SessionBytes(camName string) int64
+}
+
+// StorageObserver is the read-side of the StorageSampler.
+type StorageObserver interface {
+	TotalBytes() int64
+	PerCamera() map[string]int64
+	LastRefresh() time.Time
+}
+
+// EndpointStatsProvider exposes the Wyze API client's per-endpoint
+// call-stat snapshot.
+type EndpointStatsProvider interface {
+	EndpointStats() []wyzeapi.EndpointStats
+}
+
+// SetMetricsSources wires the four pluggable observability sources
+// used by the /metrics page and /api/metrics endpoint. Any nil is
+// ignored gracefully — the page renders what it has.
+func (s *Server) SetMetricsSources(rec RecordingObserver, storage StorageObserver, apiStats EndpointStatsProvider, events *EventLog) {
+	s.recMgr = rec
+	s.storage = storage
+	s.apiStats = apiStats
+	s.events = events
+}
+
+// Events returns the event log (or nil if not configured). Callers
+// that record events (e.g. the state-change callback) use this to
+// get a handle for Record() without re-plumbing.
+func (s *Server) Events() *EventLog {
+	return s.events
+}
+
+// SetIssuesRegistry attaches the process-wide issue registry so the
+// health endpoint (and later the metrics page) can surface config
+// errors. Safe to pass nil for tests.
+func (s *Server) SetIssuesRegistry(r *issues.Registry) {
+	s.issues = r
+}
+
+// SetAuthPhoneIDFn attaches a getter for the Wyze PhoneID. Called
+// once at startup with a closure over the wyzeapi.Client's auth state.
+func (s *Server) SetAuthPhoneIDFn(f func() string) {
+	s.authPhoneID = f
+}
+
+// NewServer creates a new WebUI server. go2rtcAPI may be nil; attach
+// it later via SetGo2RTCAPI once go2rtc is ready.
 func NewServer(
 	cfg *config.Config,
 	camMgr *camera.Manager,
@@ -52,10 +135,12 @@ func NewServer(
 		log:       log,
 		cfg:       cfg,
 		camMgr:    camMgr,
-		go2rtcAPI: go2rtcAPI,
 		sseHub:    NewSSEHub(log),
 		version:   version,
 		startTime: time.Now(),
+	}
+	if go2rtcAPI != nil {
+		s.go2rtcAPI.Store(go2rtcAPI)
 	}
 
 	s.auth = NewAuthMiddleware(
@@ -68,6 +153,19 @@ func NewServer(
 	return s
 }
 
+// SetGo2RTCAPI attaches (or replaces) the go2rtc API client. Safe to
+// call concurrently. Handlers that need the client pick it up on their
+// next request via s.go2rtc().
+func (s *Server) SetGo2RTCAPI(api *go2rtcmgr.APIClient) {
+	s.go2rtcAPI.Store(api)
+}
+
+// go2rtc returns the currently-attached API client, or nil if not
+// yet attached.
+func (s *Server) go2rtc() *go2rtcmgr.APIClient {
+	return s.go2rtcAPI.Load()
+}
+
 // SSE returns the SSE hub for sending events.
 func (s *Server) SSE() *SSEHub {
 	return s.sseHub
@@ -78,6 +176,14 @@ func (s *Server) SSE() *SSEHub {
 // Nil is safe — the button just returns 503 until the hook is attached.
 func (s *Server) OnSnapshotRequest(fn SnapshotRequester) {
 	s.onSnapReq = fn
+}
+
+// OnDiscoverRequest registers a callback that fires when the WebUI's
+// rediscover button (or POST /api/discover) is invoked. main.go wires
+// this to runDiscover — which does a Wyze API refresh + ConnectAll
+// and writes an Event to the metrics log.
+func (s *Server) OnDiscoverRequest(fn DiscoverRequester) {
+	s.onDiscoverReq = fn
 }
 
 // StartTime returns when the server was created.
@@ -186,9 +292,16 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/version", s.handleVersion)
 	mux.HandleFunc("/api/cameras", s.auth.Wrap(s.handleAPICameras))
 	mux.HandleFunc("/api/cameras/", s.auth.Wrap(s.handleAPICameraAction))
+	mux.HandleFunc("/api/discover", s.auth.Wrap(s.handleAPIDiscover))
 	mux.HandleFunc("/api/snapshot/", s.auth.Wrap(s.handleSnapshot))
 	mux.HandleFunc("/api/streams", s.auth.Wrap(s.handleStreamsM3U8))
 	mux.HandleFunc("/api/streams/", s.auth.Wrap(s.handleStreamM3U8))
+	mux.HandleFunc("/api/metrics", s.auth.Wrap(s.handleMetricsJSON))
+
+	// Observability pages
+	mux.HandleFunc("/metrics", s.auth.Wrap(s.handleMetricsPage))
+	mux.HandleFunc("/metrics.prom", s.handlePrometheus) // typically unauthenticated for scrapers
+	mux.HandleFunc("/dashboard.yaml", s.auth.Wrap(s.handleDashboardYAML))
 
 	// SSE
 	mux.HandleFunc("/events", s.auth.Wrap(s.sseHub.ServeHTTP))
@@ -207,4 +320,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Backward-compat aliases
 	mux.HandleFunc("/cams.m3u8", s.auth.Wrap(s.handleStreamsM3U8))
 	mux.HandleFunc("/stream/", s.auth.Wrap(s.handleStreamM3U8))
+
+	// wyze-shim for the gwell-proxy sidecar. Loopback-only so Mars
+	// credentials can't leak to the LAN. See internal/webui/shim.go.
+	mux.HandleFunc("/internal/wyze/Camera/CameraList", requireLoopback(s.handleShimCameraList))
+	mux.HandleFunc("/internal/wyze/Camera/DeviceInfo", requireLoopback(s.handleShimDeviceInfo))
+	mux.HandleFunc("/internal/wyze/Camera/CameraToken", requireLoopback(s.handleShimCameraToken))
+	// /internal/wyze/webrtc/<streamID> is a one-shot bootstrap that
+	// go2rtc's native `#format=wyze` handler fetches when about to
+	// dial Wyze's KVS signaling server. Loopback-only — the response
+	// carries short-lived Wyze-scoped TURN credentials.
+	mux.HandleFunc("/internal/wyze/webrtc/", requireLoopback(s.handleShimKVSSignaling))
 }

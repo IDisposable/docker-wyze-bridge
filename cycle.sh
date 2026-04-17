@@ -8,10 +8,19 @@ set -euo pipefail
 
 # Local paths — overridden by anything the user puts in .env.dev.
 # The bridge's own defaults (/config, /media/...) are Docker-only.
+#
+# Defaults are assigned to intermediate vars (not inlined into
+# ${VAR:-...}) because bash parameter expansion doesn't track
+# nested braces: the literal {cam_name} close-brace inside the
+# default would terminate the ${...} early, producing a mangled
+# path like "{cam_name/%Y/%m/%d}". Separating the default assignment
+# keeps the {cam_name} token intact.
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_SNAPSHOT_PATH="$ROOT/local/snapshots/{cam_name}/%Y-%m-%d"
+DEFAULT_RECORD_PATH="$ROOT/local/recordings/{cam_name}/%Y/%m/%d"
 export STATE_DIR="${STATE_DIR:-$ROOT/local/config}"
-export SNAPSHOT_PATH="${SNAPSHOT_PATH:-$ROOT/local/snapshots}"
-export RECORD_PATH="${RECORD_PATH:-$ROOT/local/recordings/{cam_name}/%Y/%m/%d}"
+export SNAPSHOT_PATH="${SNAPSHOT_PATH:-$DEFAULT_SNAPSHOT_PATH}"
+export RECORD_PATH="${RECORD_PATH:-$DEFAULT_RECORD_PATH}"
 mkdir -p "$STATE_DIR" "$ROOT/local/snapshots" "$ROOT/local/recordings"
 
 # Fetch go2rtc binary to the repo root on first run. Version is read from
@@ -59,6 +68,17 @@ else
 fi
 go build -o wyze-bridge ./cmd/wyze-bridge
 
+# Build gwell-proxy to the repo root. cmd/wyze-bridge/gwell_spawn.go's
+# binary resolver checks ./gwell-proxy[.exe] before giving up, so
+# putting it here means `go run ./cmd/wyze-bridge` with GWELL_ENABLED=true
+# finds and spawns the sidecar exactly like the container does.
+# Cheap build — shares the same Go module cache as wyze-bridge above.
+GWELL_PROXY_BIN="$ROOT/gwell-proxy"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) GWELL_PROXY_BIN="$ROOT/gwell-proxy.exe" ;;
+esac
+go build -o "$GWELL_PROXY_BIN" ./cmd/gwell-proxy
+
 # Load Wyze credentials (and any overrides). Use POSIX `.` so this works
 # even when the script is invoked by dash. set -a auto-exports every
 # assignment in the sourced file.
@@ -68,4 +88,8 @@ if [ -f .env.dev ]; then
     set +a
 fi
 
+rm -f local/config/gwell/token_cache.json
+# Sweep zero-byte dump files (runs that never got any bytes) but keep
+# non-empty ones so successful sessions can be compared.
+find local/gwell-dumps -maxdepth 1 -type f -size 0 -delete 2>/dev/null || true
 go run ./cmd/wyze-bridge

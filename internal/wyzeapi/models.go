@@ -37,6 +37,14 @@ var gwellModels = map[string]bool{
 	"GW_BE1": true, "GW_GC1": true, "GW_GC2": true, "GW_DBD": true,
 }
 
+// webRTCStreamerModels: Wyze cameras that stream live media over WebRTC
+// (Wyze's mars-webcsrv signaling + AWS TURN), handled by go2rtc's native
+// #format=wyze source. Doorbell lineage. OG cameras (GW_GC1/GC2) use
+// Gwell P2P on the LAN and don't belong here.
+var webRTCStreamerModels = map[string]bool{
+	"GW_BE1": true, "GW_DBD": true,
+}
+
 // PanCams is the set of pan/tilt camera models.
 var PanCams = map[string]bool{
 	"WYZECP1_JEF": true, "HL_PAN2": true, "HL_PAN3": true, "HL_PANP": true,
@@ -77,6 +85,22 @@ func (c CameraInfo) ModelName() string {
 // IsGwell returns true if this camera uses the Gwell protocol (unsupported).
 func (c CameraInfo) IsGwell() bool {
 	return gwellModels[c.Model]
+}
+
+// IsWebRTCStreamer returns true when this camera streams via Wyze's
+// WebRTC path (served by go2rtc's native #format=wyze source). True if
+// either the model is in the allow-list OR the camera is Gwell-protocol
+// but has no LAN IP — the cloud not reporting a LAN IP is a reliable
+// signal for the doorbell lineage. OG cameras (LAN-direct Gwell P2P)
+// always have a LAN IP and stay on gwell-proxy.
+func (c CameraInfo) IsWebRTCStreamer() bool {
+	if webRTCStreamerModels[c.Model] {
+		return true
+	}
+	if c.IsGwell() && (c.LanIP == "" || c.LanIP == "0.0.0.0") {
+		return true
+	}
+	return false
 }
 
 // IsPanCam returns true if this is a pan/tilt camera.

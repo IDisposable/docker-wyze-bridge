@@ -4,9 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Docker Wyze Bridge is a Go application that bridges Wyze cameras to standard streaming protocols (WebRTC/RTSP/HLS). It uses go2rtc as a managed sidecar for all TUTK camera streaming, plus an optional `gwell-proxy` sidecar for Wyze's newer Gwell/IoTVideo P2P cameras (GW_BE1 Doorbell Pro, GW_GC1 OG, GW_GC2 OG 3X, GW_DBD Doorbell Duo) — no Python, no binary SDK. FFmpeg is bundled solely for go2rtc's JPEG snapshot endpoint; the bridge itself never invokes it.
+Docker Wyze Bridge is a Go application that bridges Wyze cameras to standard streaming protocols (WebRTC/RTSP/HLS). Three streaming paths, picked per-camera:
 
-The design document is at `DOCS/DESIGN.md`. Implementation notes at `DOCS/IMPLEMENTATION_NOTES.md`. Gwell protocol integration plan at `DOCS/GWELL_INTEGRATION.md`.
+- **TUTK** (most of the fleet): go2rtc connects directly via its `wyze://` source.
+- **Gwell P2P** (OG: `GW_GC1`, `GW_GC2`): optional `gwell-proxy` sidecar handles the LAN-direct UDP P2P and republishes to go2rtc as loopback RTSP.
+- **WebRTC (KVS)** (doorbell lineage: `GW_BE1` Doorbell Pro, `GW_DBD` Doorbell Duo): go2rtc's native `#format=wyze` source pulls the Wyze KVS signaling URL + ICE servers from our loopback shim at `/internal/wyze/webrtc/<cam>` and dials Wyze's `wyze-mars-webcsrv.wyzecam.com` itself. **No sidecar.**
+
+No Python, no binary SDK. FFmpeg is bundled solely for go2rtc's JPEG snapshot endpoint; the bridge itself never invokes it.
+
+Canonical design doc: `DOCS/DESIGN.md`. User-facing upgrade notes: `MIGRATION.md`. `DOCS/GWELL_RELAY_HANDOFF.md` is historical context for the GW_BE1 streaming investigation — kept for archaeological value only.
 
 ## Build & Test
 
@@ -40,10 +46,11 @@ docker buildx build -f docker/Dockerfile -t wyze-bridge .
 Docker Container
 ├── wyze-bridge (Go binary — our code, port 5080)
 ├── go2rtc      (managed sidecar — ports 1984, 8554, 8888, 8889, 8189/udp)
-└── gwell-proxy (optional sidecar for GW_* cameras — loopback RTSP + control API)
+└── gwell-proxy (optional sidecar — only spawned when an OG-family
+                 Gwell camera is discovered; loopback RTSP + control API)
 ```
 
-go2rtc handles MOST camera streaming (TUTK P2P, RTSP, WebRTC, HLS). For Wyze's newer Gwell/IoTVideo cameras (GW_BE1/GC1/GC2/DBD) that don't speak TUTK, an optional `gwell-proxy` sidecar (vendored from `github.com/wlatic/hacky-wyze-gwell`, MIT) handles the Gwell P2P handshake and republishes as a loopback RTSP stream which is then fed into go2rtc like any other source. Our Go binary orchestrates: Wyze API auth, camera discovery, go2rtc config generation, MQTT, WebUI, snapshots, recording config, and state persistence.
+go2rtc handles all TUTK cameras and all WebRTC (doorbell-lineage) cameras. For OG-family Gwell cameras (LAN-direct UDP P2P), the `gwell-proxy` sidecar (vendored from `github.com/wlatic/hacky-wyze-gwell`) handles the handshake and republishes as a loopback RTSP stream feeding go2rtc like any other source. Our Go binary orchestrates: Wyze API auth, camera discovery, go2rtc config generation, the `/internal/wyze/webrtc/<cam>` shim that feeds go2rtc's `#format=wyze` source, MQTT, WebUI, snapshots, recording config, and state persistence.
 
 ### Entry Point
 
@@ -56,7 +63,8 @@ go2rtc handles MOST camera streaming (TUTK P2P, RTSP, WebRTC, HLS). For Wyze's n
 | `internal/config/` | Env vars, Docker secrets, YAML config, per-camera overrides |
 | `internal/wyzeapi/` | Wyze API client: auth (HMAC-MD5, triple-MD5), camera discovery, commands, TOTP |
 | `internal/go2rtcmgr/` | go2rtc subprocess management, YAML config generation, HTTP API client |
-| `internal/gwell/` | gwell-proxy subprocess management + Producer that feeds Gwell (GW_*) cameras into go2rtc as loopback RTSP streams |
+| `internal/gwell/` | gwell-proxy subprocess management + vendored Gwell P2P protocol for OG-family cameras (GW_GC1/GC2) |
+| `internal/webui/shim_kvs.go` | `/internal/wyze/webrtc/<cam>` shim — feeds go2rtc's native `#format=wyze` source with signaling URL + ICE servers minted from `/v4/camera/get_streams`. Used for `GW_BE1` / `GW_DBD` doorbells. |
 | `internal/camera/` | Per-camera state machine (offline→discovering→connecting→streaming), filter, manager |
 | `internal/mqtt/` | Paho MQTT client, pub/sub, Home Assistant discovery messages |
 | `internal/webui/` | net/http server, REST API, SSE for real-time updates, embedded static assets |
@@ -66,7 +74,7 @@ go2rtc handles MOST camera streaming (TUTK P2P, RTSP, WebRTC, HLS). For Wyze's n
 
 ### Key Design Patterns
 
-- **go2rtc as sidecar**: Managed subprocess, communication via HTTP API on localhost:1984. Dynamic stream add/remove without restart.
+- **go2rtc as sidecar**: Managed subprocess, communication via HTTP API on 127.0.0.1:1984. Dynamic stream add/remove without restart.
 - **State machine per camera**: `StateOffline → StateDiscovering → StateConnecting → StateStreaming → StateError` with exponential backoff (`min(5s * 2^n, 5min)`).
 - **Config precedence**: Environment variables > YAML config > defaults. Per-camera overrides via `QUALITY_{CAM_NAME}`, `AUDIO_{CAM_NAME}`, `RECORD_{CAM_NAME}`.
 - **State persistence**: `$STATE_DIR/wyze-bridge.state.json` survives container restarts.
@@ -91,7 +99,7 @@ All env vars documented in `DOCS/DESIGN.md` section 5.8. Key ones:
 - `FORCE_IOTC_DETAIL` — verbose go2rtc + bridge logging
 - `WEBHOOK_URLS` — comma-separated URLs for state change notifications
 - `GWELL_ENABLED` — master switch for Gwell protocol proxy (default `true`)
-- `GWELL_BINARY` / `GWELL_RTSP_PORT` (`8564`) / `GWELL_CONTROL_PORT` (`18564`) / `GWELL_LOG_LEVEL` — see `DOCS/GWELL_INTEGRATION.md`
+- `GWELL_BINARY` / `GWELL_RTSP_PORT` (`8564`) / `GWELL_CONTROL_PORT` (`18564`) / `GWELL_LOG_LEVEL` — gwell-proxy sidecar knobs (only relevant for OG-family cameras)
 
 ## Dependencies
 

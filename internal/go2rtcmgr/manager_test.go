@@ -20,7 +20,7 @@ func TestManager_NewManager(t *testing.T) {
 	if m.configPath != "/config/go2rtc.yaml" {
 		t.Errorf("configPath = %q", m.configPath)
 	}
-	if m.APIURL() != "http://localhost:1984" {
+	if m.APIURL() != "http://127.0.0.1:1984" {
 		t.Errorf("APIURL = %q", m.APIURL())
 	}
 }
@@ -73,9 +73,9 @@ func TestEmitLogLine(t *testing.T) {
 		{name: "zerolog FTL demoted to error (keep bridge alive)",
 			line:      "21:38:51.720 FTL fatal thing",
 			wantLevel: "error", wantMsg: "fatal thing"},
-		{name: "unprefixed [OOO] noise → trace",
+		{name: "unprefixed [OOO] reset noise suppressed",
 			line:      "[OOO] ch=0x05 #3643 frameType=0x00 pktTotal=107 expected pkt 0, got 102 - reset",
-			wantLevel: "trace", wantMsg: "[OOO] ch=0x05 #3643 frameType=0x00 pktTotal=107 expected pkt 0, got 102 - reset"},
+			wantLevel: ""},
 		{name: "unknown level token → trace",
 			line:      "12:00:00.000 ??? weird line",
 			wantLevel: "trace", wantMsg: "12:00:00.000 ??? weird line"},

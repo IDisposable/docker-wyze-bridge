@@ -38,6 +38,18 @@ header {
 header h1 { font-size: 1.3rem; font-weight: 600; }
 header .version { font-weight: 300; color: var(--text-dim); font-size: 0.8rem; }
 header .back { font-size: 1.1rem; }
+header .discover-btn {
+    margin-left: auto;
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--border);
+    padding: 0.35rem 0.8rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+header .discover-btn:hover:not(:disabled) { background: var(--border); }
+header .discover-btn:disabled { opacity: 0.6; cursor: default; }
 
 main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
 
@@ -216,4 +228,18 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
     .camera-detail { grid-template-columns: 1fr; }
     .camera-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
     main { padding: 1rem; }
+}
+
+/* Record button — pill in the grid, labeled button in the detail view.
+   The `.on` modifier (added by app.js when recording is active) uses a
+   red tint so it is visually unmissable across the dashboard. */
+.record-btn.on {
+    background: #c0392b;
+    color: #fff;
+    border-color: #a93226;
+    animation: record-pulse 2s ease-in-out infinite;
+}
+@keyframes record-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0.5); }
+    50%      { box-shadow: 0 0 0 4px rgba(192, 57, 43, 0.0); }
 }

@@ -43,6 +43,44 @@ func TestManager_Cameras(t *testing.T) {
 	}
 }
 
+// TestManager_Cameras_StableOrder pins the contract callers rely on
+// for predictable UI rendering: Cameras() is sorted by name.
+// Go map iteration is randomized, so without the sort the grid
+// shuffled on every refresh.
+func TestManager_Cameras_StableOrder(t *testing.T) {
+	// Insert in random-looking order so a stable result implies
+	// the sort actually happened (not just matching insertion order).
+	m := &Manager{
+		cameras: map[string]*Camera{
+			"zebra":  NewCamera(wyzeapi.CameraInfo{Name: "zebra"}, "hd", true, false),
+			"apple":  NewCamera(wyzeapi.CameraInfo{Name: "apple"}, "hd", true, false),
+			"mango":  NewCamera(wyzeapi.CameraInfo{Name: "mango"}, "hd", true, false),
+			"banana": NewCamera(wyzeapi.CameraInfo{Name: "banana"}, "hd", true, false),
+		},
+	}
+	want := []string{"apple", "banana", "mango", "zebra"}
+
+	// Run several times because map iteration randomness means a
+	// broken implementation could coincidentally produce the sorted
+	// result on a single iteration.
+	for i := 0; i < 20; i++ {
+		cams := m.Cameras()
+		for idx, name := range want {
+			if cams[idx].Name() != name {
+				t.Fatalf("run %d: cams[%d]=%q, want %q (full order: %v)", i, idx, cams[idx].Name(), name, cameraNames(cams))
+			}
+		}
+	}
+}
+
+func cameraNames(cams []*Camera) []string {
+	out := make([]string, len(cams))
+	for i, c := range cams {
+		out[i] = c.Name()
+	}
+	return out
+}
+
 func TestManager_OnStateChange(t *testing.T) {
 	m := &Manager{
 		cameras: map[string]*Camera{

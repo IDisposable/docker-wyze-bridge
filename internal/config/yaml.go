@@ -116,26 +116,37 @@ func (c *Config) loadYAML() error {
 	return nil
 }
 
-// loadCamOverrides scans environment for QUALITY_{CAM}, AUDIO_{CAM}, RECORD_{CAM}.
+// loadCamOverrides scans environment for QUALITY_{CAM}, AUDIO_{CAM},
+// RECORD_{CAM}, and RECORD_CMD_{CAM}. Prefix order matters: RECORD_CMD_
+// is listed before RECORD_ so a longer match wins (otherwise
+// RECORD_CMD_FRONT_DOOR=... would be interpreted as RECORD for camera
+// "CMD_FRONT_DOOR"). Breaks out of the inner loop after the first
+// matched prefix to prevent fallthrough.
 func (c *Config) loadCamOverrides() {
 	for _, e := range os.Environ() {
-		for _, prefix := range []string{"QUALITY_", "AUDIO_", "RECORD_"} {
-			if key, val, ok := cutEnvPrefix(e, prefix); ok {
-				camKey := normalizeCamName(key)
-				ov := c.CamOverrides[camKey]
-				switch prefix {
-				case "QUALITY_":
-					v := val
-					ov.Quality = &v
-				case "AUDIO_":
-					b := parseBool(val, true)
-					ov.Audio = &b
-				case "RECORD_":
-					b := parseBool(val, false)
-					ov.Record = &b
-				}
-				c.CamOverrides[camKey] = ov
+		for _, prefix := range []string{"QUALITY_", "AUDIO_", "RECORD_CMD_", "RECORD_"} {
+			key, val, ok := cutEnvPrefix(e, prefix)
+			if !ok {
+				continue
 			}
+			camKey := normalizeCamName(key)
+			ov := c.CamOverrides[camKey]
+			switch prefix {
+			case "QUALITY_":
+				v := val
+				ov.Quality = &v
+			case "AUDIO_":
+				b := parseBool(val, true)
+				ov.Audio = &b
+			case "RECORD_CMD_":
+				v := val
+				ov.RecordCmd = &v
+			case "RECORD_":
+				b := parseBool(val, false)
+				ov.Record = &b
+			}
+			c.CamOverrides[camKey] = ov
+			break
 		}
 	}
 }

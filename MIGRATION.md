@@ -36,11 +36,15 @@ image: idisposablegithub365/wyze-bridge:go
 | Feature | Details |
 | --------- | --------- |
 | **Port 1984** | go2rtc native UI. Optional — power users can access go2rtc directly. The bridge WebUI at port 5080 is the primary interface. |
-| **Smaller image** | ~65 MB vs ~200+ MB. No Python, no binary SDK. FFmpeg is included only for go2rtc's JPEG snapshot endpoint; the bridge itself never invokes it. |
+| **Smaller image** | ~65 MB vs ~200+ MB. No Python, no binary SDK. FFmpeg is included only for go2rtc's JPEG snapshot endpoint + per-camera recording. |
 | **Faster startup** | No pip install, no ffmpeg probe chain. Cold start ~15-20s. |
 | **JSON state file** | Auth and camera data persisted to `$STATE_DIR/wyze-bridge.state.json` instead of pickle files. Survives restarts. |
 | **SSE real-time updates** | WebUI updates via Server-Sent Events instead of polling. |
-| **MFA/TOTP support** | Set `TOTP_KEY` to your authenticator app's secret for 2FA login. |
+| **MFA/TOTP support** | Set `WYZE_TOTP_KEY` to your authenticator app's secret for 2FA login. |
+| **Gwell / WebRTC support** | OG-family Gwell cameras (GW_GC1/GC2) + Doorbell lineage (GW_BE1 / GW_DBD) now work end-to-end. See [Gwell Cameras Now Supported](#new-gwell-cameras-now-supported). |
+| **Record start/stop in the UI** | Every camera card has a record button. Click starts per-camera `ffmpeg -f segment`; click again stops it. Also flipped via MQTT or `POST /api/cameras/<name>/record`. |
+| **Observability surfaces** | `/metrics` HTML dashboard, `/metrics.prom` Prometheus exposition, `/api/metrics` JSON, expanded `/api/health`, auto-generated `/dashboard.yaml` for Home Assistant. |
+| **MQTT metric topics** | Bridge-wide gauges at `<topic>/bridge/*` (uptime, camera counts, config errors, recordings size) + per-camera `<topic>/<cam>/recording`. All auto-created via HA discovery. |
 
 ## Breaking Changes
 
@@ -129,7 +133,7 @@ Bare-Docker defaults collapsed to a single `/media` volume:
 
 | | 3.x | 4.0 |
 | --- | --- | --- |
-| snapshots | `/img/{cam_name}.jpg` (flat, overwrites) | `/media/snapshots/{cam_name}/%Y/%m/%d/%H-%M-%S.jpg` (structured, time-lapse) |
+| snapshots | `/img/{cam_name}.jpg` (flat, overwrites) | `/media/snapshots/{cam_name}/%Y-%m-%d/%H-%M-%S.jpg` (structured, time-lapse) |
 | recordings | `/record/{cam_name}/%Y/%m/%d/%H-%M-%S.mp4` | `/media/recordings/{cam_name}/%Y/%m/%d/%H-%M-%S.mp4` |
 | docker-compose volumes | `./img:/img`, `./record:/record` | `./media:/media` |
 | VOLUME directive | `/config`, `/img`, `/record` | `/config`, `/media` |
@@ -158,9 +162,41 @@ Go rewrite: JSON file at `$STATE_DIR/wyze-bridge.state.json` (default: `/config/
 
 Old pickle files are not migrated. The bridge will re-authenticate and re-discover cameras on first run.
 
-### Not Supported: Gwell Protocol Cameras
+### New: Gwell Cameras Now Supported
 
-Same as before — OG, Doorbell Pro, Pan v4, Battery Cam Pro use the Gwell protocol and are not supported.
+Previously unsupported in the Python bridge, now handled in two ways:
+
+- **OG family** (`GW_GC1`, `GW_GC2`) — `gwell-proxy` sidecar speaks
+  Gwell P2P directly (LAN-direct UDP) and republishes to go2rtc via
+  RTSP. Enabled by default; the sidecar only spawns when an OG camera
+  is actually discovered, so users without OG cameras pay zero cost.
+  Set `GWELL_ENABLED=false` to opt out.
+- **Doorbell lineage** (`GW_BE1` Doorbell Pro, `GW_DBD` Doorbell Duo)
+  — go2rtc's native `#format=wyze` source dials Wyze's
+  `wyze-mars-webcsrv.wyzecam.com` WebRTC signaling server itself; our
+  shim provides the per-camera signaling URL and ICE servers. No
+  sidecar.
+
+### Not Supported
+
+Battery Cam Pro, Floodlight Pro (LD_CFP) — different protocol than
+either of the above.
+
+## Default Behavior Changes (4.0)
+
+The rewrite is a good opportunity to pick sensible defaults. If you
+rely on an earlier behavior, set the env var explicitly.
+
+| Variable | 3.x default | 4.0 default | Reason |
+| -------- | ----------- | ----------- | ------ |
+| `GWELL_ENABLED` | n/a (Gwell cameras unsupported) | `true` | Zero cost when no OG camera is present; enables doorbell OGs out-of-the-box |
+| `SNAPSHOT_PATH` | `/img` (flat, one overwritten JPEG per camera) | `/media/snapshots/{cam_name}/%Y-%m-%d` (time-lapse archive) | Consumers that need "latest frame" should query `/api/snapshot/<cam>` — filesystem archive is more useful for most users |
+| `SNAPSHOT_FILE_NAME` | n/a (filename fixed) | `%H-%M-%S` | Time-of-day stems, date comes from the path |
+| `RECORD_PATH` | `/record/{cam_name}/%Y/%m/%d` | `/media/recordings/{cam_name}/%Y/%m/%d` | Consolidated under a single `/media` volume mount |
+| Recording/snapshot strftime timezone | local (container TZ) | **UTC** | DST spring-forward created a missing hour of recordings, fall-back created name clashes. UTC paths are unambiguous; browsers render JSON timestamps in local time for free via RFC3339 `Z` suffix |
+| Recording mechanism | MediaMTX `record:` block in mediamtx.yml | `ffmpeg -c:v copy -c:a aac -f segment` per camera, started by the bridge on `StateStreaming` | MediaMTX is gone; go2rtc doesn't support the YAML `record:` property we'd have used. Audio is transcoded to AAC because Wyze TUTK delivers PCM s16be which mp4 rejects under `-c copy` |
+| Network mode | remote P2P worked via cloud relay | LAN-only, all P2P | Remote P2P dropped with the Python/TUTK-SDK removal — use a VPN |
+| WebUI auth | `WB_AUTH=true` with auto-generated password | `BRIDGE_AUTH=false` (no gate) — pending review | Being raised for discussion; a follow-up commit may flip this |
 
 ## Environment Variable Reference
 

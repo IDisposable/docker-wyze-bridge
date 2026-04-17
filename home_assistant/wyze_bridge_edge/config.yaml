@@ -2,10 +2,11 @@ name: Wyze Bridge (Edge)
 description: >-
   WebRTC/RTSP/HLS bridge for Wyze cameras.
   Stream your Wyze cameras locally without cloud dependencies.
-  Edge channel — tracks latest development. May be unstable.
-slug: wyze_bridge
-url: https://github.com/IDisposable/docker-wyze-bridge
-version: 4.0.0-beta
+  Edge channel — tracks the dev branch. May be unstable.
+slug: wyze_bridge_edge
+url: https://github.com/IDisposable/docker-wyze-bridge/tree/dev
+image: ghcr.io/idisposable/docker-wyze-bridge-homeassistant-edge
+version: 4.2.0-edge
 stage: experimental
 arch:
   - amd64

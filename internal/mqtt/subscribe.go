@@ -20,6 +20,12 @@ func (c *Client) subscribeCommands() {
 	restartPattern := fmt.Sprintf("%s/+/stream/restart", c.topic)
 	c.subscribe(restartPattern, c.handleRestartCommand)
 
+	recordPattern := fmt.Sprintf("%s/+/record/set", c.topic)
+	c.subscribe(recordPattern, c.handleRecordCommand)
+
+	discoverTopic := fmt.Sprintf("%s/bridge/discover/set", c.topic)
+	c.subscribe(discoverTopic, c.handleDiscoverCommand)
+
 	c.log.Debug().Str("pattern", pattern).Msg("subscribed to command topics")
 }
 
@@ -61,15 +67,16 @@ func (c *Client) handleSetCommand(_ paho.Client, msg paho.Message) {
 			}()
 		}
 	case "audio":
-		cam.AudioOn = value == "true"
+		cam.SetAudioOn(value == "true")
 		c.publish(fmt.Sprintf("%s/%s/audio", c.topic, camName), value, true)
 	case "night_vision":
 		pidVal := map[string]string{"auto": "0", "on": "1", "off": "2"}
 		if pv, ok := pidVal[value]; ok {
+			info := cam.GetInfo()
 			go func() {
 				c.log.Info().Str("cam", camName).Str("value", value).Msg("night vision command via Wyze API")
 				if c.wyzeAPI != nil {
-					if err := c.wyzeAPI.SetProperty(cam.Info, "P3", pv); err != nil {
+					if err := c.wyzeAPI.SetProperty(info, "P3", pv); err != nil {
 						c.log.Error().Err(err).Str("cam", camName).Msg("night vision command failed")
 					} else {
 						c.publish(fmt.Sprintf("%s/%s/night_vision", c.topic, camName), value, true)
@@ -102,4 +109,45 @@ func (c *Client) handleRestartCommand(_ paho.Client, msg paho.Message) {
 	camName := parts[len(parts)-3]
 	c.log.Info().Str("cam", camName).Msg("stream restart requested via MQTT")
 	go c.camMgr.RestartStream(context.Background(), camName)
+}
+
+// handleRecordCommand handles <topic>/<cam>/record/set commands.
+// Payload semantics match HA's switch component: "start" / "ON" / "1" /
+// "true" starts recording, anything else stops it. Both REST and
+// MQTT paths end up in recording.Manager.Start/Stop — idempotent.
+func (c *Client) handleRecordCommand(_ paho.Client, msg paho.Message) {
+	parts := strings.Split(msg.Topic(), "/")
+	// Expected: {topic}/{cam}/record/set
+	if len(parts) < 4 {
+		return
+	}
+	camName := parts[len(parts)-3]
+	payload := strings.ToLower(strings.TrimSpace(string(msg.Payload())))
+
+	var action string
+	switch payload {
+	case "start", "on", "1", "true":
+		action = "start"
+	default:
+		action = "stop"
+	}
+
+	c.log.Info().Str("cam", camName).Str("action", action).Msg("record command received via MQTT")
+	if c.camMgr.GetCamera(camName) == nil {
+		c.log.Warn().Str("cam", camName).Msg("unknown camera in MQTT record command")
+		return
+	}
+	if c.onRecord != nil {
+		go c.onRecord(context.Background(), camName, action)
+	}
+}
+
+// handleDiscoverCommand handles the bridge-wide rediscovery trigger.
+// Any non-empty payload kicks off a discovery + reconnect pass (HA
+// button entities fire "PRESS" which we treat as "run it").
+func (c *Client) handleDiscoverCommand(_ paho.Client, _ paho.Message) {
+	c.log.Info().Msg("bridge rediscovery requested via MQTT")
+	if c.onDiscover != nil {
+		go c.onDiscover(context.Background())
+	}
 }

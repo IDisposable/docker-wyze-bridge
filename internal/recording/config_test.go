@@ -15,7 +15,7 @@ func TestRecordPathForCamera(t *testing.T) {
 		RecordFileName: "%H-%M-%S",
 		CamOverrides:   make(map[string]config.CamOverride),
 	}
-	m := NewManager(cfg, zerolog.Nop())
+	m := NewManager(cfg, nil, zerolog.Nop())
 
 	got := m.RecordPathForCamera("front_door")
 	want := "/media/recordings/front_door/%Y/%m/%d"
@@ -30,7 +30,7 @@ func TestRecordFileNameForCamera(t *testing.T) {
 		RecordFileName: "%H-%M-%S",
 		CamOverrides:   make(map[string]config.CamOverride),
 	}
-	m := NewManager(cfg, zerolog.Nop())
+	m := NewManager(cfg, nil, zerolog.Nop())
 
 	got := m.RecordFileNameForCamera("front_door")
 	// Should contain both path and filename with valid time vars
@@ -47,7 +47,7 @@ func TestRecordFileNameValidation(t *testing.T) {
 		RecordFileName: "recording",
 		CamOverrides:   make(map[string]config.CamOverride),
 	}
-	m := NewManager(cfg, zerolog.Nop())
+	m := NewManager(cfg, nil, zerolog.Nop())
 
 	got := m.RecordFileNameForCamera("test")
 	if got[len(got)-3:] != "_%s" {
@@ -81,7 +81,7 @@ func TestIsEnabled(t *testing.T) {
 			"FRONT_DOOR": {Record: &b},
 		},
 	}
-	m := NewManager(cfg, zerolog.Nop())
+	m := NewManager(cfg, nil, zerolog.Nop())
 
 	if !m.IsEnabled("front_door") {
 		t.Error("front_door should have recording enabled")

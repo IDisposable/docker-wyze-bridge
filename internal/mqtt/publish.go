@@ -19,10 +19,10 @@ func (c *Client) PublishCameraState(cam *camera.Camera) {
 
 	c.publish(fmt.Sprintf("%s/%s/state", c.topic, name), stateStr, true)
 	c.publish(fmt.Sprintf("%s/%s/net_mode", c.topic, name), "lan", true)
-	c.publish(fmt.Sprintf("%s/%s/quality", c.topic, name), cam.Quality, true)
+	c.publish(fmt.Sprintf("%s/%s/quality", c.topic, name), cam.GetQuality(), true)
 
 	audioStr := "false"
-	if cam.AudioOn {
+	if cam.GetAudioOn() {
 		audioStr = "true"
 	}
 	c.publish(fmt.Sprintf("%s/%s/audio", c.topic, name), audioStr, true)
@@ -31,7 +31,7 @@ func (c *Client) PublishCameraState(cam *camera.Camera) {
 // PublishCameraInfo publishes static camera information.
 func (c *Client) PublishCameraInfo(cam *camera.Camera) {
 	name := cam.Name()
-	info := cam.Info
+	info := cam.GetInfo()
 
 	cameraInfo := map[string]string{
 		"ip":         info.LanIP,

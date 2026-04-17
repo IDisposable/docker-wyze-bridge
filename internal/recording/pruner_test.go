@@ -38,7 +38,7 @@ func TestPruner_PruneOldRecordings(t *testing.T) {
 		CamOverrides: make(map[string]config.CamOverride),
 	}
 
-	m := NewManager(cfg, zerolog.Nop())
+	m := NewManager(cfg, nil, zerolog.Nop())
 	m.prune()
 
 	// Old mp4 should be deleted
@@ -75,7 +75,7 @@ func TestPruner_CleanEmptyDirs(t *testing.T) {
 		CamOverrides: make(map[string]config.CamOverride),
 	}
 
-	m := NewManager(cfg, zerolog.Nop())
+	m := NewManager(cfg, nil, zerolog.Nop())
 	m.prune()
 
 	// The deeply nested empty dirs should be cleaned up

@@ -68,7 +68,7 @@ cp .env.dev.example .env.dev
 #### Required credentials
 
 | Variable | Where to get it |
-|----------|-----------------|
+| ---------- | ----------------- |
 | `WYZE_EMAIL` | Your Wyze account email |
 | `WYZE_PASSWORD` | Your Wyze account password |
 | `WYZE_API_ID` | [Wyze Developer Console](https://developer-api-console.wyze.com/#/apikey/view) → API Keys |
@@ -223,8 +223,8 @@ internal/
 
 1. Add the field to `Config` struct in `internal/config/config.go`
 2. Set its default in `Load()`
-3. Add to `home_assistant/config.yaml` schema if applicable
-4. Add to `home_assistant/translations/en.yaml`
+3. Add to the schema in BOTH `home_assistant/wyze_bridge/config.yaml` and `home_assistant/wyze_bridge_edge/config.yaml` if applicable
+4. Add to BOTH `home_assistant/wyze_bridge/translations/en.yaml` and `home_assistant/wyze_bridge_edge/translations/en.yaml`
 5. Document in README.md
 
 ### Adding a new camera command via MQTT

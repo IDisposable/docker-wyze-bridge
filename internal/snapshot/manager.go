@@ -145,7 +145,7 @@ func (m *Manager) captureOne(ctx context.Context, name string) {
 // parent chain means strftime subdirectories in either template Just
 // Work.
 func (m *Manager) saveSnapshot(name string, jpeg []byte) (string, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 
 	dir := expandTemplate(m.cfg.SnapshotPath, name, now)
 	fileName := m.cfg.SnapshotFileName

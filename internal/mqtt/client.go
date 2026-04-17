@@ -23,7 +23,9 @@ type Client struct {
 	camMgr     *camera.Manager
 	wyzeAPI    *wyzeapi.Client
 	bridgeIP   string
-	onSnapshot func(ctx context.Context, camName string) // snapshot trigger callback
+	onSnapshot func(ctx context.Context, camName string)        // snapshot trigger callback
+	onRecord   func(ctx context.Context, camName, action string) // record start/stop callback (action = "start"|"stop")
+	onDiscover func(ctx context.Context)                         // bridge-wide rediscovery trigger
 	mu         sync.Mutex
 	connected  bool
 }
@@ -110,6 +112,18 @@ func (c *Client) Disconnect() {
 // OnSnapshotRequest registers a callback for MQTT-triggered snapshots.
 func (c *Client) OnSnapshotRequest(fn func(ctx context.Context, camName string)) {
 	c.onSnapshot = fn
+}
+
+// OnRecordRequest registers a callback for MQTT-triggered record
+// start/stop. action is "start" or "stop".
+func (c *Client) OnRecordRequest(fn func(ctx context.Context, camName, action string)) {
+	c.onRecord = fn
+}
+
+// OnDiscoverRequest registers a callback for MQTT-triggered bridge
+// rediscovery (re-poll Wyze API for added/removed cameras).
+func (c *Client) OnDiscoverRequest(fn func(ctx context.Context)) {
+	c.onDiscover = fn
 }
 
 // IsConnected returns whether the client is currently connected.

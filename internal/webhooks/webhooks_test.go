@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,7 +46,10 @@ func TestClient_Enabled(t *testing.T) {
 
 func TestClient_Send(t *testing.T) {
 	var received atomic.Int32
-	var lastPayload Payload
+	var (
+		mu          sync.Mutex
+		lastPayload Payload
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
@@ -60,7 +64,11 @@ func TestClient_Send(t *testing.T) {
 			t.Error("missing X-Wyze-Bridge-Event header")
 		}
 
-		json.NewDecoder(r.Body).Decode(&lastPayload)
+		var p Payload
+		json.NewDecoder(r.Body).Decode(&p)
+		mu.Lock()
+		lastPayload = p
+		mu.Unlock()
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()
@@ -82,14 +90,17 @@ func TestClient_Send(t *testing.T) {
 	if received.Load() != 1 {
 		t.Errorf("received = %d, want 1", received.Load())
 	}
-	if lastPayload.Event != EventCameraOnline {
-		t.Errorf("event = %q", lastPayload.Event)
+	mu.Lock()
+	gotPayload := lastPayload
+	mu.Unlock()
+	if gotPayload.Event != EventCameraOnline {
+		t.Errorf("event = %q", gotPayload.Event)
 	}
-	if lastPayload.Camera != "front_door" {
-		t.Errorf("camera = %q", lastPayload.Camera)
+	if gotPayload.Camera != "front_door" {
+		t.Errorf("camera = %q", gotPayload.Camera)
 	}
-	if lastPayload.Data["ip"] != "192.168.1.10" {
-		t.Errorf("data.ip = %v", lastPayload.Data["ip"])
+	if gotPayload.Data["ip"] != "192.168.1.10" {
+		t.Errorf("data.ip = %v", gotPayload.Data["ip"])
 	}
 }
 
@@ -150,11 +161,16 @@ func TestClient_Send_UnreachableURL(t *testing.T) {
 }
 
 func TestClient_SendHelpers(t *testing.T) {
-	var events []string
+	var (
+		mu     sync.Mutex
+		events []string
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ev := r.Header.Get("X-Wyze-Bridge-Event")
+		mu.Lock()
 		events = append(events, ev)
+		mu.Unlock()
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()
@@ -169,8 +185,11 @@ func TestClient_SendHelpers(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	if len(events) != 4 {
-		t.Errorf("expected 4 events, got %d", len(events))
+	mu.Lock()
+	got := len(events)
+	mu.Unlock()
+	if got != 4 {
+		t.Errorf("expected 4 events, got %d", got)
 	}
 }
 

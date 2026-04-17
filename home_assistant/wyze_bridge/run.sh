@@ -1,4 +1,6 @@
-#!/usr/bin/env bashio
+#!/usr/bin/with-contenv bashio
+
+set -euo pipefail
 
 # HA add-on options (nested under wyze/bridge/camera/snapshot/record/
 # mqtt/filter/location/webhooks/gwell/debug) → flat env vars for the Go
@@ -127,7 +129,7 @@ export STATE_DIR="/config"
 # snapshots and recordings have parallel on-disk shapes. Base dirs are
 # created up front so first write doesn't trip on a missing parent.
 if ! bashio::config.has_value 'snapshot.path'; then
-    export SNAPSHOT_PATH="/media/wyze_bridge/snapshots/{cam_name}/%Y/%m/%d"
+    export SNAPSHOT_PATH="/media/wyze_bridge/snapshots/{cam_name}/%Y-%m-%d"
 fi
 if ! bashio::config.has_value 'snapshot.file_name'; then
     export SNAPSHOT_FILE_NAME="%H-%M-%S"
@@ -136,6 +138,27 @@ if ! bashio::config.has_value 'record.path'; then
     export RECORD_PATH="/media/wyze_bridge/recordings/{cam_name}/%Y/%m/%d"
 fi
 mkdir -p /media/wyze_bridge/snapshots /media/wyze_bridge/recordings
+
+# Drop an auto-generated Lovelace dashboard into /config so users can
+# add it as a resource in HA (or edit it further to taste). We run this
+# in the background and retry for a while because the bridge has to
+# finish discovery before it can emit a camera list. If the bridge
+# never comes up the loop gives up after ~30s and the add-on continues
+# without the dashboard file — not a fatal condition.
+(
+    bridge_port="${BRIDGE_PORT:-5080}"
+    target=/config/wyze_bridge_dashboard.yaml
+    for i in $(seq 1 15); do
+        sleep 2
+        if curl -fsS "http://127.0.0.1:${bridge_port}/dashboard.yaml" -o "${target}.tmp" 2>/dev/null; then
+            mv "${target}.tmp" "${target}"
+            bashio::log.info "Wrote Lovelace dashboard to ${target}"
+            exit 0
+        fi
+    done
+    bashio::log.warning "Bridge didn't respond in 30s; skipping dashboard drop-in"
+    rm -f "${target}.tmp"
+) &
 
 bashio::log.info "Starting Wyze Bridge..."
 exec /usr/local/bin/wyze-bridge

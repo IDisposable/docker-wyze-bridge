@@ -2,15 +2,14 @@ name: Docker
 
 on:
   push:
-    branches: [go-rewrite, main]
+    branches: [dev, main]
     tags: ['v*.*.*']
   pull_request:
-    branches: [go-rewrite, main]
+    branches: [dev, main]
   workflow_dispatch:
 
 env:
   DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wyze-bridge
-  GHCR_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   test:
@@ -25,15 +24,36 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  # Builds the underlying wyze-bridge image (single codebase, two
+  # channel tags). Runs on every push — the channel distinction lives
+  # in the HA add-on wrappers below, not in the main image.
   build:
     needs: [test]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
-
+    outputs:
+      ghcr_image: ${{ steps.envs.outputs.ghcr_image }}
+      addon_image_stable: ${{ steps.envs.outputs.addon_image_stable }}
+      addon_image_edge: ${{ steps.envs.outputs.addon_image_edge }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Normalize image references
+        id: envs
+        # Docker registry refs must be lowercase; github.repository
+        # keeps the owner's original casing. Compute lowercase names
+        # once and propagate via both GITHUB_ENV (for use in this job)
+        # and GITHUB_OUTPUT (for downstream jobs).
+        run: |
+          REPO="${GITHUB_REPOSITORY,,}"
+          echo "GHCR_IMAGE=ghcr.io/${REPO}"                             >> "$GITHUB_ENV"
+          echo "HA_ADDON_IMAGE=ghcr.io/${REPO}-homeassistant"           >> "$GITHUB_ENV"
+          echo "HA_ADDON_IMAGE_EDGE=ghcr.io/${REPO}-homeassistant-edge" >> "$GITHUB_ENV"
+          echo "ghcr_image=ghcr.io/${REPO}"                             >> "$GITHUB_OUTPUT"
+          echo "addon_image_stable=ghcr.io/${REPO}-homeassistant"       >> "$GITHUB_OUTPUT"
+          echo "addon_image_edge=ghcr.io/${REPO}-homeassistant-edge"    >> "$GITHUB_OUTPUT"
 
       - name: Login to DockerHub
         if: github.event_name != 'pull_request'
@@ -67,7 +87,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=edge,branch=go-rewrite
+            type=edge,branch=dev
             type=ref,event=branch,enable=${{ contains(github.ref, 'main') }}
             type=ref,event=pr
             type=sha,format=long
@@ -76,9 +96,9 @@ jobs:
         id: version
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF##*/v}" >> $GITHUB_OUTPUT
+            echo "version=${GITHUB_REF##*/v}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push
@@ -102,14 +122,160 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
 
-  version-bump:
+  # Stable HA add-on — built from main branch pushes and tag releases
+  # only. Pulls the main-tagged wyze-bridge image produced by the
+  # upstream build job.
+  addon-stable:
     needs: [build]
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      packages: write
+    env:
+      GHCR_IMAGE: ${{ needs.build.outputs.ghcr_image }}
+      HA_ADDON_IMAGE: ${{ needs.build.outputs.addon_image_stable }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update version in config files
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Read add-on version
+        id: addon_version
+        run: |
+          version=$(awk -F': ' '$1=="version"{print $2; exit}' home_assistant/wyze_bridge/config.yaml)
+          if [[ -z "$version" ]]; then
+            echo "Unable to read home_assistant/wyze_bridge/config.yaml version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push stable add-on image
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          context: ./home_assistant/wyze_bridge
+          file: ./home_assistant/wyze_bridge/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            WYZE_BRIDGE_IMAGE=${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.description=Home Assistant add-on image for Wyze Bridge (stable)
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=docker-wyze-bridge-homeassistant
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.addon_version.outputs.version }}
+            io.hass.name=Wyze Bridge
+            io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras
+            io.hass.version=${{ steps.addon_version.outputs.version }}
+            io.hass.type=addon
+            io.hass.arch=amd64,aarch64
+          tags: |
+            ${{ env.HA_ADDON_IMAGE }}:${{ steps.addon_version.outputs.version }}
+            ${{ env.HA_ADDON_IMAGE }}:latest
+            ${{ env.HA_ADDON_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=ha-stable
+          cache-to: type=gha,mode=max,scope=ha-stable
+          provenance: false
+
+  # Edge HA add-on — built from dev branch pushes only. Pulls the
+  # dev-branch sha-tagged wyze-bridge image so edge users run the same
+  # bits we just tested.
+  addon-edge:
+    needs: [build]
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      GHCR_IMAGE: ${{ needs.build.outputs.ghcr_image }}
+      HA_ADDON_IMAGE_EDGE: ${{ needs.build.outputs.addon_image_edge }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Read add-on version
+        id: addon_version
+        run: |
+          version=$(awk -F': ' '$1=="version"{print $2; exit}' home_assistant/wyze_bridge_edge/config.yaml)
+          if [[ -z "$version" ]]; then
+            echo "Unable to read home_assistant/wyze_bridge_edge/config.yaml version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push edge add-on image
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          context: ./home_assistant/wyze_bridge_edge
+          file: ./home_assistant/wyze_bridge_edge/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            WYZE_BRIDGE_IMAGE=${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.description=Home Assistant add-on image for Wyze Bridge (edge)
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=docker-wyze-bridge-homeassistant-edge
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.addon_version.outputs.version }}
+            io.hass.name=Wyze Bridge (Edge)
+            io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras — edge channel
+            io.hass.version=${{ steps.addon_version.outputs.version }}
+            io.hass.type=addon
+            io.hass.arch=amd64,aarch64
+          tags: |
+            ${{ env.HA_ADDON_IMAGE_EDGE }}:${{ steps.addon_version.outputs.version }}
+            ${{ env.HA_ADDON_IMAGE_EDGE }}:edge
+            ${{ env.HA_ADDON_IMAGE_EDGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=ha-edge
+          cache-to: type=gha,mode=max,scope=ha-edge
+          provenance: false
+
+  # On a semver tag push, bump the stable add-on's config.yaml version
+  # to match the tag, then commit back to main. Edge config.yaml is
+  # intentionally left alone — its version tracks the dev trunk and is
+  # rolled manually when preparing a release candidate.
+  version-bump:
+    needs: [addon-stable]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update stable add-on version
         id: bump
         run: |
           TAG=${GITHUB_REF##*/v}
@@ -117,12 +283,12 @@ jobs:
             echo "Invalid tag: $TAG"
             exit 1
           fi
-          sed -i "s/^version: .*/version: ${TAG}/" home_assistant/config.yaml
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          sed -i "s/^version: .*/version: ${TAG}/" home_assistant/wyze_bridge/config.yaml
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Commit version bump
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          branch: go-rewrite
+          branch: main
           commit_message: 'v${{ steps.bump.outputs.tag }}'
-          file_pattern: home_assistant/config.yaml
+          file_pattern: home_assistant/wyze_bridge/config.yaml

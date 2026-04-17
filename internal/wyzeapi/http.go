@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // WyzeAPIError represents an error response from the Wyze API.
@@ -55,13 +56,21 @@ func (c *Client) postJSON(url string, headers map[string]string, body map[string
 
 	c.log.Trace().Str("url", url).RawJSON("body", jsonBody).Interface("headers", headers).Msg("POST (json)")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if c.metrics != nil {
+			c.metrics.record(url, 0, time.Since(start), true)
+		}
 		return nil, fmt.Errorf("http post: %w", err)
 	}
 	defer resp.Body.Close()
 
-	return c.validateResponse(resp)
+	result, vErr := c.validateResponse(resp)
+	if c.metrics != nil {
+		c.metrics.record(url, resp.StatusCode, time.Since(start), vErr != nil)
+	}
+	return result, vErr
 }
 
 // postRaw sends a raw string body POST request and validates the response.
@@ -77,13 +86,21 @@ func (c *Client) postRaw(url string, headers map[string]string, body string) (ma
 
 	c.log.Trace().Str("url", url).Msg("POST (raw)")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if c.metrics != nil {
+			c.metrics.record(url, 0, time.Since(start), true)
+		}
 		return nil, fmt.Errorf("http post: %w", err)
 	}
 	defer resp.Body.Close()
 
-	return c.validateResponse(resp)
+	result, vErr := c.validateResponse(resp)
+	if c.metrics != nil {
+		c.metrics.record(url, resp.StatusCode, time.Since(start), vErr != nil)
+	}
+	return result, vErr
 }
 
 func (c *Client) validateResponse(resp *http.Response) (map[string]interface{}, error) {

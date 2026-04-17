@@ -1,76 +1,69 @@
 # wyze-bridge-go: Design Document
 
-**Project:** Complete reimplementation of `IDisposable/docker-wyze-bridge` in Go  
-**Source repo:** https://github.com/IDisposable/docker-wyze-bridge (replaced in-place on new branch `go-rewrite`)  
-**Status:** First phase testing  
-**Date:** April 2026
+Pure-Go reimplementation of `IDisposable/docker-wyze-bridge`. Canonical
+description of what the bridge is and how it works. User-facing
+upgrade notes live in [MIGRATION.md](../MIGRATION.md).
 
 ---
 
-## 1. Executive Summary
+## 1. Summary
 
-The existing `docker-wyze-bridge` is a Python application that wraps:
+The bridge is a single Go binary that discovers Wyze cameras via their
+cloud API and hands them to [go2rtc](https://github.com/AlexxIT/go2rtc)
+for local RTSP/WebRTC/HLS streaming. go2rtc runs as a managed
+subprocess; the bridge does not link or import it.
 
-- A proprietary TUTK binary SDK (`.so` file, platform-specific, Wyze-controlled)
-- MediaMTX (Go binary sidecar) for RTSP/WebRTC/HLS streaming
-- A Flask WebUI
-- An MQTT client
-- A Wyze cloud API client
+Three streaming paths, chosen per-camera from the model ID:
 
-Wyze's changes to their camera access model have broken or destabilized the Python bridge for many users. The `go2rtc` project merged a pure-Go TUTK P2P implementation (v1.9.14, January 2026) with no binary SDK dependency that handles modern Wyze firmware.
+| Path | Used for | How |
+| ---- | -------- | --- |
+| **TUTK** | Most models (V1, V2, V3, V3 Pro, V4, Doorbell v2, Pan V1/V2/V3/Pro, Floodlight v1/v2, Outdoor v1/v2) | go2rtc's built-in `wyze://` source speaks Wyze's pure-Go TUTK P2P. LAN-direct UDP; no binary SDK. |
+| **Gwell P2P** | OG family (`GW_GC1`, `GW_GC2`) | `gwell-proxy` sidecar handles the Gwell/IoTVideo handshake and RTSP-PUBLISH-es H.264 into go2rtc. |
+| **WebRTC (KVS)** | Doorbell lineage (`GW_BE1` Doorbell Pro, `GW_DBD` Doorbell Duo) | go2rtc's native `#format=wyze` source fetches the signaling URL + ICE servers from our loopback shim (`/internal/wyze/webrtc/<cam>`, which calls Wyze's `/v4/camera/get_streams`) and dials `wyze-mars-webcsrv.wyzecam.com` itself. No sidecar. |
 
-**The plan:** Rewrite entirely in Go. go2rtc runs as a managed sidecar and handles all TUTK streaming. The new Go binary owns camera discovery, authentication, MQTT, configuration, recording, and a fresh WebUI. No Python. No binary SDK. Docker image under 50MB. Drop-in environment-variable replacement for existing users.
+The bridge orchestrates: Wyze API auth, camera discovery, go2rtc
+subprocess + stream registration (via API, not YAML), MQTT
+state/discovery, a WebUI on port 5080, interval + sunrise/sunset
+snapshots, and per-camera ffmpeg recording. FFmpeg is the only C
+dependency and is used only for snapshot frame extraction and MP4
+segment writing.
 
----
+## 2. Design Decisions
 
-## 2. Confirmed Design Decisions
-
-| Decision | Choice | Rationale |
-| ---------- | -------- | ----------- |
-| go2rtc relationship | Sidecar (managed subprocess) | `internal/` packages not importable; stable API surface |
-| Logging library | **zerolog** (`github.com/rs/zerolog`) | Zero-allocation, structured, fast |
-| WebUI | **Rewrite from scratch** | Existing Flask/Jinja UI is not worth porting |
-| Port 1984 | Exposed but not user-facing | Power users get go2rtc native UI; bridge UI stays at 5080 |
-| Recording | **Full feature, Phase 2, high priority** | go2rtc handles backend |
-| Repo strategy | **Replace in-place on branch `go-rewrite`** | Preserve stars/issues/history |
-| P2P mode | LAN-only | go2rtc constraint; VPN path documented |
-
----
+| Decision | Choice | Why |
+| -------- | ------ | --- |
+| go2rtc relationship | Managed subprocess | `internal/` packages aren't importable; the HTTP API is stable |
+| Stream registration | HTTP API (`PUT /api/streams`) | YAML rewrites required a restart for any camera-list change |
+| Logging | [`zerolog`](https://github.com/rs/zerolog) | Zero-allocation, structured, fast; good `io.Writer` interop for piping go2rtc stdout |
+| WebUI | Plain `net/http` + `html/template` + embedded static assets | No web framework; SSE for live updates instead of polling |
+| Port 1984 | Exposed, not user-facing | Power users get go2rtc's native UI; the bridge's own UI stays on 5080 |
+| Recording | `ffmpeg -c copy -f segment` per camera pulling from our own RTSP endpoint | go2rtc v1.9.x doesn't expose per-stream recording via YAML or API |
+| P2P mode | LAN-only | go2rtc's TUTK requires same-subnet; remote P2P is a VPN job |
+| Repo strategy | Replaced the Python bridge in-place on branch `go-rewrite` | Preserves stars, issue history, CI setup |
 
 ## 3. Background
 
-### 3.1 What Wyze Changed
+### 3.1 Why a rewrite
 
-1. **Authentication:** Shifted to API Key + API ID; deprecated direct email/password SDK access.
-2. **Firmware-level encryption:** Newer firmwares require DTLS 1.2 (ChaCha20-Poly1305). The old binary SDK cannot negotiate it.
-3. **Remote P2P:** Cloud relay stopped working reliably. LAN mode still works.
-4. **Binary SDK lifecycle:** The TUTK `.so` is a black box. Backend changes silently break it.
+The Python bridge depended on a proprietary TUTK `.so` that Wyze
+periodically broke server-side. It also linked Flask, MediaMTX, pickle
+caching, and a ~200 MB dependency graph. go2rtc's [PR #2011](https://github.com/AlexxIT/go2rtc/pull/2011)
+(@seydx, merged Jan 2026) added a pure-Go TUTK P2P implementation that
+speaks modern Wyze firmware's DTLS 1.2 + ChaCha20-Poly1305. The
+rewrite leans on that for all TUTK cameras.
 
-### 3.2 Why go2rtc Solves This
+Gwell-protocol cameras (OG family, doorbell lineage) don't use TUTK at
+all — they use two different, unrelated protocols that we handle
+separately. See the "Camera Support" section of the README for the
+full model-to-path mapping.
 
-PR #2011 by @seydx (merged Jan 18, 2026, released in v1.9.14) implemented TUTK IOTC P2P from scratch in Go via protocol reverse engineering:
+### 3.2 go2rtc TUTK feature scope
 
 - DTLS 1.2 with ChaCha20-Poly1305 (what modern firmware requires)
-- No Wyze or TUTK binary dependency
-- Handles Wyze cloud API for camera credential discovery
 - H.264/H.265 video, AAC/PCM/PCMU/PCMA/Opus audio
 - Two-way audio (intercom) via WebRTC
+- Camera credential discovery via the Wyze cloud API
 - Local P2P only (camera and go2rtc must be on same LAN subnet)
-
-**Confirmed working as of go2rtc v1.9.14:**
-
-- Wyze Cam V3 (WYZE_CAKP2JFUS) — fw 4.36.14.3497+
-- Wyze Cam V4 (HL_CAM4) — fw 4.52.9.4188+ and 4.52.9.5332+
-- Wyze Cam Doorbell v2 (HL_DB2) — fw 4.51.3.4992+
-- Wyze Cam Pan v3 (HL_PAN3) — mostly working, some UDP intermittency
-
-**Needs hardware test before Phase 1 commit:**
-
-- Wyze Cam Doorbell v1 (WYZEDB3) — TUTK protocol, DTLS support unconfirmed. See `DOORBELL_TEST.md`.
-
-**Not supported (Gwell protocol, different implementation needed):**
-
-- Wyze Cam OG, Doorbell Pro, Pan v4, Battery Cam Pro
 
 ---
 
@@ -83,40 +76,37 @@ Docker Container
 ├── wyze-bridge (Go binary — our code)
 │   ├── Wyze API Client      — auth, token refresh, camera discovery, commands
 │   ├── go2rtc Manager       — subprocess start/stop, config gen, API client
-│   ├── Camera Manager       — per-camera state machines, reconnection
+│   ├── Camera Manager       — per-camera state machines, reconnection, go2rtc stream registration
 │   ├── MQTT                 — publish state/info, subscribe to commands, HA discovery
-│   ├── WebUI                — HTTP server, REST API, SSE, fresh UI (port 5080)
+│   ├── WebUI                — HTTP server, REST API, SSE, embedded UI (port 5080)
 │   ├── Snapshot Manager     — periodic capture, sunrise/sunset, pruning
-│   ├── Recording Manager    — config gen, segment pruning
+│   ├── Recording Manager    — per-camera ffmpeg supervisors, segment pruning
 │   └── Config               — env vars, config.yml, Docker secrets
-└── go2rtc (Go binary — managed sidecar)
-    ├── Wyze TUTK P2P source — pure Go, no binary SDK, no Python
-    ├── RTSP server    :8554
-    ├── WebRTC API/UI  :1984  (exposed; used by bridge WebUI player)
-    ├── WebRTC ICE     :8889 / :8189 UDP
-    └── HLS            :8888
+├── go2rtc (managed subprocess)
+│   ├── wyze://    source    — pure-Go TUTK P2P
+│   ├── rtsp:      source    — receives publishes from gwell-proxy (for OG cameras)
+│   ├── webrtc:    source    — native Wyze KVS handler (for doorbell lineage)
+│   ├── RTSP       :8554     — consumer endpoint; also where recording ffmpegs pull from
+│   ├── WebRTC     :8889 / :8189 UDP
+│   ├── HLS        :8888
+│   └── API / UI   :1984     — control plane; also the only interface the bridge talks to go2rtc through
+└── gwell-proxy (subprocess — spawned only when an OG camera is discovered)
+    └── Gwell P2P → ffmpeg → RTSP PUBLISH into go2rtc
 ```
 
-### 4.2 What Is Replaced
+### 4.2 Subprocess strategy
 
-| Component removed | Replacement |
-| ------------------- | ------------- |
-| Python + pip | Nothing — Go binary |
-| `wyzecam` Python library | `internal/wyzeapi/` |
-| TUTK binary SDK `.so` | go2rtc's `pkg/wyze/tutk` (pure Go) |
-| MediaMTX | go2rtc (handles both input AND output) |
-| Flask WebUI | `internal/webui/` (Go net/http + embedded assets) |
-| FFmpeg subprocesses | Not needed — go2rtc reads camera directly |
+go2rtc is a separate process because its `internal/` packages aren't
+importable and its HTTP API is stable. `gwell-proxy` is a separate
+process because we vendor `github.com/wlatic/hacky-wyze-gwell` as
+its own Go module (its `go.mod` path doesn't match its repo URL, so
+it can't be `go get`'d) and because it owns ffmpeg per OG camera.
 
-The Python→FFmpeg→MediaMTX pipe that caused most latency and instability is entirely eliminated.
-
-### 4.3 go2rtc Sidecar Strategy
-
-go2rtc uses `internal/` packages (not importable) and was designed as a standalone application. Managing it as a subprocess is the correct integration strategy — identical in pattern to how the Python bridge managed MediaMTX.
-
-The key difference from the current setup: MediaMTX handled streaming *output* while Python/TUTK handled *input*. go2rtc handles **both**. Our bridge only orchestrates.
-
-Interaction with go2rtc happens via its HTTP API on `:1984`. Stream URLs (`wyze://...`) are added/removed dynamically via API; no restart needed when cameras change.
+Every interaction with go2rtc is through `http://127.0.0.1:1984/api/`.
+The bridge writes a skeletal YAML at startup (listener ports, auth,
+STUN/ICE config, no streams) and then uses `PUT /api/streams` to
+register each camera once discovered. Mid-run discovery additions are
+an API call, not a restart.
 
 ---
 
@@ -220,7 +210,7 @@ type Manager struct {
     log        zerolog.Logger
     binaryPath string
     configPath string
-    apiURL     string   // "http://localhost:1984"
+    apiURL     string   // "http://127.0.0.1:1984"
     cmd        *exec.Cmd
     ready      chan struct{}
     mu         sync.Mutex
@@ -415,6 +405,8 @@ State messages are only published on change (no spam). On reconnect, full state 
 {topic}/{cam}/set/night_vision        "auto" | "on" | "off"
 {topic}/{cam}/snapshot/take           any payload → trigger snapshot
 {topic}/{cam}/stream/restart          any payload → force reconnect
+{topic}/{cam}/record/set              "start"|"on"|"1"|"true" → start; anything else → stop
+{topic}/bridge/discover/set           any payload → re-poll Wyze API
 ```
 
 Quality changes update the `wyze://` URL `subtype` param in go2rtc (delete + re-add stream) and call the Wyze cloud API `set_property_list`.
@@ -470,9 +462,12 @@ GET  /api/cameras/{name}         JSON: one camera
 POST /api/cameras/{name}/restart Force reconnect
 POST /api/cameras/{name}/quality body: {"quality":"hd"|"sd"}
 POST /api/cameras/{name}/audio   body: {"enabled":true|false}
+POST /api/cameras/{name}/record  body: {"action":"start"|"stop"} — toggles ffmpeg recorder
+POST /api/cameras/{name}/snapshot Force capture to SNAPSHOT_PATH
+
+POST /api/discover               Re-poll Wyze API for added/removed cameras (202 + async)
 
 GET  /api/snapshot/{name}        Latest snapshot JPEG (proxied from go2rtc)
-POST /api/snapshot/{name}        Force new snapshot, return JPEG
 
 GET  /api/streams                Combined M3U8 playlist (all cameras)
 GET  /api/streams/{name}.m3u8    Per-camera M3U8
@@ -480,10 +475,16 @@ GET  /api/streams/{name}.m3u8    Per-camera M3U8
 GET  /cams.m3u8                  Backward-compat alias for /api/streams
 GET  /stream/{name}.m3u8         Backward-compat alias
 
-GET  /api/health                 {"status":"ok","version":"x.y.z","uptime":123}
+GET  /api/health                 {"status":"ok"|"degraded","version":..,"uptime":..,"config_errors":N,"issues":[...]}
 GET  /api/version                {"version":"x.y.z","go2rtc_version":"1.9.14"}
+GET  /api/metrics                Full MetricsSnapshot JSON (same data backing /metrics)
 
-GET  /events                     SSE stream for camera state changes
+GET  /metrics                    HTML dashboard — issues / cameras / API / storage / events
+GET  /metrics.prom               Prometheus text exposition (unauthenticated by default)
+GET  /dashboard.yaml             Auto-generated Lovelace YAML referencing MQTT entities
+
+GET  /events                     SSE stream: camera_state, camera_added, camera_removed,
+                                  snapshot_ready, bridge_status, recording_state
 ```
 
 #### 5.5.3 WebRTC Player
@@ -561,7 +562,7 @@ type SnapshotConfig struct {
 }
 ```
 
-Snapshot acquisition: `GET http://localhost:1984/api/frame.jpeg?src={name}`. The bridge never invokes FFmpeg itself, but go2rtc's JPEG endpoint uses FFmpeg internally to decode H.264 → JPEG, so the container ships with `ffmpeg` installed. Streaming protocols (RTSP/HLS/WebRTC) work without ffmpeg; only the snapshot endpoint depends on it.
+Snapshot acquisition: `GET http://127.0.0.1:1984/api/frame.jpeg?src={name}`. The bridge never invokes FFmpeg itself, but go2rtc's JPEG endpoint uses FFmpeg internally to decode H.264 → JPEG, so the container ships with `ffmpeg` installed. Streaming protocols (RTSP/HLS/WebRTC) work without ffmpeg; only the snapshot endpoint depends on it.
 
 Sunrise/sunset: `github.com/nathan-osman/go-sunrise` (pure Go, no CGO). Compute next event, schedule one-shot timer, reschedule after firing.
 
@@ -569,64 +570,187 @@ Pruning goroutine runs every 5 min, removes files in `SNAPSHOT_PATH` older than 
 
 ### 5.7 Recording (`internal/recording/`)
 
-Recording is handled by go2rtc; the bridge configures it and manages cleanup.
+Per-camera `ffmpeg` supervisor. Spawns one ffmpeg per recording-enabled
+camera, pulling from our own loopback RTSP (`rtsp://127.0.0.1:8554/<cam>`),
+running `-c copy -f segment -strftime 1` to write dated MP4 segments.
+
+Started on the camera's `StateStreaming` transition from the state
+machine callback in `wireCameraStateChanges`, stopped on any other
+state. `Shutdown()` runs on bridge exit so segments close cleanly.
+Each supervisor has an exponential backoff loop (2s → 60s) that
+restarts ffmpeg if it exits for any reason other than our own cancel —
+handles go2rtc not-yet-ready, transient I/O, camera flap.
 
 #### 5.7.1 Configuration
 
-```go
-type RecordConfig struct {
-    Global    bool          // RECORD_ALL
-    PerCamera map[string]bool  // RECORD_{cam_name}
-    Dir       string        // RECORD_PATH template
-    FileName  string        // RECORD_FILE_NAME template
-    Length    time.Duration // RECORD_LENGTH, default 60s
-    Keep      time.Duration // RECORD_KEEP, 0=never
-}
+```text
+RECORD_ALL=true                               # or RECORD_<CAM>=true
+RECORD_PATH=/media/recordings/{cam_name}/%Y/%m/%d
+RECORD_FILE_NAME=%H-%M-%S                     # no extension; .mp4 appended
+RECORD_LENGTH=60s                             # -segment_time
+RECORD_KEEP=7d                                # retention; 0 = keep forever
 ```
 
 Template variables in `RECORD_PATH` and `RECORD_FILE_NAME`:
 
 - `{cam_name}`, `{CAM_NAME}` — normalized camera name
-- `%path` — go2rtc stream name (identical to cam_name)
 - `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` — strftime
 - `%s` — Unix epoch integer
-- `%f` — microseconds
 
-**Constraint:** Combined path must contain either `%s` OR all six of `%Y %m %d %H %M %S`. The recording config builder validates this and auto-appends `_%s` with a zerolog warning if it fails validation.
+**Constraint:** Combined path must contain either `%s` OR all six of
+`%Y %m %d %H %M %S`. The builder validates this and auto-appends
+`_%s` with a warning if violated.
 
-Defaults:
+**Timezone:** all strftime expansion is **UTC**. The bridge expands
+tokens with `time.Now().UTC()` and pins ffmpeg's subprocess env to
+`TZ=UTC` so its internal `-strftime 1` agrees. Two reasons: (1) no
+DST spring-forward gaps or fall-back clashes in the directory tree;
+(2) UTC paths compare correctly across timezone changes. UIs that
+want local-time presentation get it for free — `time.Time` JSON
+marshals in UTC emit the `Z` suffix and browsers `toLocaleString()`
+it automatically.
 
-```text
-RECORD_PATH      = /record/{cam_name}/%Y/%m/%d
-RECORD_FILE_NAME = %H-%M-%S
-→ /record/front_door/2026/04/13/14-30-00.mp4
+#### 5.7.2 ffmpeg argv
+
+```
+ffmpeg -hide_banner -loglevel warning
+       -rtsp_transport tcp
+       -i rtsp://127.0.0.1:8554/<cam>
+       -c:v copy -c:a aac -b:a 128k
+       -f segment
+       -segment_time <RECORD_LENGTH seconds>
+       -reset_timestamps 1
+       -strftime 1
+       <expanded RECORD_PATH/RECORD_FILE_NAME>.mp4
 ```
 
-#### 5.7.2 go2rtc Recording Config
+Spawned with `TZ=UTC` in its environment.
 
-Per-stream recording is injected into the generated `go2rtc.yaml` for enabled cameras:
+- `-c:v copy` keeps video CPU near zero — no decode/re-encode.
+- `-c:a aac -b:a 128k` transcodes audio. Wyze TUTK streams deliver
+  PCM s16be which the mp4 muxer refuses under `-c copy`. AAC
+  re-encode costs ~1% of a core per camera and leaves recordings
+  playable everywhere.
+- `-rtsp_transport tcp` avoids UDP-packet-loss on localhost (a real
+  problem on the earlier Python pipeline).
+- `-reset_timestamps 1` so each segment starts at t=0; clean seek
+  tables.
+- Stdout/stderr relay into zerolog at Debug as `c=record-ffmpeg`.
 
-```yaml
-streams:
-  front_door:
-    - wyze://...
-    record: true
-    recordPath: /record/front_door/%Y/%m/%d/%H-%M-%S_%s
-    recordSegmentDuration: 60s
-    recordDeleteAfter: 0       # 0 = keep forever; > 0 = auto-delete (seconds)
+**Directory maintenance.** The segment muxer creates files but not
+directory trees, and its own `-strftime 1` expansion happens inside
+the muxer. The supervisor goroutine MkdirAlls today's AND tomorrow's
+strftime-expanded directory before launching ffmpeg, then re-MkdirAlls
+both every hour while ffmpeg runs (same goroutine, `select` on
+`cmd.Wait()` + `time.Ticker`). Covers midnight rollovers without
+dropping a segment.
+
+#### 5.7.3 Recording pruning
+
+Background goroutine, 15-min interval:
+
+- Walk the `RECORD_PATH` prefix.
+- Delete `.mp4` files older than `RECORD_KEEP`.
+- Clean up empty directories left behind.
+- Summary log (count, bytes freed) at Info.
+
+### 5.9 Observability
+
+The bridge exposes four cooperating surfaces for inspecting live
+state. All share the same `MetricsSnapshot` struct so the numbers
+match across formats.
+
+#### 5.9.1 Issues Registry (`internal/issues/`)
+
+Process-wide, goroutine-safe error registry. Subsystems Report
+soft failures with a canonical dedup ID (`scope/camera/topic`);
+repeats bump `LastSeen` + `Count` instead of piling up. Resolve(id)
+clears an entry when the reporter verifies the failure went away.
+
+Current consumers:
+
+- `recording.Manager.RecordFileNameForCamera` — flags missing
+  strftime tokens in `RECORD_PATH` / `RECORD_FILE_NAME` so bad
+  templates show up on `/metrics` instead of just scrolling past in
+  logs.
+
+Future consumers plug in uniformly — any subsystem wanting visible
+configuration/runtime failures holds a `*issues.Registry` and calls
+Report.
+
+#### 5.9.2 Metrics Page (`/metrics`)
+
+One-flat-HTML dashboard, auto-refresh 10s. Sections:
+
+- Issues panel (only shown when `Registry.Count() > 0`)
+- Bridge summary: camera count, streaming count, error count,
+  uptime, SSE client count
+- Per-camera table: state pill, quality, audio, error count,
+  recording indicator with session byte count
+- Wyze cloud API call stats (`apiMetrics.EndpointStats`): per-
+  endpoint count, errors, avg latency, last status
+- Storage footprint: total + per-camera recording bytes, from the
+  `StorageSampler` goroutine
+- Recent events log: ring buffer of the last 200 state/record
+  events
+
+Same data backs `/api/metrics` (JSON).
+
+#### 5.9.3 Prometheus Exposition (`/metrics.prom`)
+
+Hand-rolled text format, no `client_golang` dep. All metric names
+prefixed `wyze_bridge_`. Unauthenticated by default so standard
+scrapers work without Basic-Auth secrets.
+
+Key metrics:
+
+- `wyze_bridge_uptime_seconds`
+- `wyze_bridge_cameras_total` / `_streaming` / `_errored`
+- `wyze_bridge_camera_error_count{camera,model,protocol,state}`
+- `wyze_bridge_camera_recording{camera}`
+- `wyze_bridge_camera_recording_bytes{camera}`
+- `wyze_bridge_wyzeapi_calls_total{endpoint}`
+- `wyze_bridge_wyzeapi_errors_total{endpoint}`
+- `wyze_bridge_wyzeapi_latency_seconds{endpoint}`
+- `wyze_bridge_recordings_bytes_total`
+- `wyze_bridge_recordings_bytes{camera}`
+- `wyze_bridge_issues_total`
+- `wyze_bridge_sse_clients`
+
+#### 5.9.4 Health Endpoint (`/api/health`)
+
+```json
+{
+  "status": "ok" | "degraded",
+  "version": "4.0-beta",
+  "uptime": 3601,
+  "config_errors": 0,
+  "issues": []
+}
 ```
 
-When `RECORD_KEEP` is set to a non-zero duration, two things happen: go2rtc's `recordDeleteAfter` is set, AND our own pruning goroutine also watches the directory. The redundancy is intentional — go2rtc's deletion is segment-granular; our pruner can clean up empty directories.
+`status` flips to `"degraded"` whenever the issues registry is
+non-empty, which maps cleanly to a HA `binary_sensor` for "bridge
+has problems." Always unauthenticated.
 
-#### 5.7.3 Recording Pruning
+#### 5.9.5 Event Log (`internal/webui/eventlog.go`)
 
-Background goroutine, interval: 15 min.
+Fixed-size ring buffer (default 200) of `{time, kind, camera,
+message}` records. In-memory only — state transitions are already
+durable via MQTT `<cam>/state` topics + logs; a persisted log would
+trade disk I/O for nothing users actually need.
 
-- Walk `RECORD_PATH` directory tree
-- Delete `.mp4` files older than `RECORD_KEEP`
-- Remove empty directories after file deletion
+Fed from `wireCameraStateChanges` (state flips) and
+`recording.Manager.OnChange` (record start/stop). Rendered on
+`/metrics` under a collapsible "Recent Events" section.
 
-Logs each deletion at `Debug` level; logs a summary at `Info` level (count, bytes freed).
+#### 5.9.6 Dashboard Generator (`/dashboard.yaml`)
+
+Emits a ready-to-paste Home Assistant Lovelace dashboard that
+references the MQTT discovery entities. One `glance` card for
+bridge-wide status + one `picture-glance` per camera. HA add-on's
+`run.sh` auto-fetches this at startup and drops it at
+`/config/wyze_bridge_dashboard.yaml`.
 
 ### 5.8 Configuration (`internal/config/`)
 
@@ -778,146 +902,77 @@ Camera-specific log lines include `Str("cam", name)` for easy filtering.
 ## 7. Module Structure
 
 ```ascii
-(github.com/IDisposable/docker-wyze-bridge, branch: go-rewrite)
-
-cmd/wyze-bridge/
-└── main.go                    entry point, DI wiring, signal handling, shutdown
+cmd/
+├── wyze-bridge/               main binary — DI wiring, signal handling, shutdown
+└── gwell-proxy/               OG Gwell P2P sidecar binary
 
 internal/
-├── wyzeapi/
-│   ├── auth.go                login, HMAC signature, token refresh
-│   ├── cameras.go             device list, P2P param extraction, ENR decode
-│   ├── commands.go            set_property_list camera control
-│   ├── models.go              model string constants, feature matrix per model
-│   └── state.go               StateFile load/save
-├── go2rtcmgr/
-│   ├── manager.go             subprocess start/stop/wait, stdout relay to zerolog
-│   ├── config.go              Go2RTCConfig struct, YAML generation
-│   └── apiclient.go           go2rtc HTTP API client (streams CRUD + snapshot)
-├── camera/
-│   ├── camera.go              Camera struct, state machine goroutine
-│   ├── manager.go             CameraManager: owns all cameras, discovery loop
-│   └── filter.go              FILTER_* evaluation
-├── mqtt/
-│   ├── client.go              broker connection, reconnect, LWT
-│   ├── publish.go             all outbound message helpers
-│   ├── subscribe.go           inbound command dispatch
-│   └── discovery.go           HA MQTT discovery message builders
-├── webui/
-│   ├── server.go              http.Server setup, route registration, middleware
-│   ├── api.go                 REST API handlers
-│   ├── m3u8.go                M3U8 playlist generation
-│   ├── sse.go                 Server-Sent Events hub + handler
-│   ├── auth.go                Basic auth + Bearer middleware
-│   └── static/                (embed.FS)
-│       ├── index.html         camera grid
-│       ├── camera.html        single camera detail
-│       ├── app.js             vanilla JS
-│       ├── video-rtc.js       from go2rtc release
-│       └── style.css
-├── snapshot/
-│   ├── manager.go             interval + sunrise/sunset scheduling
-│   └── pruner.go              file age pruning
-├── recording/
-│   └── config.go              RECORD_* → go2rtc config translation + pruning
-└── config/
-    ├── config.go              Config struct (single canonical config)
-    ├── env.go                 env var parsing and defaults
-    ├── yaml.go                config.yml parsing
-    └── secrets.go             Docker /run/secrets/ support
+├── wyzeapi/                   Wyze cloud API: auth, discovery, commands, Mars,
+│                              /v4/camera/get_streams (WebRTC bootstrap)
+├── go2rtcmgr/                 go2rtc subprocess + HTTP API client
+├── camera/                    Camera state machine, discovery loop, streamSourceFor routing
+├── mqtt/                      Broker connection, HA discovery, command subscription
+├── webui/                     net/http server, REST API, SSE, embedded UI,
+│                              /internal/wyze shims (gwell-proxy + WebRTC signaling)
+├── snapshot/                  Periodic + sunrise/sunset capture, pruning
+├── recording/                 Per-camera ffmpeg supervisor, segment pruning
+├── webhooks/                  HTTP POST on camera state change
+├── config/                    Env / YAML / secrets → Config struct
+└── gwell/
+    ├── upstream/              Vendored github.com/wlatic/hacky-wyze-gwell
+    │                          (separate Go module — protocol code only used
+    │                          by cmd/gwell-proxy; not linked into wyze-bridge)
+    └── (producer glue)
 
-docker/
-├── Dockerfile                 multi-stage, multi-arch (amd64/arm64/armv7)
-└── scripts/
-    └── verify-go2rtc.sh       verify downloaded binary hash during build
-
-home_assistant/
-├── config.json                HA add-on manifest
-├── translations/en.yaml
-└── README.md
-
-unraid/
-└── wyze-bridge.xml
-
+docker/Dockerfile              3-stage Alpine build, multi-arch via TARGETARCH
+home_assistant/                HA add-on repo (two channels)
+├── wyze_bridge/               stable add-on (from `main`, semver-tagged)
+└── wyze_bridge_edge/          edge add-on (from `dev`, rolling)
+repository.yaml                HA add-on store manifest
 docker-compose.sample.yml
 docker-compose.tailscale.yml
 docker-compose.ovpn.yml
+cycle.sh                       local dev loop (tests → build → run with .env.dev)
 
-DESIGN.md                      this document
-DOORBELL_TEST.md               hardware test instructions for Doorbell v1
-MIGRATION.md                   upgrade guide for existing users
-go.mod
-go.sum
-README.md                      full rewrite
+DOCS/
+├── DESIGN.md                  this document
+├── CAMERA_MODEL_TEST.md       user-facing camera-support test recipe
+└── GWELL_RELAY_HANDOFF.md     historical — GW_BE1 investigation archive
+
+MIGRATION.md                   user-facing 3.x → 4.x guide
+README.md                      landing page
 ```
 
 ---
 
 ## 8. Dockerfile
 
-```dockerfile
-# ── Stage 1: Build Go binary ──────────────────────────────────────────────────
-FROM golang:1.22-bookworm AS builder
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux \
-    go build -ldflags="-s -w -X main.Version=${VERSION}" \
-    -o /wyze-bridge ./cmd/wyze-bridge
+Three-stage Alpine build: fetch go2rtc release binary + `video-rtc.js`,
+build our two Go binaries (`wyze-bridge`, `gwell-proxy`), then assemble
+a runtime image with ffmpeg bundled. Multi-arch via `TARGETARCH`
+(`amd64`, `arm64`, `arm/v7`). The pinned `GO2RTC_VERSION` ARG is the
+single source of truth — `cycle.sh` greps it out so local dev
+downloads the matching release. See `docker/Dockerfile` for the
+current recipe.
 
-# ── Stage 2: Fetch go2rtc binary ─────────────────────────────────────────────
-FROM debian:bookworm-slim AS go2rtc-fetch
-ARG GO2RTC_VERSION=1.9.14
-ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL \
-      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_${TARGETARCH}" \
-      -o /go2rtc && \
-    chmod +x /go2rtc
+Volumes: `/config` (state file, generated go2rtc.yaml, gwell token
+cache), `/media` (snapshots + recordings). HA add-on re-roots `/media`
+under `/media/wyze_bridge/` in its `run.sh`.
 
-# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates tzdata && \
-    rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /config /media/snapshots /media/recordings
+## 9. Go dependencies
 
-COPY --from=builder      /wyze-bridge   /usr/local/bin/wyze-bridge
-COPY --from=go2rtc-fetch /go2rtc        /usr/local/bin/go2rtc
+Kept deliberately minimal:
 
-EXPOSE 5080        # Bridge WebUI + REST API
-EXPOSE 1984        # go2rtc native API/WebUI (power users, WebRTC player src)
-EXPOSE 8554        # RTSP
-EXPOSE 8888        # HLS
-EXPOSE 8889        # WebRTC HTTP
-EXPOSE 8189/udp    # WebRTC ICE
+- `github.com/rs/zerolog` — logging
+- `github.com/eclipse/paho.mqtt.golang` — MQTT client
+- `github.com/nathan-osman/go-sunrise` — sunrise/sunset math for snapshots
+- `gopkg.in/yaml.v3` — `config.yml` parsing and go2rtc YAML generation
+- `github.com/mattn/go-isatty` — TTY detection to pick log format
 
-VOLUME ["/config", "/media"]
-
-ENTRYPOINT ["/usr/local/bin/wyze-bridge"]
-```
-
-Multi-arch: `linux/amd64`, `linux/arm64`, `linux/arm/v7` via `docker buildx`.
-
-`TARGETARCH` from buildx maps directly to go2rtc's release naming (`amd64`, `arm64`, `arm`).
-
----
-
-## 9. Go Dependencies
-
-```toml
-# go.mod (planned — keep minimal)
-github.com/rs/zerolog                   # logging
-github.com/eclipse/paho.mqtt.golang    # MQTT client
-github.com/nathan-osman/go-sunrise     # sunrise/sunset calculation
-gopkg.in/yaml.v3                       # config.yml parsing
-github.com/mattn/go-isatty             # TTY detection for log format
-```
-
-No web framework. No ORM. No reflection-heavy dependency. `net/http` stdlib for the WebUI. Everything else is orchestration and I/O.
+No web framework, no ORM. `net/http` stdlib for the WebUI. Everything
+else is orchestration and I/O. The vendored Gwell protocol code in
+`internal/gwell/upstream/` is a separate Go module with its own
+dependency graph; nothing outside `cmd/gwell-proxy` links it.
 
 ---
 
@@ -934,62 +989,40 @@ No web framework. No ORM. No reflection-heavy dependency. `net/http` stdlib for 
 
 ---
 
-## 11. Migration Guide Summary (MIGRATION.md)
+## 11. Known Risks
 
-### What Works the Same
+### 11.1 go2rtc API stability
 
-All env var names are identical (except FILTER_BLOCK renamed to FILTER_BLOCKS for clarity). Change only the Docker image name.
+`GO2RTC_VERSION` is pinned in the Dockerfile and surfaced in `cycle.sh`
+so dev and container stay in lockstep. The HTTP API has been stable
+across v1.x; bump and test together.
 
-### Breaking Changes
+### 11.2 Wyze cloud API changes
 
-| Feature | Old | New |
-| --------- | ----- | ----- |
-| Remote P2P | Sometimes worked | **Removed.** Use VPN. |
-| `MTX_*` vars | Configured MediaMTX | **Ignored.** MediaMTX removed. |
-| Gwell cameras | Unsupported | Still unsupported |
-| Port layout | 5000 WebUI, 1984 unused | 5080 WebUI (changed from 5000 to avoid Frigate), 1984 go2rtc |
-| WebUI appearance | Flask UI | Fresh Go UI |
-| `ON_DEMAND` | Connected to cameras as-needed | All cameras connect eagerly at startup for reliability and speed. |
+State file caches P2P params so streaming survives short cloud
+outages. `ENR` decode + the `/v4/camera/get_streams` signaling
+bootstrap are the most likely breakage points; both are isolated
+(`internal/wyzeapi/cameras.go`, `internal/webui/shim_kvs.go`).
 
-### What Stranded Users Get Back
+### 11.3 go2rtc HLS-from-TUTK stops after ~1 second
 
-- Working RTSP/WebRTC/HLS streams on TUTK cameras
-- No binary SDK dependency
-- Smaller Docker image
-- Active maintenance path
+Upstream bug in `pkg/tutk/frame.go`'s `FrameHandler.handleVideo`: on
+a `FrameNo` mismatch the function re-seeds state with `waitSeq=0`,
+then the `PktIdx != waitSeq` check fails for any mid-frame packet and
+calls `cs.reset()` which clobbers `frameNo`, returns — every
+subsequent continuation packet re-enters the same doomed path. RTSP
+is unaffected (frame-passthrough); only HLS's fMP4 segment assembly
+falls off the cliff.
 
----
+Reported upstream as [Issue #2215](https://github.com/AlexxIT/go2rtc/pull/2215);
+fix [PR #2217](https://github.com/AlexxIT/go2rtc/pull/2217) submitted.
 
-## 12. Updates Planned
-
-### Remaining Work
-
-- Two-way audio trigger via MQTT
-- Webhook support (`internal/webhooks/`)
-- BOA HTTP proxy
-- Doorbell v1 non-DTLS support (upstream go2rtc contribution if needed)
-
----
-
-## 13. Risks and Unknowns
-
-### 13.1 Doorbell v1 (WYZEDB3) DTLS Support
-
-**Risk:** May not support DTLS on current firmware.  
-**Status:** Unknown — Marc tests morning of April 14. See `DOORBELL_TEST.md`.  
-**If fails:**
-
-- Option A: Contribute non-DTLS TUTK path to go2rtc upstream
-- Option B: Implement direct TUTK connection for WYZEDB3 in bridge as fallback
-- Option C (worst): Document as known limitation for Phase 1, address in Phase 4
-
-### 13.2 go2rtc API Stability
-
-**Mitigation:** Pin `GO2RTC_VERSION` in Dockerfile. go2rtc API has been stable throughout v1.x. Test each go2rtc version bump before adopting.
-
-### 13.3 Wyze API Changes
-
-**Mitigation:** State file caches P2P params — streaming survives cloud outages after initial setup. ENR decode logic is the most likely target of Wyze API changes; keep it isolated in `cameras.go` for easy updates.
+**Workaround:** the WebUI player uses WebRTC/MSE via `/ws?src=...`
+(unaffected). RTSP and snapshots also work. HLS URLs are still
+displayed for external-player compatibility but shouldn't be
+recommended until the upstream fix lands. The `[OOO]` log spam from
+the broken path is demoted to trace level by `emitLogLine` in
+`internal/go2rtcmgr/manager.go` so it doesn't drown the bridge log.
 
 ---
 
@@ -1013,15 +1046,18 @@ wyze://[IP]?uid=[P2P_ID]&enr=[ENR]&mac=[MAC]&model=[MODEL]&subtype=[hd|sd]&dtls=
 
 ## Appendix B: go2rtc HTTP API Reference
 
-All on `http://localhost:1984` (bridge is the only client).
+All on `http://127.0.0.1:1984` (loopback; the bridge is the only
+client and the Docker image doesn't expose the port publicly).
 
 | Method | Path | Purpose |
-| -------- | ------ | --------- |
-| `GET` | `/api/streams` | List streams + producer/consumer status |
-| `POST` | `/api/streams?src={url}&name={n}` | Add stream |
-| `DELETE` | `/api/streams?name={n}` | Remove stream |
-| `GET` | `/api/streams?src={n}` | Probe/detail for one stream |
-| `GET` | `/api/frame.jpeg?src={n}` | Snapshot JPEG |
-| `GET` | `/api/config` | Current running config (for verification) |
+| ------ | ---- | ------- |
+| `GET`    | `/api/streams` | List streams + producer/consumer status |
+| `PUT`    | `/api/streams?name={n}&src={url}` | Create or replace a stream. Empty `src` = publish-only slot (used for gwell-proxy's RTSP PUBLISH target). |
+| `PATCH`  | `/api/streams?name={n}&src={url}` | Append an additional source to an existing stream |
+| `DELETE` | `/api/streams?name={n}` | Remove a stream |
+| `GET`    | `/api/streams?src={n}` | Probe / detail for one stream |
+| `GET`    | `/api/frame.jpeg?src={n}` | Snapshot JPEG |
+| `GET`    | `/api/stream.m3u8?src={n}` | HLS manifest (see §11.3 caveat for TUTK sources) |
+| `GET`    | `/api/config` | Current running config (for verification) |
 
 ---

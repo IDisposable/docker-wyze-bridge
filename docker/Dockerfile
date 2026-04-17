@@ -27,18 +27,31 @@ RUN CGO_ENABLED=0 GOOS=linux \
     go build -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /wyze-bridge ./cmd/wyze-bridge
 
+# gwell-proxy — sidecar for OG Gwell cameras (GW_GC1/GC2) that speak
+# Wyze's Gwell/IoTVideo P2P protocol on the LAN. Doorbell-lineage GW_*
+# models (GW_BE1 Doorbell Pro, GW_DBD Doorbell Duo) use WebRTC instead,
+# handled by go2rtc's native `#format=wyze` source type — no sidecar
+# there, just a shim handler in internal/webui/shim_kvs.go that feeds
+# go2rtc the Wyze KVS signaling URL + ICE servers.
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -ldflags="-s -w" \
+    -o /gwell-proxy ./cmd/gwell-proxy
+
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.21
-# ffmpeg is required only by go2rtc's /api/frame.jpeg snapshot endpoint —
-# the bridge itself never calls ffmpeg. Alpine's ffmpeg package adds ~40 MB,
-# bringing the total image to ~60–65 MB (still well under the 200+ MB Python
-# bridge). If you need smallest-possible, you can omit ffmpeg and the
-# snapshot endpoint will return 500 instead; all other stream protocols
-# (RTSP/HLS/WebRTC) work without it.
+# ffmpeg is used by two things in this image:
+#   1. go2rtc's /api/frame.jpeg snapshot endpoint (JPEG frame extraction)
+#   2. the optional gwell-proxy sidecar, which spawns an ffmpeg subprocess
+#      per GW_* camera to RTSP-PUSH H.264 into go2rtc's RTSP server.
+# Alpine's ffmpeg package adds ~40 MB, bringing the total image to ~60–65 MB
+# (still well under the 200+ MB Python bridge). If you have no GW_* cameras
+# AND don't need JPEG snapshots, you could omit ffmpeg and everything else
+# (RTSP/HLS/WebRTC playback) keeps working.
 RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
     mkdir -p /config /media/snapshots /media/recordings
 
 COPY --from=builder      /wyze-bridge   /usr/local/bin/wyze-bridge
+COPY --from=builder      /gwell-proxy   /usr/local/bin/gwell-proxy
 COPY --from=go2rtc-fetch /go2rtc        /usr/local/bin/go2rtc
 
 EXPOSE 5080

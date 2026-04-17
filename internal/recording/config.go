@@ -7,25 +7,112 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
+	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
 )
 
-// Manager handles recording configuration and pruning.
+// StateChangeFn is called whenever a camera's recording status flips.
+// Wired into the MQTT publisher and the metrics page's SSE stream so
+// downstream consumers don't have to poll IsRecording.
+type StateChangeFn func(camName string, recording bool)
+
+// Manager handles recording configuration, ffmpeg supervision, and
+// file pruning.
 type Manager struct {
-	log  zerolog.Logger
-	cfg  *config.Config
+	log       zerolog.Logger
+	cfg       *config.Config
+	issues    *issues.Registry // optional; nil = no surfacing
+	mu        *sync.Mutex
+	recorders map[string]*recorder // keyed by camera name
+	onChange  StateChangeFn        // nil = no callback
 }
 
-// NewManager creates a new recording manager.
-func NewManager(cfg *config.Config, log zerolog.Logger) *Manager {
+// NewManager creates a new recording manager. Pass a non-nil issues
+// registry to surface configuration problems (bad RECORD_PATH
+// templates, ffmpeg errors) on /api/health and /metrics instead of
+// just logging.
+func NewManager(cfg *config.Config, iss *issues.Registry, log zerolog.Logger) *Manager {
 	return &Manager{
-		log: log,
-		cfg: cfg,
+		log:       log,
+		cfg:       cfg,
+		issues:    iss,
+		mu:        &sync.Mutex{},
+		recorders: map[string]*recorder{},
 	}
+}
+
+// OnChange registers a single callback fired when a camera's recording
+// state flips on or off. Replace, don't stack — there's exactly one
+// consumer (the wiring in main.go that fans out to MQTT + SSE).
+func (m *Manager) OnChange(fn StateChangeFn) {
+	m.mu.Lock()
+	m.onChange = fn
+	m.mu.Unlock()
+}
+
+// IsRecording reports whether an ffmpeg supervisor is currently active
+// for the named camera. Cheap — just a map lookup under the shared
+// mutex.
+func (m *Manager) IsRecording(camName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.recorders[camName]
+	return ok
+}
+
+// ActiveRecorders returns the names of all cameras currently being
+// recorded. Snapshot; callers must not assume the set is stable across
+// calls.
+func (m *Manager) ActiveRecorders() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.recorders))
+	for name := range m.recorders {
+		out = append(out, name)
+	}
+	return out
+}
+
+// SessionBytes returns the size in bytes of the currently-open MP4
+// segment for a camera (0 if not recording or the file doesn't exist
+// yet). Lets the UI show "recording: 4.2 MB so far" without having to
+// scrape ffmpeg stderr.
+func (m *Manager) SessionBytes(camName string) int64 {
+	target, _ := m.buildFFmpegArgs(camName)
+	// target is the segment template with %Y/%m/… strftime. We don't
+	// know ffmpeg's current segment filename from here, so walk the
+	// expanded directory and sum the newest .mp4 — good enough for the
+	// "is it growing?" signal the UI needs.
+	dir := filepath.Dir(target)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	var newest os.FileInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if filepath.Ext(info.Name()) != ".mp4" {
+			continue
+		}
+		if newest == nil || info.ModTime().After(newest.ModTime()) {
+			newest = info
+		}
+	}
+	if newest == nil {
+		return 0
+	}
+	return newest.Size()
 }
 
 // RecordPathForCamera returns the resolved recording path for a camera.
@@ -56,6 +143,16 @@ func (m *Manager) RecordFileNameForCamera(camName string) string {
 		m.log.Warn().
 			Str("path", combined).
 			Msg("recording path missing time variables, appending _%s")
+		if m.issues != nil {
+			m.issues.Report(issues.Issue{
+				ID:       "config/record_path/" + camName,
+				Severity: issues.SeverityWarn,
+				Scope:    "config",
+				Camera:   camName,
+				Message:  "RECORD_PATH / RECORD_FILE_NAME missing time variables — segments would overwrite; bridge appended _%s automatically",
+				RawValue: combined,
+			})
+		}
 		combined += "_%s"
 	}
 

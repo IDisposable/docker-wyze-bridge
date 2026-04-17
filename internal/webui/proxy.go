@@ -17,11 +17,11 @@ import (
 //
 // Mapped paths:
 //
-//	/hls/{cam}.m3u8           → http://localhost:1984/api/stream.m3u8?src={cam}   (master)
-//	/hls/hls/playlist.m3u8?id → http://localhost:1984/api/hls/playlist.m3u8?id    (media)
-//	/hls/hls/segment.ts?id    → http://localhost:1984/api/hls/segment.ts?id       (TS)
-//	/hls/hls/init.mp4?id      → http://localhost:1984/api/hls/init.mp4?id         (fMP4)
-//	/hls/hls/segment.m4s?id   → http://localhost:1984/api/hls/segment.m4s?id
+//	/hls/{cam}.m3u8           → http://127.0.0.1:1984/api/stream.m3u8?src={cam}   (master)
+//	/hls/hls/playlist.m3u8?id → http://127.0.0.1:1984/api/hls/playlist.m3u8?id    (media)
+//	/hls/hls/segment.ts?id    → http://127.0.0.1:1984/api/hls/segment.ts?id       (TS)
+//	/hls/hls/init.mp4?id      → http://127.0.0.1:1984/api/hls/init.mp4?id         (fMP4)
+//	/hls/hls/segment.m4s?id   → http://127.0.0.1:1984/api/hls/segment.m4s?id
 //
 // The master playlist returned by go2rtc references the media playlist as
 // the relative URL "hls/playlist.m3u8?id=...". Clients resolve that against
@@ -34,6 +34,12 @@ func (s *Server) handleHLSProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go2rtc := s.go2rtc()
+	if go2rtc == nil {
+		http.Error(w, "bridge still starting; go2rtc not yet ready", http.StatusServiceUnavailable)
+		return
+	}
+
 	// Entry-point request: /hls/{cam}.m3u8 → /api/stream.m3u8?src={cam}
 	if strings.HasSuffix(path, ".m3u8") && !strings.Contains(path, "/") {
 		camName := strings.TrimSuffix(path, ".m3u8")
@@ -41,14 +47,14 @@ func (s *Server) handleHLSProxy(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		target := s.go2rtcAPI.BaseURL() + "/api/stream.m3u8?src=" + url.QueryEscape(camName)
+		target := go2rtc.BaseURL() + "/api/stream.m3u8?src=" + url.QueryEscape(camName)
 		s.proxyGet(w, r, target)
 		return
 	}
 
 	// Sub-playlist / segments: forward the remainder as-is under /api/.
 	// The session id lives in the query string, which ReverseProxy preserves.
-	target := s.go2rtcAPI.BaseURL() + "/api/" + path
+	target := go2rtc.BaseURL() + "/api/" + path
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
@@ -101,7 +107,7 @@ func (s *Server) proxyGet(w http.ResponseWriter, r *http.Request, upstream strin
 // /api/ws?src=... — we expose it at /ws?src=... so the page at
 // :5080 can open a same-origin WebSocket (avoids CORS + mixed-origin).
 //
-// Path: /ws?src={cam} → ws://localhost:1984/api/ws?src={cam}
+// Path: /ws?src={cam} → ws://127.0.0.1:1984/api/ws?src={cam}
 func (s *Server) handleWSProxy(w http.ResponseWriter, r *http.Request) {
 	src := r.URL.Query().Get("src")
 	if src == "" {
@@ -113,7 +119,12 @@ func (s *Server) handleWSProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamHost := strings.TrimPrefix(s.go2rtcAPI.BaseURL(), "http://")
+	go2rtc := s.go2rtc()
+	if go2rtc == nil {
+		http.Error(w, "bridge still starting; go2rtc not yet ready", http.StatusServiceUnavailable)
+		return
+	}
+	upstreamHost := strings.TrimPrefix(go2rtc.BaseURL(), "http://")
 	upstreamHost = strings.TrimPrefix(upstreamHost, "https://")
 
 	// Dial go2rtc

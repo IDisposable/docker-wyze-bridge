@@ -5,23 +5,45 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 )
 
 // SSEHub manages Server-Sent Events connections.
+//
+// Besides the bounded-channel per-client backpressure, the hub also
+// dedups consecutive identical payloads within a short window. Callers
+// like the camera state-change broadcaster can fire repeatedly without
+// worrying about spamming idle clients — if the last payload for a
+// given event name matches byte-for-byte, the re-send is skipped.
 type SSEHub struct {
 	log     zerolog.Logger
 	clients map[chan string]struct{}
 	mu      sync.RWMutex
 	closed  bool
+	// lastSent tracks the most recent payload per event name for
+	// dedup. Keyed by event type (e.g. "camera_state"), value is the
+	// full SSE-formatted message.
+	lastSent map[string]sseSent
 }
+
+type sseSent struct {
+	msg  string
+	when time.Time
+}
+
+// sseDedupWindow is how long an identical payload is considered a
+// duplicate. 500ms catches "two callbacks fired back-to-back for the
+// same state transition" without blocking legitimate repeat events.
+const sseDedupWindow = 500 * time.Millisecond
 
 // NewSSEHub creates a new SSE hub.
 func NewSSEHub(log zerolog.Logger) *SSEHub {
 	return &SSEHub{
-		log:     log,
-		clients: make(map[chan string]struct{}),
+		log:      log,
+		clients:  make(map[chan string]struct{}),
+		lastSent: make(map[string]sseSent),
 	}
 }
 
@@ -75,14 +97,25 @@ func (h *SSEHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Send broadcasts an SSE event to all connected clients.
+// Send broadcasts an SSE event to all connected clients. Consecutive
+// identical payloads within sseDedupWindow are silently dropped.
 func (h *SSEHub) Send(event, data string) {
 	msg := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
 
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+	h.mu.Lock()
+	// Dedup: same event+payload within the window = skip.
+	if prev, ok := h.lastSent[event]; ok && prev.msg == msg && time.Since(prev.when) < sseDedupWindow {
+		h.mu.Unlock()
+		return
+	}
+	h.lastSent[event] = sseSent{msg: msg, when: time.Now()}
+	clients := make([]chan string, 0, len(h.clients))
 	for ch := range h.clients {
+		clients = append(clients, ch)
+	}
+	h.mu.Unlock()
+
+	for _, ch := range clients {
 		select {
 		case ch <- msg:
 		default:

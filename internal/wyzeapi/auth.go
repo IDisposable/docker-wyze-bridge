@@ -21,6 +21,11 @@ const (
 	DefaultAuthAPI  = "https://auth-prod.api.wyze.com"
 	DefaultWyzeAPI  = "https://api.wyzecam.com/app"
 	DefaultCloudAPI = "https://app-core.cloud.wyze.com/app"
+	// DefaultNewWyzeAPI is the "v4" app host used for modern endpoints
+	// like /v4/camera/get_streams which mints KVS/WebRTC signaling URLs
+	// per camera. Distinct from DefaultWyzeAPI (legacy v2 host) and
+	// DefaultCloudAPI (app-core host used for /v4/device/get_event_list).
+	DefaultNewWyzeAPI = "https://app.wyzecam.com/app"
 
 	appVersion = "3.6.5.5"
 	iosVersion = "17.7.2"
@@ -83,9 +88,11 @@ type Client struct {
 	creds       Credentials
 	auth        *AuthState
 	bridgeVer   string
+	metrics     *apiMetrics
 	AuthURL     string // base URL for auth endpoints (default: DefaultAuthAPI)
 	WyzeURL     string // base URL for wyze app endpoints (default: DefaultWyzeAPI)
 	CloudURL    string // base URL for cloud endpoints (default: DefaultCloudAPI)
+	NewWyzeURL  string // base URL for "v4" app endpoints incl. get_streams (default: DefaultNewWyzeAPI)
 }
 
 // NewClient creates a new Wyze API client.
@@ -95,9 +102,11 @@ func NewClient(creds Credentials, bridgeVersion string, log zerolog.Logger) *Cli
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		creds:      creds,
 		bridgeVer:  bridgeVersion,
+		metrics:    newAPIMetrics(),
 		AuthURL:    DefaultAuthAPI,
 		WyzeURL:    DefaultWyzeAPI,
 		CloudURL:   DefaultCloudAPI,
+		NewWyzeURL: DefaultNewWyzeAPI,
 	}
 }
 
