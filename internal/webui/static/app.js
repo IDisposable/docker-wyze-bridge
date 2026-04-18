@@ -2,6 +2,11 @@
 (function() {
     'use strict';
 
+    // Base path for HA ingress support. When running behind HA's ingress
+    // proxy, all URLs must be prefixed with the ingress path. The server
+    // injects this as a <script> tag before app.js loads.
+    var B = window.__BASE_PATH || '';
+
     // SSE connection for real-time updates
     let eventSource = null;
 
@@ -10,7 +15,7 @@
             eventSource.close();
         }
 
-        eventSource = new EventSource('/events');
+        eventSource = new EventSource(B + '/events');
 
         eventSource.addEventListener('camera_state', function(e) {
             const data = JSON.parse(e.data);
@@ -34,7 +39,7 @@
             const data = JSON.parse(e.data);
             const img = document.querySelector('.camera-card[data-cam="' + data.name + '"] .camera-preview img');
             if (img) {
-                img.src = '/api/snapshot/' + data.name + '?t=' + Date.now();
+                img.src = B + '/api/snapshot/' + data.name + '?t=' + Date.now();
                 img.style.display = '';
             }
         });
@@ -70,7 +75,7 @@
 
     // Camera actions (used on detail page)
     window.restartStream = function(name) {
-        fetch('/api/cameras/' + name + '/restart', { method: 'POST' })
+        fetch(B + '/api/cameras/' + name + '/restart', { method: 'POST' })
             .then(function(resp) { return resp.json(); })
             .then(function(data) {
                 if (data.status === 'ok') {
@@ -81,7 +86,7 @@
     };
 
     window.setQuality = function(name, quality) {
-        fetch('/api/cameras/' + name + '/quality', {
+        fetch(B + '/api/cameras/' + name + '/quality', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ quality: quality })
@@ -150,7 +155,7 @@
                 if (!cam || btn.disabled) return;
                 const original = btn.textContent;
                 btn.disabled = true;
-                fetch('/api/cameras/' + cam + '/snapshot', { method: 'POST' })
+                fetch(B + '/api/cameras/' + cam + '/snapshot', { method: 'POST' })
                     .then(function(resp) {
                         if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
                         btn.textContent = '✓ Saved';

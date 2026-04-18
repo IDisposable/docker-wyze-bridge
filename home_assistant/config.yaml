@@ -5,7 +5,8 @@ description: >-
   Edge channel — tracks latest development. May be unstable.
 slug: wyze_bridge
 url: https://github.com/IDisposable/docker-wyze-bridge
-version: 4.0.0-beta
+image: ghcr.io/idisposable/docker-wyze-bridge-homeassistant
+version: 4.0.3-beta
 stage: experimental
 arch:
   - amd64

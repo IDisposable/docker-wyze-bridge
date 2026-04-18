@@ -1,4 +1,4 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.21
 ARG WYZE_BRIDGE_IMAGE=ghcr.io/idisposable/docker-wyze-bridge:edge
 
 # Pull pre-built wyze-bridge + go2rtc binaries from CI image (multi-arch manifest)

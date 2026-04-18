@@ -62,11 +62,20 @@ func spawnGwellProxy(ctx context.Context, cfg *config.Config, log zerolog.Logger
 			Msg("GO2RTC_URL is set; gwell-proxy will still publish to 127.0.0.1:8554 — configure the remote go2rtc to ingest if you need Gwell cameras there")
 	}
 
+	// Diagnostic knobs (GWELL_DUMP_DIR + GWELL_FFMPEG_LOGLEVEL). Both
+	// live on Config so the values are visible in a single place rather
+	// than scattered env lookups. Defaults: no dump, ffmpeg at warning
+	// — debug produces thousands of lines/sec that drown out everything
+	// else in the bridge log.
+	dumpDir := cfg.GwellDumpDir
+	ffmpegLogLevel := cfg.GwellFFmpegLogLevel
+	deadmanTimeout := cfg.GwellDeadmanTimeout
+
 	backoff := 2 * time.Second
 	const maxBackoff = 60 * time.Second
 
 	for ctx.Err() == nil {
-		if err := runGwellProxyOnce(ctx, bin, shimURL, rtspHost, rtspPort, log); err != nil {
+		if err := runGwellProxyOnce(ctx, bin, shimURL, rtspHost, rtspPort, dumpDir, ffmpegLogLevel, deadmanTimeout, log); err != nil {
 			log.Warn().Err(err).Dur("backoff", backoff).Msg("gwell-proxy exited; restarting")
 		}
 		if ctx.Err() != nil {
@@ -88,12 +97,22 @@ func spawnGwellProxy(ctx context.Context, cfg *config.Config, log zerolog.Logger
 // the parent context cancels. Stdout/stderr are routed through the
 // caller's zerolog logger so the subprocess noise blends into the
 // bridge's structured log output.
-func runGwellProxyOnce(ctx context.Context, bin, shimURL, rtspHost string, rtspPort int, log zerolog.Logger) error {
-	cmd := exec.CommandContext(ctx, bin,
+func runGwellProxyOnce(ctx context.Context, bin, shimURL, rtspHost string, rtspPort int, dumpDir, ffmpegLogLevel string, deadmanTimeout time.Duration, log zerolog.Logger) error {
+	args := []string{
 		"--shim-url", shimURL,
 		"--rtsp-host", rtspHost,
 		"--rtsp-port", strconv.Itoa(rtspPort),
-	)
+	}
+	if dumpDir != "" {
+		args = append(args, "--dump-h264", dumpDir)
+	}
+	if ffmpegLogLevel != "" {
+		args = append(args, "--ffmpeg-loglevel", ffmpegLogLevel)
+	}
+	if deadmanTimeout > 0 {
+		args = append(args, "--deadman-timeout", deadmanTimeout.String())
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)
@@ -131,6 +150,6 @@ func relayLines(r io.Reader, log zerolog.Logger) {
 		if line == "" {
 			continue
 		}
-		log.Debug().Msg(line)
+		log.Debug().Str("c", "gwell-proxy").Msg(line)
 	}
 }

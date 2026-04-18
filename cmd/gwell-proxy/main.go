@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -48,7 +49,6 @@ import (
 
 const (
 	tokenRefreshInterval = 1 * time.Hour
-	deadmanTimeout       = 120 * time.Second
 	cameraStagger        = 15 * time.Second
 	reconnectDelay       = 10 * time.Second
 )
@@ -81,14 +81,150 @@ func (tc *tokenCache) isValid() bool {
 	return elapsed < ttl
 }
 
-// writeTracker wraps an io.Writer to track the last-write time atomically.
+// h264Filter strips IoTVideo/Gwell HDLC framing (0x7E delimiters)
+// from the raw avPayload stream before it reaches ffmpeg. The camera
+// sends ~320 bytes of framing before every SPS NAL; without stripping,
+// ffmpeg receives non-H.264 garbage that can stall RTSP ANNOUNCE or
+// corrupt RTP packets.
+//
+// Protocol background (Tencent IoTVideo AV layer):
+//   - 0x7E is the HDLC-style frame delimiter used by the Gwell P2P SDK
+//   - Framing blocks are ~320 bytes of 0x7E/0xFF padding, starting with
+//     a 2-byte sub-header (typically 0x40 0x01 = video channel marker)
+//   - They appear at every GOP boundary (before each SPS+PPS+IDR group)
+//   - DecryptMTPPayload's fallback path returns these verbatim because
+//     they lack the 0xFFFFFF88 magic header that marks extracted H.264
+type h264Filter struct {
+	inner  io.Writer // destination (ffmpeg stdin via writeTracker)
+	synced bool      // true after first SPS found
+	buf    []byte    // pre-sync buffer
+	prefix string    // log prefix (camera ID)
+}
+
+// Write filters IoTVideo framing from the H.264 stream.
+// Before sync: buffers data until the first Annex B SPS NAL (00 00 00 01 x7)
+// is found, then flushes from the SPS onward.
+// After sync: scans each chunk for Annex B start codes; if the chunk has
+// none and consists mostly of 0x7E/0xFF bytes, it's IoTVideo framing and
+// gets dropped. Otherwise it's forwarded (could be a NAL continuation).
+func (f *h264Filter) Write(p []byte) (int, error) {
+	origLen := len(p)
+
+	if !f.synced {
+		f.buf = append(f.buf, p...)
+		idx := findSPSStart(f.buf)
+		if idx < 0 {
+			if len(f.buf) > 64*1024 {
+				// Safety valve: if we've buffered 64KB without
+				// finding an SPS, flush everything and hope ffmpeg
+				// can probe through it.
+				log.Printf("%s h264filter: no SPS in %d bytes, flushing raw", f.prefix, len(f.buf))
+				f.synced = true
+				_, err := f.inner.Write(f.buf)
+				f.buf = nil
+				return origLen, err
+			}
+			return origLen, nil // keep buffering
+		}
+		f.synced = true
+		log.Printf("%s h264filter: synced — found SPS at offset %d, discarded %d bytes of IoTVideo framing",
+			f.prefix, idx, idx)
+		data := f.buf[idx:]
+		f.buf = nil
+		if len(data) == 0 {
+			return origLen, nil
+		}
+		_, err := f.inner.Write(data)
+		return origLen, err
+	}
+
+	// Post-sync: drop pure-framing chunks (no start codes, mostly 0x7E/0xFF).
+	if !hasAnnexBStartCode(p) && isIoTVideoFraming(p) {
+		return origLen, nil // silently drop framing
+	}
+
+	// Chunk has H.264 data (or is a NAL continuation). If it starts with
+	// framing bytes before the first start code, strip the prefix.
+	if idx := findAnnexBStartCode(p); idx > 0 && isIoTVideoFraming(p[:idx]) {
+		p = p[idx:]
+	}
+
+	_, err := f.inner.Write(p)
+	return origLen, err
+}
+
+// findSPSStart returns the offset of the first Annex B SPS NAL
+// (00 00 00 01 followed by NAL type 7) in buf, or -1.
+func findSPSStart(buf []byte) int {
+	for i := 0; i+4 < len(buf); i++ {
+		if buf[i] == 0 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 1 {
+			if (buf[i+4] & 0x1F) == 7 { // SPS
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// findAnnexBStartCode returns the offset of the first 4-byte Annex B
+// start code (00 00 00 01) in buf, or -1.
+func findAnnexBStartCode(buf []byte) int {
+	for i := 0; i+3 < len(buf); i++ {
+		if buf[i] == 0 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 1 {
+			return i
+		}
+	}
+	return -1
+}
+
+// hasAnnexBStartCode returns true if buf contains 00 00 00 01.
+func hasAnnexBStartCode(buf []byte) bool {
+	return findAnnexBStartCode(buf) >= 0
+}
+
+// isIoTVideoFraming returns true if buf consists mostly of IoTVideo HDLC
+// framing bytes (0x7E, 0xFF, 0xFE). Threshold: ≥80% framing bytes.
+func isIoTVideoFraming(buf []byte) bool {
+	if len(buf) == 0 {
+		return false
+	}
+	count := 0
+	for _, b := range buf {
+		if b == 0x7E || b == 0xFF || b == 0xFE {
+			count++
+		}
+	}
+	return count*5 >= len(buf)*4 // count/len >= 0.80
+}
+
+// writeTracker wraps the ffmpeg publisher's stdin to (a) track the
+// last-write time atomically for the deadman switch, (b) optionally
+// tee every byte to a local file so we can inspect the raw H.264
+// Annex B stream offline with ffprobe (enable via --dump-h264 <dir>),
+// and (c) filter IoTVideo HDLC framing via h264Filter before ffmpeg.
 type writeTracker struct {
 	inner     *stream.FFmpegPublisher
-	lastWrite atomic.Int64 // unix nano
+	filter    *h264Filter   // nil until wired in streamCamera
+	dump      io.WriteCloser // nil when --dump-h264 isn't set
+	lastWrite atomic.Int64   // unix nano
 }
 
 func (w *writeTracker) Write(p []byte) (int, error) {
-	n, err := w.inner.Write(p)
+	// Always tee the raw (unfiltered) bytes to the dump file first —
+	// the dump captures exactly what DecryptMTPPayload returns so we
+	// can analyze the IoTVideo framing offline.
+	if w.dump != nil && len(p) > 0 {
+		_, _ = w.dump.Write(p)
+	}
+
+	// Route through the H.264 filter which strips IoTVideo framing.
+	var n int
+	var err error
+	if w.filter != nil {
+		n, err = w.filter.Write(p)
+	} else {
+		n, err = w.inner.Write(p)
+	}
 	if n > 0 {
 		w.lastWrite.Store(time.Now().UnixNano())
 	}
@@ -103,11 +239,15 @@ func (w *writeTracker) lastWriteTime() time.Time {
 	return time.Unix(0, ns)
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// Close releases the dump file if one was open. Called from the caller
+// when the session tears down. Safe to call repeatedly.
+func (w *writeTracker) Close() error {
+	if w.dump != nil {
+		err := w.dump.Close()
+		w.dump = nil
+		return err
 	}
-	return fallback
+	return nil
 }
 
 // cacheFilePath resolves to $STATE_DIR/gwell/token_cache.json when
@@ -136,6 +276,9 @@ func main() {
 	apiURL := flag.String("shim-url", "", "URL of the bridge's wyze-shim, e.g. http://127.0.0.1:5080/internal/wyze")
 	rtspHost := flag.String("rtsp-host", "127.0.0.1", "host of the RTSP server we PUSH to (go2rtc)")
 	rtspPort := flag.Int("rtsp-port", 8554, "port of the RTSP server we PUSH to")
+	dumpDir := flag.String("dump-h264", "", "if set, tee raw H.264 bytes per-camera into <dir>/<cam>-<unix-ms>.h264 for offline analysis")
+	ffmpegLogLevel := flag.String("ffmpeg-loglevel", "warning", "ffmpeg -loglevel (quiet/panic/fatal/error/warning/info/verbose/debug/trace); debug spams thousands of lines/second")
+	deadmanTimeout := flag.Duration("deadman-timeout", 2*time.Minute, "max no-data interval before forcing reconnect")
 	flag.Parse()
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
@@ -174,7 +317,7 @@ func main() {
 	}
 
 	// Initial discovery
-	if err := refreshDiscovery(client, cameraIDs[0]); err != nil {
+	if err := refreshDiscovery(client, cameraIDs[0], false); err != nil {
 		log.Fatalf("[main] Initial discovery failed: %v", err)
 	}
 
@@ -195,7 +338,7 @@ func main() {
 		wg.Add(1)
 		go func(cameraID string) {
 			defer wg.Done()
-			runCamera(client, cameraID, *rtspHost, *rtspPort, stopCh)
+			runCamera(client, cameraID, *rtspHost, *rtspPort, *dumpDir, *ffmpegLogLevel, *deadmanTimeout, stopCh)
 		}(camID)
 	}
 
@@ -207,7 +350,7 @@ func main() {
 			select {
 			case <-ticker.C:
 				log.Println("[main] Refreshing token...")
-				if err := refreshDiscovery(client, cameraIDs[0]); err != nil {
+				if err := refreshDiscovery(client, cameraIDs[0], false); err != nil {
 					log.Printf("[main] Token refresh failed: %v", err)
 				} else {
 					log.Println("[main] Token refreshed (will apply on next reconnect)")
@@ -228,7 +371,7 @@ func main() {
 
 // refreshDiscovery fetches a fresh token and runs device discovery.
 // Results are stored in shared state for all camera goroutines to use.
-func refreshDiscovery(client *wyzeShimClient, anyCameraID string) error {
+func refreshDiscovery(client *wyzeShimClient, anyCameraID string, forceDiscover bool) error {
 	cred, err := client.GetCameraToken(anyCameraID)
 	if err != nil {
 		return fmt.Errorf("get token: %w", err)
@@ -239,9 +382,9 @@ func refreshDiscovery(client *wyzeShimClient, anyCameraID string) error {
 		return fmt.Errorf("parse token: %w", err)
 	}
 
-	// Try cache first
+	// Try cache first unless caller explicitly requests a fresh discovery.
 	cache := loadCache()
-	if cache != nil && cache.isValid() && cache.ServerAddr != "" {
+	if !forceDiscover && cache != nil && cache.isValid() && cache.ServerAddr != "" {
 		log.Println("[main] Using cached P2P server address:", cache.ServerAddr)
 		sharedMu.Lock()
 		sharedToken = token
@@ -249,6 +392,9 @@ func refreshDiscovery(client *wyzeShimClient, anyCameraID string) error {
 		// Keep existing devices if we have them
 		sharedMu.Unlock()
 	} else {
+		if forceDiscover {
+			log.Println("[main] Force discovery requested; bypassing cache")
+		}
 		log.Println("[main] Running device discovery...")
 		result, err := gwell.DiscoverDevices(token)
 		if err != nil {
@@ -283,7 +429,7 @@ func getSharedState() (*gwell.AccessToken, string, []gwell.DeviceInfo) {
 
 // runCamera is the reconnect loop for a single camera.
 func runCamera(client *wyzeShimClient, cameraID string,
-	rtspHost string, rtspPort int, stopCh chan struct{}) {
+	rtspHost string, rtspPort int, dumpDir string, ffmpegLogLevel string, deadmanTimeout time.Duration, stopCh chan struct{}) {
 
 	for {
 		select {
@@ -308,9 +454,13 @@ func runCamera(client *wyzeShimClient, cameraID string,
 			}
 		}
 
-		err = streamCamera(client, cameraID, rtspHost, rtspPort, stopCh)
+		err = streamCamera(client, cameraID, rtspHost, rtspPort, dumpDir, ffmpegLogLevel, deadmanTimeout, stopCh)
 		if err != nil {
 			log.Printf("[%s] Stream error: %v", cameraID, err)
+			log.Printf("[%s] reconnect reason: stream_error", cameraID)
+			if derr := refreshDiscovery(client, cameraID, true); derr != nil {
+				log.Printf("[%s] Re-discovery before reconnect failed: %v", cameraID, derr)
+			}
 		}
 
 		select {
@@ -325,7 +475,7 @@ func runCamera(client *wyzeShimClient, cameraID string,
 // streamCamera runs a single streaming session for one camera.
 // It acquires connectMu to serialize the P2P handshake phase.
 func streamCamera(client *wyzeShimClient, cameraID string,
-	rtspHost string, rtspPort int, stopCh chan struct{}) error {
+	rtspHost string, rtspPort int, dumpDir string, ffmpegLogLevel string, deadmanTimeout time.Duration, stopCh chan struct{}) error {
 
 	// Get device info for stream name and LAN IP
 	info, err := client.GetDeviceInfo(cameraID)
@@ -348,15 +498,39 @@ func streamCamera(client *wyzeShimClient, cameraID string,
 	log.Printf("[%s] Starting stream: %s (LAN IP: %s)", cameraID, streamPath, info.LanIP)
 
 	// Start ffmpeg publisher
-	ffmpeg, err := stream.StartFFmpegPublisher(streamPath, rtspHost, rtspPort)
+	ffmpeg, err := stream.StartFFmpegPublisher(streamPath, rtspHost, rtspPort, ffmpegLogLevel)
 	if err != nil {
 		return fmt.Errorf("start ffmpeg: %w", err)
 	}
 	defer ffmpeg.Close()
 
-	// Wrap with write tracker for deadman switch
+	// Wrap with write tracker for deadman switch + H.264 framing filter
 	tracker := &writeTracker{inner: ffmpeg}
+	tracker.filter = &h264Filter{
+		inner:  ffmpeg,
+		prefix: fmt.Sprintf("[%s]", cameraID),
+	}
 	tracker.lastWrite.Store(time.Now().UnixNano())
+	defer tracker.Close()
+
+	// Optional raw-H.264 dump for offline ffprobe inspection. One file
+	// per session, timestamped so successive reconnects don't clobber
+	// each other — analyze any of them to confirm the camera stream is
+	// well-formed before we blame ffmpeg/go2rtc downstream.
+	if dumpDir != "" {
+		if err := os.MkdirAll(dumpDir, 0755); err != nil {
+			log.Printf("[%s] dump: mkdir %s: %v (continuing without dump)", cameraID, dumpDir, err)
+		} else {
+			path := filepath.Join(dumpDir, fmt.Sprintf("%s-%d.h264", cameraID, time.Now().UnixMilli()))
+			f, err := os.Create(path)
+			if err != nil {
+				log.Printf("[%s] dump: create %s: %v (continuing without dump)", cameraID, path, err)
+			} else {
+				log.Printf("[%s] dump: writing raw H.264 to %s", cameraID, path)
+				tracker.dump = f
+			}
+		}
+	}
 
 	// === SERIALIZED SECTION ===
 	// Acquire the connect mutex so only one camera is doing the P2P

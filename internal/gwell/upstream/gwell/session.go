@@ -160,10 +160,10 @@ type Session struct {
 	meterRound      uint32       // per-session meter probe round counter
 
 	// Diagnostics
-	rawUDPPkts      int64     // total raw UDP packets received during streaming
-	lastMeterRecv   time.Time // last time we received any meter frame (REQ or ACK)
-	meterReqCount   int       // incoming meter REQUESTs from camera (since last log)
-	meterAckCount   int       // incoming meter ACKs from camera (since last log)
+	rawUDPPkts    int64     // total raw UDP packets received during streaming
+	lastMeterRecv time.Time // last time we received any meter frame (REQ or ACK)
+	meterReqCount int       // incoming meter REQUESTs from camera (since last log)
+	meterAckCount int       // incoming meter ACKs from camera (since last log)
 
 	// Lifecycle
 	state  SessionState
@@ -416,12 +416,12 @@ func (s *Session) initInfo() error {
 			break
 		}
 
-		log.Printf("%s initInfo resp[%d]: %d bytes, raw[0:2]=0x%02X%02X", s.prefix, i, n, buf[0], buf[1])
 		decrypted, mode := TryDecrypt(buf, n, result.SessionKey, s.pwdKey)
 		if decrypted == nil {
-			log.Printf("%s initInfo resp[%d]: decrypt FAILED", s.prefix, i)
+			// Packet belongs to another session sharing this server endpoint; silently skip.
 			continue
 		}
+		log.Printf("%s initInfo resp[%d]: %d bytes, raw[0:2]=0x%02X%02X", s.prefix, i, n, buf[0], buf[1])
 		log.Printf("%s initInfo resp[%d]: decrypted sub=0x%02X proto=0x%02X (%s)", s.prefix, i, decrypted[1], decrypted[0], mode)
 
 		// Parse routing session ID from 0x0D
@@ -439,9 +439,9 @@ func (s *Session) initInfo() error {
 				for _, d := range devs {
 					log.Printf("%s   device: %q TID=0x%016X", s.prefix, d.Name, d.TID)
 				}
-			} else {
-				log.Printf("%s initInfo resp[%d]: 0xA7 but ParseInitInfoResp returned 0 devices (payload %d bytes)", s.prefix, i, n-24)
 			}
+			// else: foreign-session 0xA7 that passed TryDecrypt but has garbage payload;
+			// silently skip — same category as the decrypt FAILED case above.
 		}
 
 		// Break early if we have both routing ID and devices
@@ -547,11 +547,6 @@ func (s *Session) calling() error {
 	result := s.certResult
 	buf := make([]byte, 8192)
 
-	s.linkID = mathrand.Uint32()
-	if s.linkID == 0 {
-		s.linkID = 1
-	}
-
 	// Generate MTP RC5 key
 	mtpKey := make([]byte, 8)
 	rand.Read(mtpKey)
@@ -566,6 +561,11 @@ func (s *Session) calling() error {
 		ourLanPort = uint16(localAddr.Port)
 	}
 
+	s.linkID = mathrand.Uint32()
+	if s.linkID == 0 {
+		s.linkID = 1
+	}
+
 	callingMsg := BuildCallingMsg(token, s.routingSessionID, s.nextSqnum(),
 		s.linkID, s.targetDev.TID, result.SessionKey, s.pwdKey,
 		ourLanIP, ourLanPort, mtpKey, false)
@@ -574,7 +574,10 @@ func (s *Session) calling() error {
 	log.Printf("%s sent CALLING linkID=0x%08X target=0x%016X", s.prefix, s.linkID, s.targetDev.TID)
 	s.state = StateCalling
 
-	// Collect responses: CALLING ACK + MTP_RES_RESPONSE
+	// Collect responses: CALLING ACK + MTP_RES_RESPONSE.
+	// For relay-only cameras (no LAN IP, like GW_BE1), the CALLING ACK typically
+	// returns peer=0.0.0.0:0 — this is NORMAL. The P2P server TCP relay fallback
+	// in startRelayActivation() handles this case. Do NOT fast-fail on 0.0.0.0:0.
 	var callingRelayIP net.IP
 	var callingRelayPort uint16
 	var peerOuterPort, peerSessionPort, peerLanPort uint16
@@ -603,6 +606,23 @@ func (s *Session) calling() error {
 			callingRelayIP = net.IPv4(decrypted[32], decrypted[33], decrypted[34], decrypted[35])
 			callingRelayPort = binary.LittleEndian.Uint16(decrypted[36:38])
 			log.Printf("%s CALLING ACK: peer=%s:%d", s.prefix, callingRelayIP, callingRelayPort)
+
+			// For relay-only cameras (0.0.0.0:0, no LAN IP), don't wait 3s
+			// per iteration for MTP_RES that never comes. Do one quick read
+			// then break — every second counts for TCP relay matching.
+			if callingRelayIP.Equal(net.IPv4zero) && s.cfg.CameraLanIP == "" {
+				s.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				n2, err2 := s.conn.Read(buf)
+				if err2 == nil && n2 >= 24 {
+					if d2, _ := TryDecrypt(buf, n2, result.SessionKey, s.pwdKey); d2 != nil && d2[1] == 0xA3 {
+						log.Printf("%s late MTP_RES after relay-only ACK", s.prefix)
+						// Fall through to next iteration which will parse it
+						continue
+					}
+				}
+				log.Printf("%s relay-only: breaking CALLING loop early (no MTP_RES)", s.prefix)
+				break
+			}
 		}
 
 		// MTP_RES_RESPONSE
@@ -693,8 +713,16 @@ func (s *Session) calling() error {
 	tcpRelayChan := make(chan net.Conn, 1)
 	s.startRelayActivation(tcpRelayChan)
 
-	// Probe loop: PortStatReq + detect + wait for CREATE_KCP
-	s.probeAndWait(callingRelayIP, callingRelayPort, peerOuterPort, peerOuterIP, tcpRelayChan)
+	// For relay-only cameras (no LAN addresses, no relay addresses from MTP_RES),
+	// skip probeAndWait entirely. It runs 12 seconds of UDP-only operations
+	// (PortStatReq, detect probes) that are useless when the camera can only
+	// communicate via TCP relay. The idle time kills the TCP relay connection
+	// (server has ~10s idle timeout) before we even send INITREQ.
+	if len(s.lanMTPAddrs) > 0 || len(s.relayAddrs) > 0 {
+		s.probeAndWait(callingRelayIP, callingRelayPort, peerOuterPort, peerOuterIP, tcpRelayChan)
+	} else {
+		log.Printf("%s relay-only camera: skipping probeAndWait (no LAN/relay addrs)", s.prefix)
+	}
 
 	// Setup transport priority
 	s.setupTransport(callingRelayIP, callingRelayPort, peerOuterIP, peerOuterPort, tcpRelayChan)
@@ -707,9 +735,11 @@ func (s *Session) calling() error {
 func (s *Session) startRelayActivation(tcpRelayChan chan net.Conn) {
 	token := s.cfg.Token
 	if len(s.relayAddrs) == 0 {
-		// P2P server TCP fallback
+		// P2P server TCP fallback with keepalive.
+		// After initial registration, re-send BuildTCPRelayRegister every 3s
+		// to prevent the relay server's idle timeout (~10s) from closing the
+		// connection before we start streaming.
 		go func() {
-			time.Sleep(500 * time.Millisecond)
 			dialer := net.Dialer{Timeout: 5 * time.Second}
 			c, err := dialer.Dial("tcp", s.serverAddr)
 			if err != nil {
@@ -722,7 +752,38 @@ func (s *Session) startRelayActivation(tcpRelayChan chan net.Conn) {
 			c.SetWriteDeadline(time.Time{})
 			log.Printf("%s P2P TCP fallback connected", s.prefix)
 			tcpRelayChan <- c
+
+			// Keepalive: re-register every 3s until streaming starts
+			for !s.isClosed() && s.state < StateStreaming {
+				time.Sleep(3 * time.Second)
+				if s.isClosed() || s.state >= StateStreaming {
+					break
+				}
+				ka := BuildTCPRelayRegister(s.linkID, token.AccessID, s.targetDev.TID)
+				c.SetWriteDeadline(time.Now().Add(3 * time.Second))
+				if _, err := c.Write(ka); err != nil {
+					log.Printf("%s TCP relay keepalive failed: %v", s.prefix, err)
+					break
+				}
+				c.SetWriteDeadline(time.Time{})
+			}
 		}()
+
+		// SessionSocket activation — tell the P2P server about our session
+		// so it can set up relay forwarding and notify the camera.
+		go func() {
+			for round := 0; round < 10; round++ {
+				subType := byte(1)
+				if round == 2 {
+					subType = 2
+				}
+				ssFrame := BuildSessionSocket(token, s.routingSessionID, s.sqnum,
+					s.linkID, s.targetDev.TID, subType, nil, s.pwdKey)
+				s.pc.WriteToUDP(ssFrame, s.serverUDPAddr)
+				time.Sleep(400 * time.Millisecond)
+			}
+		}()
+
 		return
 	}
 
@@ -1115,6 +1176,16 @@ func (s *Session) sendMTP(data []byte) {
 			s.pc.WriteToUDP(extFrame, rt.Addr)
 		}
 	}
+
+	// PASSTHROUGH path: wrap MTP frame in a GUTES PASSTHROUGH_DATA (0xB9)
+	// and send to P2P server. The server forwards it to the camera via the
+	// routing session. This is critical for relay-only cameras where TCP
+	// relay may be unavailable or dead.
+	if len(data) > 6 && data[0] == 0xC0 && s.serverUDPAddr != nil && s.cfg.Token != nil && s.certResult != nil {
+		ptFrame := BuildPassthroughData(s.cfg.Token, s.routingSessionID, s.nextSqnum(),
+			s.targetDev.TID, s.linkID, data, s.certResult.SessionKey, s.pwdKey)
+		s.pc.WriteToUDP(ptFrame, s.serverUDPAddr)
+	}
 }
 
 // streamLoop sets up KCP sessions and streams H.264 video.
@@ -1207,6 +1278,18 @@ func (s *Session) streamLoop() error {
 	}()
 	defer close(kcpDone)
 
+	// Start TCP relay reader BEFORE INITREQ — critical for relay-only connections
+	// (cameras with no LAN IP, like the Doorbell Pro). The camera's ACCEPT
+	// response to our INITREQ arrives on the TCP relay, not UDP. If we don't
+	// read TCP during the INITREQ phase, the ACCEPT is never received and the
+	// handshake times out after 60s.
+	var tcpFrameCh <-chan []byte
+	if s.tcpRelay != nil {
+		ch := make(chan []byte, 128)
+		tcpFrameCh = ch
+		go s.readTCPRelay(ch)
+	}
+
 	// INITREQ retry loop
 	streamID := mathrand.Uint32()
 	if streamID == 0 {
@@ -1219,8 +1302,17 @@ func (s *Session) streamLoop() error {
 	kcpSN := uint32(0)
 	acceptReceived := false
 	initDeadline := time.Now().Add(60 * time.Second)
+	lastInitReq := time.Time{}
+	const initReqInterval = 200 * time.Millisecond
 
 	for retry := 0; !acceptReceived && time.Now().Before(initDeadline); retry++ {
+		if !lastInitReq.IsZero() {
+			if d := time.Since(lastInitReq); d < initReqInterval {
+				time.Sleep(initReqInterval - d)
+			}
+		}
+		lastInitReq = time.Now()
+
 		// Check for late TCP relay
 		if s.tcpRelay == nil {
 			select {
@@ -1243,7 +1335,7 @@ func (s *Session) streamLoop() error {
 
 		if retry == 0 {
 			log.Printf("%s sent INITREQ via ctrl KCP", s.prefix)
-		} else if retry%10 == 0 {
+		} else if retry%50 == 0 {
 			log.Printf("%s INITREQ retry %d (%.0fs left)", s.prefix, retry, time.Until(initDeadline).Seconds())
 		}
 
@@ -1256,7 +1348,10 @@ func (s *Session) streamLoop() error {
 			pc.SetReadDeadline(time.Now().Add(remaining))
 			n, fromAddr, readErr := pc.ReadFromUDP(buf)
 			if readErr != nil {
-				break
+				if ne, ok := readErr.(net.Error); ok && ne.Timeout() {
+					break
+				}
+				return fmt.Errorf("INITREQ read: %w", readErr)
 			}
 
 			isFromServer := fromAddr.IP.Equal(s.serverUDPAddr.IP) && fromAddr.Port == s.serverUDPAddr.Port
@@ -1306,6 +1401,60 @@ func (s *Session) streamLoop() error {
 						s.linkID, s.targetDev.TID, s.pwdKey)
 					pc.WriteToUDP(resp, fromAddr)
 				}
+				// Handle PASSTHROUGH DATA (0xB9) containing MTP — the camera
+				// or P2P server may route MTP frames via the routing session
+				// instead of TCP relay. Critical for relay-only cameras.
+				if decrypted != nil && decrypted[1] == 0xB9 && n >= 52 {
+					modeFlags := binary.LittleEndian.Uint32(decrypted[24:28])
+					if modeFlags&1 == 0 {
+						ptPayloadLen := binary.LittleEndian.Uint16(decrypted[48:50])
+						if int(52+ptPayloadLen) <= n && ptPayloadLen > 0 {
+							ptPayload := decrypted[52 : 52+ptPayloadLen]
+							if ptPayload[0] == 0xC0 && ptPayloadLen >= 6 {
+								var extractedKey []byte
+								avCmd := ParseMTPForAVSTREAMCTL(ptPayload, int(ptPayloadLen), s.convCtrl, s.convData, &extractedKey)
+								FeedMTPToKCP(ptPayload, int(ptPayloadLen), s.dataKCP, s.ctrlKCP, s.convData, s.convCtrl)
+								if avCmd == 2 {
+									acceptReceived = true
+									log.Printf("%s ACCEPT received (via PASSTHROUGH)!", s.prefix)
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Drain TCP relay frames — ACCEPT may arrive on TCP for relay-only cameras.
+		if tcpFrameCh != nil && !acceptReceived {
+			for draining := true; draining; {
+				select {
+				case frame, ok := <-tcpFrameCh:
+					if !ok {
+						tcpFrameCh = nil
+						draining = false
+						break
+					}
+					if len(frame) >= 6 && frame[0] == 0xC0 {
+						var extractedKey []byte
+						avCmd := ParseMTPForAVSTREAMCTL(frame, len(frame), s.convCtrl, s.convData, &extractedKey)
+						FeedMTPToKCP(frame, len(frame), s.dataKCP, s.ctrlKCP, s.convData, s.convCtrl)
+						if avCmd == 2 {
+							acceptReceived = true
+							log.Printf("%s ACCEPT received (via TCP relay)!", s.prefix)
+							draining = false
+						}
+						if avCmd == 0x10001 {
+							payOff := MTPPayloadOffset(frame[1])
+							resp := BuildMeterAckFromRequest(frame[payOff:minInt(len(frame), payOff+68)])
+							respFrame := BuildMTPFrame(resp, true)
+							s.sendMTP(respFrame)
+						}
+					}
+				default:
+					draining = false
+				}
 			}
 		}
 
@@ -1318,6 +1467,13 @@ func (s *Session) streamLoop() error {
 	if !acceptReceived {
 		return fmt.Errorf("INITREQ: no ACCEPT after 60s")
 	}
+
+	// The INITREQ retry loop sent KCP segments manually (bypassing ctrlKCP),
+	// so ctrlKCP's sndNxt is still 0 while the camera has already received
+	// sn 0..kcpSN-1. Without this sync, ctrlKCP.Send() would reuse sn=0
+	// and the camera would drop it as a duplicate — breaking INITREQ renewals.
+	s.ctrlKCP.SyncSendState(kcpSN)
+	log.Printf("%s synced CTRL KCP sndNxt=%d after INITREQ handshake", s.prefix, kcpSN)
 
 	// Send START via DATA KCP
 	log.Printf("%s sending START via DATA KCP", s.prefix)
@@ -1337,6 +1493,14 @@ func (s *Session) streamLoop() error {
 	s.dataKCP.Send(avKeyInit)
 	s.dataKCP.Flush()
 
+	// TCP relay reader was already started before the INITREQ loop.
+	// If TCP relay was connected late (during INITREQ), start the reader now.
+	if tcpFrameCh == nil && s.tcpRelay != nil {
+		ch := make(chan []byte, 128)
+		tcpFrameCh = ch
+		go s.readTCPRelay(ch)
+	}
+
 	// Main stream loop
 	s.state = StateStreaming
 	log.Printf("%s streaming started", s.prefix)
@@ -1345,8 +1509,24 @@ func (s *Session) streamLoop() error {
 	lastStatus := time.Now()
 	lastOnlineSocket := time.Now()
 	lastMeterProbe := time.Now()
+	lastStreamRenew := time.Now()
 
 	for !s.isClosed() {
+		// AVSTREAM session renewal every 15 seconds.
+		// The Wyze doorbell firmware (battery-design lineage) has a ~20-25s
+		// live-view session window. Without periodic INITREQ renewals on the
+		// CTRL KCP the camera silently stops sending video after ~22s while
+		// the P2P relay stays up (meter probes keep the relay alive, but the
+		// camera's AV layer times out separately). Re-sending INITREQ tells
+		// the camera a viewer is still active and resets its session timer.
+		if time.Since(lastStreamRenew) > 15*time.Second {
+			renewPayload := BuildAVStreamCtlINITREQ(streamID, 1, 1, 0, avKey)
+			s.ctrlKCP.Send(renewPayload)
+			s.ctrlKCP.Flush()
+			log.Printf("%s sent INITREQ renewal (stream keepalive)", s.prefix)
+			lastStreamRenew = time.Now()
+		}
+
 		// Heartbeat every 40 seconds (SDK uses 35-50s)
 		if time.Since(lastHeartbeat) > 40*time.Second {
 			hb := BuildHeartbeat(token, s.routingSessionID, s.nextSqnum(), result.SessionKey, s.pwdKey)
@@ -1374,6 +1554,32 @@ func (s *Session) streamLoop() error {
 			keepalive := BuildSessionSocket(token, s.routingSessionID, s.nextSqnum(),
 				s.linkID, s.targetDev.TID, 3, nil, s.pwdKey)
 			pc.WriteToUDP(keepalive, s.serverUDPAddr)
+
+			// Re-register with relay servers.
+			// During setup, startRelayActivation sends BuildTCPRelayRegister
+			// (0xC0 MTP frame) to relay addresses for UDP pre-registration.
+			// Relay servers are simple forwarders that only understand MTP
+			// frames — they ignore GUTES (0x7E/0x7F) frames. Without periodic
+			// re-registration the relay tears down after ~20s.
+			if len(s.udpRelayTargets) > 0 {
+				regFrame := BuildTCPRelayRegister(s.linkID, token.AccessID, s.targetDev.TID)
+				for _, rt := range s.udpRelayTargets {
+					pc.WriteToUDP(regFrame, rt.Addr)
+				}
+				// Also tell the P2P server that the relay is still in use
+				var relayPorts []uint16
+				for _, rt := range s.udpRelayTargets {
+					relayPorts = append(relayPorts, uint16(rt.Addr.Port))
+					if len(relayPorts) >= 4 {
+						break
+					}
+				}
+				relayKeep := BuildSessionSocket(token, s.routingSessionID, s.nextSqnum(),
+					s.linkID, s.targetDev.TID, 1, relayPorts, s.pwdKey)
+				pc.WriteToUDP(relayKeep, s.serverUDPAddr)
+				log.Printf("%s relay re-registration sent to %d targets", s.prefix, len(s.udpRelayTargets))
+			}
+
 			lastOnlineSocket = time.Now()
 		}
 
@@ -1395,6 +1601,43 @@ func (s *Session) streamLoop() error {
 			s.meterReqCount = 0
 			s.meterAckCount = 0
 			lastStatus = time.Now()
+		}
+
+		// Drain TCP relay frames into KCP (non-blocking).
+		// These are MTP frames the relay server forwarded to us on the TCP
+		// connection — same content as UDP but delivered over the TCP path.
+		if tcpFrameCh != nil {
+			for keepDraining := true; keepDraining; {
+				select {
+				case frame, ok := <-tcpFrameCh:
+					if !ok {
+						tcpFrameCh = nil
+						keepDraining = false
+						break
+					}
+					if len(frame) >= 6 && frame[0] == 0xC0 {
+						FeedMTPToKCP(frame, len(frame), s.dataKCP, s.ctrlKCP, s.convData, s.convCtrl)
+						// Track meter frames
+						diagOff := MTPPayloadOffset(frame[1])
+						if len(frame) >= diagOff+4 && frame[diagOff] == 0x00 {
+							switch frame[diagOff+1] {
+							case 0x01: // meter REQ from camera
+								s.meterReqCount++
+								s.lastMeterRecv = time.Now()
+								resp := BuildMeterAckFromRequest(frame[diagOff:minInt(len(frame), diagOff+68)])
+								respFrame := BuildMTPFrame(resp, true)
+								s.sendMTP(respFrame)
+							case 0x02: // meter ACK from camera
+								s.meterAckCount++
+								s.lastMeterRecv = time.Now()
+							}
+						}
+						s.drainKCPRecv()
+					}
+				default:
+					keepDraining = false
+				}
+			}
 		}
 
 		pc.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
@@ -1586,6 +1829,75 @@ func (s *Session) drainKCPRecv() {
 					s.prefix, avActionName, avAction, reason, len(data), data[:minInt(len(data), 40)])
 			}
 			DecryptMTPPayload(data, s.mtpRC5Ctx, "CTRL")
+		}
+	}
+}
+
+// readTCPRelay reads MTP frames from the TCP relay connection and sends them
+// to the channel. This goroutine is critical for relay-only connections
+// (cameras with no LAN IP, like the Doorbell Pro): the relay server sends
+// data and control frames on the TCP path, and if we never read, the
+// relay's TCP send buffer fills up causing a session teardown (~20s).
+func (s *Session) readTCPRelay(ch chan<- []byte) {
+	defer close(ch)
+	conn := s.tcpRelay
+	hdr := make([]byte, 6)
+	tcpFrames := 0
+
+	for !s.isClosed() {
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		_, err := io.ReadFull(conn, hdr[:1])
+		if err != nil {
+			if !s.isClosed() {
+				log.Printf("%s TCP relay reader exiting: %v", s.prefix, err)
+			}
+			return
+		}
+
+		// Scan for 0xC0 magic byte
+		if hdr[0] != 0xC0 {
+			continue
+		}
+
+		// Read rest of header (bytes 1-5)
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := io.ReadFull(conn, hdr[1:6]); err != nil {
+			if !s.isClosed() {
+				log.Printf("%s TCP relay reader: header read error: %v", s.prefix, err)
+			}
+			return
+		}
+
+		// Parse total frame length from bytes 2-3
+		totalLen := int(hdr[2]&7) | (int(hdr[3]) << 3)
+		if totalLen < 6 || totalLen > 8192 {
+			// Invalid length — skip and resync on next 0xC0
+			continue
+		}
+
+		// Read rest of frame
+		frame := make([]byte, totalLen)
+		copy(frame[:6], hdr)
+		if totalLen > 6 {
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if _, err := io.ReadFull(conn, frame[6:]); err != nil {
+				if !s.isClosed() {
+					log.Printf("%s TCP relay reader: payload read error: %v", s.prefix, err)
+				}
+				return
+			}
+		}
+
+		tcpFrames++
+		if tcpFrames == 1 || tcpFrames%100 == 0 {
+			log.Printf("%s TCP relay: received %d frames", s.prefix, tcpFrames)
+		}
+
+		// Non-blocking send to channel
+		select {
+		case ch <- frame:
+		default:
+			// Channel full — drop frame to avoid blocking reader
 		}
 	}
 }

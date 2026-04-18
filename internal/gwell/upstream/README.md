@@ -49,7 +49,19 @@ declaration, not across module paths.
    No code-path changes. When rebasing, re-apply this rename; if
    upstream adopts the same cleanup, drop this diff entry.
 
-3. **`stream/ffmpeg.go`: switched from `-c:v copy` to libx264
+3. **`stream/ffmpeg.go`: `StartFFmpegPublisher` accepts a `logLevel`
+   parameter.** Upstream hard-codes `-loglevel debug`, which is useful
+   during bring-up but produces thousands of lines per frame once
+   streaming starts and drowns out everything else in the bridge log.
+   We thread the level through from the bridge's `GWELL_FFMPEG_LOGLEVEL`
+   env (default `warning`) down to gwell-proxy's `--ffmpeg-loglevel`
+   flag and into this function. Signature change:
+   - `StartFFmpegPublisher(streamPath, rtspHost, rtspPort)` →
+     `StartFFmpegPublisher(streamPath, rtspHost, rtspPort, logLevel)`
+   When rebasing, re-apply the signature + the `-loglevel logLevel`
+   substitution in the exec.Command.
+
+4. **`stream/ffmpeg.go`: switched from `-c:v copy` to libx264
    re-encode.** Upstream targets mediamtx with a stream-copy
    pipeline; go2rtc's RTSP server is stricter about first-packet
    RTP timestamps and the gwell camera's raw H.264 Annex B arrives
@@ -71,6 +83,35 @@ declaration, not across module paths.
 
    When rebasing upstream, re-apply this swap. If upstream adopts
    go2rtc too and sorts out the copy path, drop this diff entry.
+
+5. **`gwell/session.go`: CALLING ACK `0.0.0.0:0` — NO fast-fail (reverted).**
+   For relay-only cameras (GW_BE1 Doorbell Pro), the CALLING ACK always
+   returns `peer=0.0.0.0:0` because the camera has no direct peer address.
+   This is normal. The upstream code continues into `startRelayActivation()`
+   which dials TCP to the P2P server as a relay fallback. We previously
+   had a fast-fail that short-circuited this flow — that was incorrect.
+   The calling() function now matches upstream: single CALLING attempt,
+   no retry, proceeds to Phase 5 regardless of peer address.
+
+6. **`gwell/session.go`: periodic AVSTREAM INITREQ renewal every 15s.**
+   The Wyze doorbell firmware (battery-design lineage, even on wired power)
+   has a ~20-25s live-view session timeout. Without renewal the camera
+   silently stops sending video after ~22s while the P2P relay stays up.
+   We re-send INITREQ on the CTRL KCP every 15s so the camera's AV-layer
+   session timer is reset before it expires.
+   When rebasing, re-apply the `lastStreamRenew`/`15*time.Second` block in
+   the main streaming loop.
+
+7. **`gwell/session.go`: silent-skip foreign-session packets during
+   initInfo.** The P2P server broadcasts `0xAA` push-notification frames
+   initInfo.** The P2P server broadcasts `0xAA` push-notification frames
+   to all sessions sharing an endpoint. These packets fail to decrypt
+   (wrong session key) and are harmless. Upstream logs `decrypt FAILED`
+   for each one; we silently `continue` instead to keep debug output
+   clean. The raw-header line is also moved to after successful decrypt
+   so foreign-session packets produce no output at all.
+   When rebasing, re-apply the reordering: try `TryDecrypt` first, skip
+   if `nil`, then log the raw header and decrypted fields.
 
 ## Updating
 

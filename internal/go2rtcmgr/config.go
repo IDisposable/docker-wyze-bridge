@@ -180,16 +180,26 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 		cfg.Streams = make(map[string]interface{}, len(b.streams))
 	}
 	for _, s := range b.streams {
+		// Empty URL means publish-only slot (Gwell cameras: go2rtc
+		// reserves the stream name with no source, accepts RTSP PUBLISH
+		// into it). YAML form is `name: []` — not `name: [""]`, which
+		// go2rtc would treat as a single malformed source and spam
+		// errors at startup.
+		var sources []string
+		if s.URL != "" {
+			sources = []string{s.URL}
+		} else {
+			sources = []string{}
+		}
 		if s.Record && s.RecordPath != "" {
-			// Full config with recording directives
 			cfg.Streams[s.Name] = map[string]interface{}{
-				"sources":         []string{s.URL},
+				"sources":         sources,
 				"record":          true,
 				"record_path":     s.RecordPath,
 				"record_duration": s.RecordDuration,
 			}
 		} else {
-			cfg.Streams[s.Name] = []string{s.URL}
+			cfg.Streams[s.Name] = sources
 		}
 	}
 

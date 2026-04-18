@@ -34,6 +34,12 @@ func (s *Server) handleHLSProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go2rtc := s.go2rtc()
+	if go2rtc == nil {
+		http.Error(w, "bridge still starting; go2rtc not yet ready", http.StatusServiceUnavailable)
+		return
+	}
+
 	// Entry-point request: /hls/{cam}.m3u8 → /api/stream.m3u8?src={cam}
 	if strings.HasSuffix(path, ".m3u8") && !strings.Contains(path, "/") {
 		camName := strings.TrimSuffix(path, ".m3u8")
@@ -41,14 +47,14 @@ func (s *Server) handleHLSProxy(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		target := s.go2rtcAPI.BaseURL() + "/api/stream.m3u8?src=" + url.QueryEscape(camName)
+		target := go2rtc.BaseURL() + "/api/stream.m3u8?src=" + url.QueryEscape(camName)
 		s.proxyGet(w, r, target)
 		return
 	}
 
 	// Sub-playlist / segments: forward the remainder as-is under /api/.
 	// The session id lives in the query string, which ReverseProxy preserves.
-	target := s.go2rtcAPI.BaseURL() + "/api/" + path
+	target := go2rtc.BaseURL() + "/api/" + path
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
@@ -113,7 +119,12 @@ func (s *Server) handleWSProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamHost := strings.TrimPrefix(s.go2rtcAPI.BaseURL(), "http://")
+	go2rtc := s.go2rtc()
+	if go2rtc == nil {
+		http.Error(w, "bridge still starting; go2rtc not yet ready", http.StatusServiceUnavailable)
+		return
+	}
+	upstreamHost := strings.TrimPrefix(go2rtc.BaseURL(), "http://")
 	upstreamHost = strings.TrimPrefix(upstreamHost, "https://")
 
 	// Dial go2rtc

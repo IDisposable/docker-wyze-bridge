@@ -1,4 +1,6 @@
-#!/usr/bin/env bashio
+#!/usr/bin/with-contenv bashio
+
+set -euo pipefail
 
 # HA add-on options (nested under wyze/bridge/camera/snapshot/record/
 # mqtt/filter/location/webhooks/gwell/debug) → flat env vars for the Go

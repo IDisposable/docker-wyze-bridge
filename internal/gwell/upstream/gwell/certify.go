@@ -601,11 +601,8 @@ func ParseInitInfoResp(payload []byte) []DeviceInfo {
 
 	count := int(binary.LittleEndian.Uint32(payload[4:8]))
 	if count < 1 || count > 32 {
-		hexLen := len(payload)
-		if hexLen > 16 {
-			hexLen = 16
-		}
-		log.Printf("[InitInfoResp] bad count=%d (payload %d bytes, first 16: %x)", count, len(payload), payload[:hexLen])
+		// Implausible count — likely a foreign-session frame that passed TryDecrypt
+		// with the wrong key; caller will silently skip it.
 		return nil
 	}
 

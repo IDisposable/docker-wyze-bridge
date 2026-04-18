@@ -129,8 +129,13 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go2rtc := s.go2rtc()
+	if go2rtc == nil {
+		http.Error(w, "bridge still starting; go2rtc not yet ready", http.StatusServiceUnavailable)
+		return
+	}
 	ctx := r.Context()
-	jpeg, err := s.go2rtcAPI.GetSnapshot(ctx, name)
+	jpeg, err := go2rtc.GetSnapshot(ctx, name)
 	if err != nil {
 		s.log.Warn().Err(err).Str("cam", name).Msg("snapshot failed")
 		http.Error(w, "snapshot unavailable", http.StatusServiceUnavailable)

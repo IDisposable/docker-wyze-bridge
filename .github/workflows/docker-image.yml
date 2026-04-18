@@ -11,6 +11,7 @@ on:
 env:
   DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wyze-bridge
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  HA_ADDON_IMAGE: ghcr.io/${{ github.repository }}-homeassistant
 
 jobs:
   test:
@@ -81,6 +82,16 @@ jobs:
             echo "version=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Read Home Assistant add-on version
+        id: addon_version
+        run: |
+          version=$(awk -F': ' '$1=="version"{print $2; exit}' home_assistant/config.yaml)
+          if [[ -z "$version" ]]; then
+            echo "Unable to read home_assistant/config.yaml version"
+            exit 1
+          fi
+          echo "version=$version" >> $GITHUB_OUTPUT
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -100,6 +111,35 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Build and push Home Assistant add-on image
+        uses: docker/build-push-action@v6
+        with:
+          push: ${{ github.event_name != 'pull_request' }}
+          context: ./home_assistant
+          file: ./home_assistant/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            WYZE_BRIDGE_IMAGE=${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.description=Home Assistant add-on image for Wyze Bridge
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=docker-wyze-bridge-homeassistant
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.addon_version.outputs.version }}
+            io.hass.name=Wyze Bridge
+            io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras
+            io.hass.version=${{ steps.addon_version.outputs.version }}
+            io.hass.type=addon
+            io.hass.arch=amd64,aarch64
+          tags: |
+            ${{ env.HA_ADDON_IMAGE }}:${{ steps.addon_version.outputs.version }}
+            ${{ env.HA_ADDON_IMAGE }}:edge
+            ${{ env.HA_ADDON_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=homeassistant
+          cache-to: type=gha,mode=max,scope=homeassistant
           provenance: false
 
   version-bump:

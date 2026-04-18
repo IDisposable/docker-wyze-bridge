@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -27,11 +28,18 @@ var staticFS embed.FS
 type SnapshotRequester func(ctx context.Context, camName string)
 
 // Server is the WebUI HTTP server.
+//
+// go2rtcAPI is late-bound: NewServer accepts nil so the WebUI can come
+// up immediately (showing the UI, serving SSE, accepting the shim
+// endpoints) while main() is still running Wyze discovery and booting
+// go2rtc. Once go2rtc is ready, main() calls SetGo2RTCAPI to attach
+// the client. Handlers that need it use s.go2rtc() and return 503 if
+// the client isn't attached yet.
 type Server struct {
 	log       zerolog.Logger
 	cfg       *config.Config
 	camMgr    *camera.Manager
-	go2rtcAPI *go2rtcmgr.APIClient
+	go2rtcAPI atomic.Pointer[go2rtcmgr.APIClient]
 	sseHub    *SSEHub
 	auth      *AuthMiddleware
 	srv       *http.Server
@@ -41,7 +49,8 @@ type Server struct {
 	mars      MarsTokenMinter
 }
 
-// NewServer creates a new WebUI server.
+// NewServer creates a new WebUI server. go2rtcAPI may be nil; attach
+// it later via SetGo2RTCAPI once go2rtc is ready.
 func NewServer(
 	cfg *config.Config,
 	camMgr *camera.Manager,
@@ -53,10 +62,12 @@ func NewServer(
 		log:       log,
 		cfg:       cfg,
 		camMgr:    camMgr,
-		go2rtcAPI: go2rtcAPI,
 		sseHub:    NewSSEHub(log),
 		version:   version,
 		startTime: time.Now(),
+	}
+	if go2rtcAPI != nil {
+		s.go2rtcAPI.Store(go2rtcAPI)
 	}
 
 	s.auth = NewAuthMiddleware(
@@ -67,6 +78,19 @@ func NewServer(
 	)
 
 	return s
+}
+
+// SetGo2RTCAPI attaches (or replaces) the go2rtc API client. Safe to
+// call concurrently. Handlers that need the client pick it up on their
+// next request via s.go2rtc().
+func (s *Server) SetGo2RTCAPI(api *go2rtcmgr.APIClient) {
+	s.go2rtcAPI.Store(api)
+}
+
+// go2rtc returns the currently-attached API client, or nil if not
+// yet attached.
+func (s *Server) go2rtc() *go2rtcmgr.APIClient {
+	return s.go2rtcAPI.Load()
 }
 
 // SSE returns the SSE hub for sending events.

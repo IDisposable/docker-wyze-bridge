@@ -79,4 +79,6 @@ if [ -f .env.dev ]; then
     set +a
 fi
 
+rm -f local/config/gwell/token_cache.json
+rm -rf local/gwell-dumps/*
 go run ./cmd/wyze-bridge

@@ -202,6 +202,9 @@ func (m *Manager) emitLogLine(line string) {
 	if line == "" {
 		return
 	}
+	if shouldSuppressGo2RTCLogLine(line) {
+		return
+	}
 
 	parts := strings.SplitN(line, " ", 3)
 	if len(parts) == 3 {
@@ -221,4 +224,8 @@ func (m *Manager) emitLogLine(line string) {
 		}
 	}
 	m.log.Trace().Msg(line)
+}
+
+func shouldSuppressGo2RTCLogLine(line string) bool {
+	return strings.HasPrefix(line, "[OOO]") && strings.Contains(line, " - reset")
 }

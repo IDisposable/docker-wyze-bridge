@@ -473,6 +473,22 @@ func (kcp *KCPConn) PeekSize() int {
 	return size
 }
 
+// SyncSendState advances sndNxt and sndUna to account for segments sent
+// outside the KCP state machine (e.g. manually-built KCP push segments sent
+// via raw MTP during the INITREQ retry loop). Without this, subsequent
+// Send() calls reuse sequence numbers the remote side has already seen,
+// causing the remote KCP to drop them as duplicates.
+func (kcp *KCPConn) SyncSendState(nextSN uint32) {
+	kcp.mu.Lock()
+	defer kcp.mu.Unlock()
+	if itimediff(nextSN, kcp.sndNxt) > 0 {
+		kcp.sndNxt = nextSN
+	}
+	if itimediff(nextSN, kcp.sndUna) > 0 {
+		kcp.sndUna = nextSN
+	}
+}
+
 // Send queues data for sending. Data will be fragmented if larger than MSS.
 func (kcp *KCPConn) Send(data []byte) int {
 	kcp.mu.Lock()

@@ -89,11 +89,14 @@ type Config struct {
 	ForceIOTCDetail bool
 
 	// Gwell (IoTVideo) P2P proxy for GW_* cameras.
-	GwellEnabled     bool
-	GwellBinary      string
-	GwellRTSPPort    int
-	GwellControlPort int
-	GwellLogLevel    string
+	GwellEnabled        bool
+	GwellBinary         string
+	GwellRTSPPort       int
+	GwellControlPort    int
+	GwellLogLevel       string
+	GwellFFmpegLogLevel string // ffmpeg -loglevel inside gwell-proxy (quiet/panic/fatal/error/warning/info/verbose/debug/trace)
+	GwellDumpDir        string // if non-empty, gwell-proxy tees raw H.264 to this dir for offline ffprobe
+	GwellDeadmanTimeout time.Duration
 
 	// Per-camera overrides keyed by normalized camera name (UPPER_CASE)
 	CamOverrides map[string]CamOverride
@@ -199,11 +202,14 @@ func Load() (*Config, error) {
 		// yet — enabling it with GW_* cameras present would put
 		// them in a permanent error+retry loop. Flip back to true
 		// once the proxy binary lands in the Docker image.
-		GwellEnabled:     envBool("GWELL_ENABLED", false),
-		GwellBinary:      env("GWELL_BINARY", ""),
-		GwellRTSPPort:    envInt("GWELL_RTSP_PORT", 8564),
-		GwellControlPort: envInt("GWELL_CONTROL_PORT", 18564),
-		GwellLogLevel:    env("GWELL_LOG_LEVEL", ""),
+		GwellEnabled:        envBool("GWELL_ENABLED", false),
+		GwellBinary:         env("GWELL_BINARY", ""),
+		GwellRTSPPort:       envInt("GWELL_RTSP_PORT", 8564),
+		GwellControlPort:    envInt("GWELL_CONTROL_PORT", 18564),
+		GwellLogLevel:       env("GWELL_LOG_LEVEL", ""),
+		GwellFFmpegLogLevel: env("GWELL_FFMPEG_LOGLEVEL", "warning"),
+		GwellDumpDir:        env("GWELL_DUMP_DIR", ""),
+		GwellDeadmanTimeout: envDuration("GWELL_DEADMAN_TIMEOUT", 2*time.Minute),
 
 		// Internals
 		CamOverrides:    make(map[string]CamOverride),

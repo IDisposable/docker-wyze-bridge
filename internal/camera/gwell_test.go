@@ -11,10 +11,12 @@ import (
 // 4.0 architecture: Gwell cameras are handled by the gwell-proxy
 // subprocess, which discovers them via /internal/wyze/Camera/* shim
 // endpoints on our webui server and RTSP-PUSHes their output straight
-// into go2rtc. The camera manager's job for a Gwell camera is just
-// to track state — no per-camera Connect() call, no AddStream. When
-// GWELL_ENABLED=false, Gwell cameras are filtered out in Discover()
-// so they never enter the registry (and never show up in the shim).
+// into go2rtc. Their stream slots are pre-declared at startup in the
+// go2rtc YAML (empty sources array, publish-only). The camera manager
+// does NOT call AddStream for Gwell cameras — it just tracks state.
+// When GWELL_ENABLED=false, Gwell cameras are filtered out in
+// Discover() so they never enter the registry (and never show up in
+// the shim).
 
 func TestManager_GwellCamera_StreamingWhenEnabled(t *testing.T) {
 	mgr, go2rtcAPI := newTestManager(t)
@@ -33,14 +35,11 @@ func TestManager_GwellCamera_StreamingWhenEnabled(t *testing.T) {
 		t.Errorf("state = %v, want Streaming (gwell-proxy publishes via RTSP PUSH)", cam.GetState())
 	}
 
-	// For Gwell cameras we DO call go2rtc.AddStream — with an empty
-	// source — so go2rtc reserves the stream name. Without this slot,
-	// go2rtc's RTSP server closes the gwell-proxy's ffmpeg publish
-	// with `av_interleaved_write_frame(): Broken pipe`. The actual
-	// media still arrives via external PUSH, not via the source URL.
+	// For Gwell cameras the manager must NOT call AddStream — the slot
+	// lives in the YAML config. Verify the API wasn't touched.
 	streams, _ := go2rtcAPI.ListStreams(context.Background())
-	if _, has := streams["og_cam"]; !has {
-		t.Error("Gwell camera should be AddStream'd with empty src so go2rtc reserves the slot")
+	if _, has := streams["og_cam"]; has {
+		t.Error("Gwell camera must not be AddStream'd by the manager; slot is pre-declared in YAML")
 	}
 }
 

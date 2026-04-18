@@ -22,9 +22,18 @@ type FFmpegPublisher struct {
 
 // StartFFmpegPublisher spawns an ffmpeg process that reads raw H.264 from
 // stdin and publishes it via RTSP PUSH to rtsp://<rtspHost>:<rtspPort>/<streamPath>.
-func StartFFmpegPublisher(streamPath, rtspHost string, rtspPort int) (*FFmpegPublisher, error) {
+//
+// logLevel maps directly to ffmpeg's -loglevel flag (quiet/panic/fatal/
+// error/warning/info/verbose/debug/trace). Empty string defaults to
+// "warning" — the debug setting produces dozens of lines per frame
+// which drowns out everything else in the bridge log; flip to debug
+// only when diagnosing ffmpeg itself.
+func StartFFmpegPublisher(streamPath, rtspHost string, rtspPort int, logLevel string) (*FFmpegPublisher, error) {
+	if logLevel == "" {
+		logLevel = "info"
+	}
 	rtspURL := fmt.Sprintf("rtsp://%s:%d/%s", rtspHost, rtspPort, streamPath)
-	log.Printf("[ffmpeg] Publishing to %s", rtspURL)
+	log.Printf("[ffmpeg] Publishing to %s (loglevel=%s)", rtspURL, logLevel)
 
 	// Timestamp dance for raw H.264 Annex B → RTSP PUSH, go2rtc-compatible:
 	//
@@ -48,42 +57,33 @@ func StartFFmpegPublisher(streamPath, rtspHost string, rtspPort int) (*FFmpegPub
 	//     the RTP sender's first packet has timestamp 0 rather than
 	//     a gigantic wallclock-derived value that looks like a rollover
 	//     to consumers.
-	// Re-encode path chosen deliberately over the -c:v copy pass-through:
+	// Copy mode: remux the camera's H.264 bitstream into RTSP without
+	// decoding or re-encoding. This avoids the CPU cost of libx264 and
+	// prevents ffmpeg's decoder from choking on residual IoTVideo framing
+	// bytes at GOP boundaries. The browser/go2rtc decoder is typically
+	// more tolerant of occasional corruption than ffmpeg's full
+	// decode→encode pipeline.
 	//
-	// Empirically, go2rtc's RTSP server closes our publish on the very
-	// first RTP data packet when we copy the gwell stream through.
-	// Debug output showed ffmpeg's input start_time resolving to raw
-	// wallclock microseconds (~2×10¹⁵), with first_dts values diverging
-	// between AVPackets in the input queue. Every timestamp-rebase
-	// option we tried (-copyts, -start_at_zero, -avoid_negative_ts,
-	// +genpts, +igndts) operates output-side, AFTER the input queue's
-	// confusion is already encoded into the first RTP timestamp.
+	// Timestamp handling for raw H.264 → RTSP copy:
+	//   -use_wallclock_as_timestamps 1 + -fflags +genpts+igndts
+	//     assigns monotonic PTS from wallclock, ignoring absent DTS.
+	//   -r 15 hints the frame rate so the RTP muxer can compute
+	//     correct timestamp increments.
+	//   -bsf:v dump_extra forces SPS/PPS into the first keyframe
+	//     so go2rtc can build the SDP without sprop-parameter-sets.
+	//   -avoid_negative_ts make_zero rebases the first RTP timestamp
+	//     to 0 rather than a large wallclock-derived value.
 	//
-	// Re-encoding with libx264 ultrafast decodes the camera stream,
-	// discards its wallclock-origin timestamps entirely, and emits
-	// fresh monotonic PTS/DTS starting at 0. The RTP muxer then
-	// ticks 90kHz forward from zero — the shape every RTSP server
-	// expects and the shape go2rtc accepts.
-	//
-	// Cost: ~10-15% of one CPU core per 1440×1440@15fps camera with
-	// ultrafast+zerolatency. -g 30 gives a keyframe every 2s so new
-	// consumers can join quickly without a stale-reference wait.
-	//
-	// Loglevel stays at `debug` for one more run to confirm the full
-	// RTSP handshake completes and frames flow; dial back to `warning`
-	// once we've seen it work.
 	cmd := exec.Command("ffmpeg",
-		"-loglevel", "debug",
+		"-loglevel", logLevel,
 		"-use_wallclock_as_timestamps", "1",
 		"-fflags", "+genpts+igndts+nobuffer",
 		"-r", "15",
 		"-f", "h264",
 		"-i", "pipe:0",
-		"-c:v", "libx264",
-		"-preset", "ultrafast",
-		"-tune", "zerolatency",
-		"-g", "30",
-		"-pix_fmt", "yuv420p",
+		"-c:v", "copy",
+		"-bsf:v", "dump_extra",
+		"-avoid_negative_ts", "make_zero",
 		"-f", "rtsp",
 		"-rtsp_transport", "tcp",
 		rtspURL,

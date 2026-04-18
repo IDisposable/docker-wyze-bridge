@@ -10,6 +10,15 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 )
 
+// ingressBasePath returns the HA ingress path prefix from the
+// X-Ingress-Path header, or "" when running standalone. The returned
+// value never has a trailing slash so it can be prepended directly to
+// absolute paths: basePath + "/static/app.js".
+func ingressBasePath(r *http.Request) string {
+	p := r.Header.Get("X-Ingress-Path")
+	return strings.TrimRight(p, "/")
+}
+
 // displayHost picks the hostname used to build stream URLs shown to the user.
 // We prefer r.Host (whatever the browser is currently connected to) so the
 // copy-to-clipboard URLs route back the same way. BRIDGE_IP is only a
@@ -31,6 +40,7 @@ func (s *Server) displayHost(r *http.Request) string {
 func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 	cameras := s.camMgr.Cameras()
 	bridgeIP := s.displayHost(r)
+	basePath := ingressBasePath(r)
 
 	type camData struct {
 		Name        string
@@ -64,8 +74,8 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 			// break when pasted elsewhere.
 			HLSURL:      fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
 			WebRTCURL:   fmt.Sprintf("http://%s:1984/api/webrtc?src=%s", bridgeIP, name),
-			SnapshotURL: fmt.Sprintf("/api/snapshot/%s", name),
-			Go2RTCURL:   fmt.Sprintf("/ws?src=%s", name),
+			SnapshotURL: fmt.Sprintf("%s/api/snapshot/%s", basePath, name),
+			Go2RTCURL:   fmt.Sprintf("%s/ws?src=%s", basePath, name),
 		})
 	}
 
@@ -77,9 +87,10 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"Version": s.version,
-		"Cameras": cams,
-		"Uptime":  int(time.Since(s.startTime).Seconds()),
+		"Version":  s.version,
+		"Cameras":  cams,
+		"Uptime":   int(time.Since(s.startTime).Seconds()),
+		"BasePath": basePath,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -92,8 +103,10 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camera.Camera) {
 	bridgeIP := s.displayHost(r)
 	name := cam.Name()
+	basePath := ingressBasePath(r)
 	data := map[string]interface{}{
 		"Version":   s.version,
+		"BasePath":  basePath,
 		"Name":      name,
 		"Nickname":  cam.Info.Nickname,
 		"Model":     cam.Info.Model,
@@ -106,7 +119,7 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"FWVersion": cam.Info.FWVersion,
 		"RTSPURL":   template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
 		"HLSURL":    fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
-		"Go2RTCURL": fmt.Sprintf("/ws?src=%s", name),
+		"Go2RTCURL": fmt.Sprintf("%s/ws?src=%s", basePath, name),
 		"BridgeIP":  bridgeIP,
 	}
 
@@ -126,9 +139,10 @@ const indexHTML = `<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wyze Bridge</title>
-    <link rel="icon" type="image/png" href="/favicon.ico">
-    <link rel="stylesheet" href="/static/style.css">
-    <script type="module" src="/static/video-stream.js"></script>
+    <link rel="icon" type="image/png" href="{{.BasePath}}/favicon.ico">
+    <link rel="stylesheet" href="{{.BasePath}}/static/style.css">
+    <script>window.__BASE_PATH = '{{.BasePath}}';</script>
+    <script type="module" src="{{.BasePath}}/static/video-stream.js"></script>
 </head>
 <body>
     <header>
@@ -146,9 +160,9 @@ const indexHTML = `<!DOCTYPE html>
                          onerror="this.style.display='none'">
                     {{end}}
                     <span class="state-badge {{.State}}">{{.State}}</span>
-                    <a class="camera-preview-overlay" href="/camera/{{.Name}}" aria-label="{{.Nickname}} details"></a>
+                    <a class="camera-preview-overlay" href="{{$.BasePath}}/camera/{{.Name}}" aria-label="{{.Nickname}} details"></a>
                 </div>
-                <a href="/camera/{{.Name}}" class="camera-info">
+                <a href="{{$.BasePath}}/camera/{{.Name}}" class="camera-info">
                     <h3>{{.Nickname}}</h3>
                     <p>{{.ModelName}} &middot; {{.Quality}} &middot; {{.IP}}</p>
                 </a>
@@ -165,7 +179,7 @@ const indexHTML = `<!DOCTYPE html>
         {{end}}
         </div>
     </main>
-    <script src="/static/app.js"></script>
+    <script src="{{.BasePath}}/static/app.js"></script>
 </body>
 </html>`
 
@@ -175,13 +189,14 @@ const cameraHTML = `<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Nickname}} - Wyze Bridge</title>
-    <link rel="icon" type="image/png" href="/favicon.ico">
-    <link rel="stylesheet" href="/static/style.css">
-    <script type="module" src="/static/video-stream.js"></script>
+    <link rel="icon" type="image/png" href="{{.BasePath}}/favicon.ico">
+    <link rel="stylesheet" href="{{.BasePath}}/static/style.css">
+    <script>window.__BASE_PATH = '{{.BasePath}}';</script>
+    <script type="module" src="{{.BasePath}}/static/video-stream.js"></script>
 </head>
 <body>
     <header>
-        <a href="/" class="back">&larr; All Cameras</a>
+        <a href="{{.BasePath}}/" class="back">&larr; All Cameras</a>
         <h1>{{.Nickname}} <span class="version">v{{.Version}}</span></h1>
     </header>
     <main class="camera-detail">
@@ -211,6 +226,6 @@ const cameraHTML = `<!DOCTYPE html>
             </div>
         </div>
     </main>
-    <script src="/static/app.js"></script>
+    <script src="{{.BasePath}}/static/app.js"></script>
 </body>
 </html>`
