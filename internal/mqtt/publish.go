@@ -13,11 +13,14 @@ func (c *Client) PublishCameraState(cam *camera.Camera) {
 	state := cam.GetState()
 
 	stateStr := "disconnected"
+	powerStr := "off"
 	if state == camera.StateStreaming {
 		stateStr = "connected"
+		powerStr = "on"
 	}
 
 	c.publish(fmt.Sprintf("%s/%s/state", c.topic, name), stateStr, true)
+	c.publish(fmt.Sprintf("%s/%s/power", c.topic, name), powerStr, true)
 	c.publish(fmt.Sprintf("%s/%s/net_mode", c.topic, name), "lan", true)
 	c.publish(fmt.Sprintf("%s/%s/quality", c.topic, name), cam.GetQuality(), true)
 

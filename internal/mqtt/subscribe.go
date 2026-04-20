@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	paho "github.com/eclipse/paho.mqtt.golang"
 )
 
@@ -13,6 +14,12 @@ func (c *Client) subscribeCommands() {
 	// Subscribe to wildcard for all cameras
 	pattern := fmt.Sprintf("%s/+/set/#", c.topic)
 	c.subscribe(pattern, c.handleSetCommand)
+
+	statePattern := fmt.Sprintf("%s/+/state/set", c.topic)
+	c.subscribe(statePattern, c.handleStateCommand)
+
+	powerPattern := fmt.Sprintf("%s/+/power/set", c.topic)
+	c.subscribe(powerPattern, c.handlePowerCommand)
 
 	snapPattern := fmt.Sprintf("%s/+/snapshot/take", c.topic)
 	c.subscribe(snapPattern, c.handleSnapshotCommand)
@@ -70,20 +77,103 @@ func (c *Client) handleSetCommand(_ paho.Client, msg paho.Message) {
 		cam.SetAudioOn(value == "true")
 		c.publish(fmt.Sprintf("%s/%s/audio", c.topic, camName), value, true)
 	case "night_vision":
-		pidVal := map[string]string{"auto": "0", "on": "1", "off": "2"}
-		if pv, ok := pidVal[value]; ok {
+		fallthrough
+	case "irled", "status_light", "motion_detection", "motion_tagging", "hor_flip", "ver_flip", "bitrate", "fps":
+		c.applyCloudSetProperty(camName, cam, property, value)
+	}
+}
+
+func (c *Client) applyCloudSetProperty(camName string, cam *camera.Camera, property, rawValue string) {
+	pid, hasPID := cloudSetProperty[property]
+	if !hasPID {
+		return
+	}
+
+	pvalue, publishValue, ok := parseSetPropertyValue(property, rawValue)
+	if !ok {
+		c.log.Warn().Str("cam", camName).Str("property", property).Str("value", rawValue).Msg("invalid MQTT property payload")
+		return
+	}
+
+	if c.wyzeAPI == nil {
+		c.log.Warn().Str("cam", camName).Str("property", property).Msg("Wyze API unavailable for MQTT property command")
+		return
+	}
+
+	info := cam.GetInfo()
+	go func() {
+		if err := c.wyzeAPI.SetProperty(info, pid, pvalue); err != nil {
+			c.log.Error().Err(err).Str("cam", camName).Str("property", property).Msg("MQTT property command failed")
+			return
+		}
+		c.publish(fmt.Sprintf("%s/%s/%s", c.topic, camName, property), publishValue, true)
+	}()
+}
+
+// handleStateCommand handles <topic>/<cam>/state/set commands.
+func (c *Client) handleStateCommand(_ paho.Client, msg paho.Message) {
+	parts := strings.Split(msg.Topic(), "/")
+	if len(parts) < 4 {
+		return
+	}
+	camName := parts[len(parts)-3]
+	payload := strings.ToLower(strings.TrimSpace(string(msg.Payload())))
+
+	if c.camMgr.GetCamera(camName) == nil {
+		c.log.Warn().Str("cam", camName).Msg("unknown camera in MQTT state command")
+		return
+	}
+
+	switch payload {
+	case "start", "on", "1", "true":
+		go c.camMgr.StartStream(context.Background(), camName)
+		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "connected", true)
+		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "on", true)
+	case "stop", "off", "0", "false":
+		go c.camMgr.StopStream(context.Background(), camName)
+		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "disconnected", true)
+		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "off", true)
+	default:
+		c.log.Warn().Str("cam", camName).Str("payload", payload).Msg("invalid MQTT state command payload")
+	}
+}
+
+// handlePowerCommand handles <topic>/<cam>/power/set commands.
+func (c *Client) handlePowerCommand(_ paho.Client, msg paho.Message) {
+	parts := strings.Split(msg.Topic(), "/")
+	if len(parts) < 4 {
+		return
+	}
+	camName := parts[len(parts)-3]
+	payload := strings.ToLower(strings.TrimSpace(string(msg.Payload())))
+
+	cam := c.camMgr.GetCamera(camName)
+	if cam == nil {
+		c.log.Warn().Str("cam", camName).Msg("unknown camera in MQTT power command")
+		return
+	}
+
+	switch payload {
+	case "on", "start", "1", "true":
+		go c.camMgr.StartStream(context.Background(), camName)
+		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "on", true)
+		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "connected", true)
+	case "off", "stop", "0", "false":
+		go c.camMgr.StopStream(context.Background(), camName)
+		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "off", true)
+		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "disconnected", true)
+	case "restart":
+		go c.camMgr.RestartStream(context.Background(), camName)
+		if c.wyzeAPI != nil {
 			info := cam.GetInfo()
 			go func() {
-				c.log.Info().Str("cam", camName).Str("value", value).Msg("night vision command via Wyze API")
-				if c.wyzeAPI != nil {
-					if err := c.wyzeAPI.SetProperty(info, "P3", pv); err != nil {
-						c.log.Error().Err(err).Str("cam", camName).Msg("night vision command failed")
-					} else {
-						c.publish(fmt.Sprintf("%s/%s/night_vision", c.topic, camName), value, true)
-					}
+				if err := c.wyzeAPI.RunAction(info, "restart"); err != nil {
+					c.log.Error().Err(err).Str("cam", camName).Msg("power restart command failed")
 				}
 			}()
 		}
+	default:
+		c.log.Warn().Str("cam", camName).Str("payload", payload).Msg("invalid MQTT power command payload")
 	}
 }
 
