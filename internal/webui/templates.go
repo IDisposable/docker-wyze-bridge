@@ -160,6 +160,9 @@ const indexHTML = `<!DOCTYPE html>
 <body>
     <header>
         <h1>Wyze Bridge <span class="version">v{{.Version}}</span></h1>
+        <nav class="header-nav">
+            <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
+        </nav>
         <button type="button" id="discover-btn" class="discover-btn" title="Re-poll Wyze API for added/removed cameras">↻ Rediscover</button>
     </header>
     <main>
@@ -213,6 +216,9 @@ const cameraHTML = `<!DOCTYPE html>
     <header>
         <a href="{{.BasePath}}/" class="back">&larr; All Cameras</a>
         <h1>{{.Nickname}} <span class="version">v{{.Version}}</span></h1>
+        <nav class="header-nav">
+            <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
+        </nav>
     </header>
     <main class="camera-detail">
         <div class="player-container">

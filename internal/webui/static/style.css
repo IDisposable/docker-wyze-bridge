@@ -38,8 +38,19 @@ header {
 header h1 { font-size: 1.3rem; font-weight: 600; }
 header .version { font-weight: 300; color: var(--text-dim); font-size: 0.8rem; }
 header .back { font-size: 1.1rem; }
-header .discover-btn {
+header .header-nav {
     margin-left: auto;
+    display: flex;
+    gap: 1rem;
+    font-size: 0.9rem;
+}
+header .header-nav a {
+    color: inherit;
+    text-decoration: none;
+    opacity: 0.85;
+}
+header .header-nav a:hover { opacity: 1; text-decoration: underline; }
+header .discover-btn {
     background: transparent;
     color: inherit;
     border: 1px solid var(--border);
