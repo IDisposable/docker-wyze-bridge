@@ -229,7 +229,10 @@ jobs:
         # Strip any ".YYYYMMDD.HHMM" suffix already present in the config
         # so we don't compound suffixes across runs, then append a fresh
         # UTC timestamp. HA's version-comparison handles "X.Y.Z-edge.S.T"
-        # correctly and treats larger stamps as newer.
+        # correctly and treats larger stamps as newer. The bare base is
+        # also exported so we can publish BOTH tags — that way if
+        # something leaves main's config.yaml at the bare base (manual
+        # edit, stale state before the sync step ran), HA can still pull.
         id: edge_version
         run: |
           set -euo pipefail
@@ -240,6 +243,7 @@ jobs:
           fi
           base=$(echo "$raw" | sed -E 's/\.[0-9]{8}\.[0-9]{4}$//')
           stamp=$(date -u +%Y%m%d.%H%M)
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
           echo "version=${base}.${stamp}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push edge add-on image
@@ -265,6 +269,7 @@ jobs:
             io.hass.arch=amd64,aarch64
           tags: |
             ${{ env.HA_ADDON_IMAGE_EDGE }}:${{ steps.edge_version.outputs.version }}
+            ${{ env.HA_ADDON_IMAGE_EDGE }}:${{ steps.edge_version.outputs.base }}
             ${{ env.HA_ADDON_IMAGE_EDGE }}:edge
             ${{ env.HA_ADDON_IMAGE_EDGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=ha-edge
