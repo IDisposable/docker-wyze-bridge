@@ -22,7 +22,7 @@ const (
 	DefaultWyzeAPI  = "https://api.wyzecam.com/app"
 	DefaultCloudAPI = "https://app-core.cloud.wyze.com/app"
 
-	appVersion = "3.6.5.5"
+	appVersion = "3.11.6.1"
 	iosVersion = "17.7.2"
 
 	scaleUserAgent = "Wyze/" + appVersion + " (iPhone; iOS " + iosVersion + "; Scale/3.00)"
