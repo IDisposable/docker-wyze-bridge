@@ -36,35 +36,35 @@ snapshot extraction and MP4 recording. Docker image ~65 MB.
 
 ## Screenshots
 
-Click any thumbnail for the full-size image.
+Click any thumbnail for the full-size image. Tall screenshots are
+cropped to the camera-row height — click through to see the
+complete page. Metrics are also exposed as JSON at `/api/metrics`.
 
 <table>
   <tr>
-    <td align="center">
-      <a href="DOCS/screenshots/01-All%20Cameras.png"><img src="DOCS/screenshots/01-All%20Cameras.png" alt="All Cameras" width="280"></a>
+    <td align="center" width="50%">
+      <a href="DOCS/screenshots/01-All%20Cameras.png"><img src="DOCS/screenshots/01-All%20Cameras.png" alt="All Cameras" width="420"></a>
       <br><sub><b>All Cameras</b></sub>
     </td>
-    <td align="center">
-      <a href="DOCS/screenshots/02-One%20Camera.png"><img src="DOCS/screenshots/02-One%20Camera.png" alt="One Camera" width="280"></a>
+    <td align="center" width="50%">
+      <a href="DOCS/screenshots/02-One%20Camera.png"><img src="DOCS/screenshots/02-One%20Camera.png" alt="One Camera" width="420"></a>
       <br><sub><b>Single Camera</b></sub>
-    </td>
-    <td align="center">
-      <a href="DOCS/screenshots/03-Metrics%20%281%29.png"><img src="DOCS/screenshots/03-Metrics%20%281%29.png" alt="Metrics (top)" width="280"></a>
-      <br><sub><b>Metrics — top</b></sub>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <a href="DOCS/screenshots/04-Metrics%20%282%29.png"><img src="DOCS/screenshots/04-Metrics%20%282%29.png" alt="Metrics (bottom)" width="280"></a>
+      <a href="DOCS/screenshots/03-Metrics%20%281%29.png"><img src="DOCS/screenshots/03-Metrics%20%281%29.png" alt="Metrics (top)" width="420" height="260" style="object-fit: cover; object-position: top;"></a>
+      <br><sub><b>Metrics — top</b></sub>
+    </td>
+    <td align="center">
+      <a href="DOCS/screenshots/04-Metrics%20%282%29.png"><img src="DOCS/screenshots/04-Metrics%20%282%29.png" alt="Metrics (bottom)" width="420" height="260" style="object-fit: cover; object-position: top;"></a>
       <br><sub><b>Metrics — bottom</b></sub>
     </td>
-    <td align="center">
-      <a href="DOCS/screenshots/05-Prometheus.png"><img src="DOCS/screenshots/05-Prometheus.png" alt="Prometheus export" width="280"></a>
-      <br><sub><b>Prometheus export</b></sub>
-    </td>
-    <td align="center">
-      <a href="DOCS/screenshots/06-Metrics%20JSON.png"><img src="DOCS/screenshots/06-Metrics%20JSON.png" alt="Metrics JSON" width="280"></a>
-      <br><sub><b>Metrics JSON</b></sub>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <a href="DOCS/screenshots/05-Prometheus.png"><img src="DOCS/screenshots/05-Prometheus.png" alt="Prometheus export" width="840" height="260" style="object-fit: cover; object-position: top;"></a>
+      <br><sub><b>Prometheus export at <code>/metrics.prom</code></b></sub>
     </td>
   </tr>
 </table>
