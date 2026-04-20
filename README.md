@@ -34,6 +34,41 @@ snapshot extraction and MP4 recording. Docker image ~65 MB.
 > [MIGRATION.md](MIGRATION.md) for the env-var rename table, breaking
 > changes, and dropped features.
 
+## Screenshots
+
+Click any thumbnail for the full-size image.
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="DOCS/screenshots/01-All%20Cameras.png"><img src="DOCS/screenshots/01-All%20Cameras.png" alt="All Cameras" width="280"></a>
+      <br><sub><b>All Cameras</b></sub>
+    </td>
+    <td align="center">
+      <a href="DOCS/screenshots/02-One%20Camera.png"><img src="DOCS/screenshots/02-One%20Camera.png" alt="One Camera" width="280"></a>
+      <br><sub><b>Single Camera</b></sub>
+    </td>
+    <td align="center">
+      <a href="DOCS/screenshots/03-Metrics%20%281%29.png"><img src="DOCS/screenshots/03-Metrics%20%281%29.png" alt="Metrics (top)" width="280"></a>
+      <br><sub><b>Metrics — top</b></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="DOCS/screenshots/04-Metrics%20%282%29.png"><img src="DOCS/screenshots/04-Metrics%20%282%29.png" alt="Metrics (bottom)" width="280"></a>
+      <br><sub><b>Metrics — bottom</b></sub>
+    </td>
+    <td align="center">
+      <a href="DOCS/screenshots/05-Prometheus.png"><img src="DOCS/screenshots/05-Prometheus.png" alt="Prometheus export" width="280"></a>
+      <br><sub><b>Prometheus export</b></sub>
+    </td>
+    <td align="center">
+      <a href="DOCS/screenshots/06-Metrics%20JSON.png"><img src="DOCS/screenshots/06-Metrics%20JSON.png" alt="Metrics JSON" width="280"></a>
+      <br><sub><b>Metrics JSON</b></sub>
+    </td>
+  </tr>
+</table>
+
 ## Camera Support
 
 Three streaming paths, picked automatically per camera — you don't

@@ -193,7 +193,10 @@ jobs:
 
   # Edge HA add-on — built from dev branch pushes only. Pulls the
   # dev-branch sha-tagged wyze-bridge image so edge users run the same
-  # bits we just tested.
+  # bits we just tested. Version is timestamp-stamped here (never on
+  # dev) so every publish looks newer to HA's supervisor, triggering
+  # the "update available" UX without anyone committing on dev just to
+  # bump a string.
   addon-edge:
     needs: [build]
     if: >-
@@ -202,6 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+      contents: write # needs to commit the bumped edge config.yaml back to main
     env:
       GHCR_IMAGE: ${{ needs.build.outputs.ghcr_image }}
       HA_ADDON_IMAGE_EDGE: ${{ needs.build.outputs.addon_image_edge }}
@@ -221,15 +225,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Read add-on version
-        id: addon_version
+      - name: Compute edge version
+        # Strip any ".YYYYMMDD.HHMM" suffix already present in the config
+        # so we don't compound suffixes across runs, then append a fresh
+        # UTC timestamp. HA's version-comparison handles "X.Y.Z-edge.S.T"
+        # correctly and treats larger stamps as newer.
+        id: edge_version
         run: |
-          version=$(awk -F': ' '$1=="version"{print $2; exit}' home_assistant/wyze_bridge_edge/config.yaml)
-          if [[ -z "$version" ]]; then
+          set -euo pipefail
+          raw=$(awk -F': ' '$1=="version"{print $2; exit}' home_assistant/wyze_bridge_edge/config.yaml)
+          if [[ -z "$raw" ]]; then
             echo "Unable to read home_assistant/wyze_bridge_edge/config.yaml version"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          base=$(echo "$raw" | sed -E 's/\.[0-9]{8}\.[0-9]{4}$//')
+          stamp=$(date -u +%Y%m%d.%H%M)
+          echo "version=${base}.${stamp}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push edge add-on image
         uses: docker/build-push-action@v6
@@ -246,19 +257,48 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.title=docker-wyze-bridge-homeassistant-edge
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.addon_version.outputs.version }}
+            org.opencontainers.image.version=${{ steps.edge_version.outputs.version }}
             io.hass.name=Wyze Bridge (Edge)
             io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras — edge channel
-            io.hass.version=${{ steps.addon_version.outputs.version }}
+            io.hass.version=${{ steps.edge_version.outputs.version }}
             io.hass.type=addon
             io.hass.arch=amd64,aarch64
           tags: |
-            ${{ env.HA_ADDON_IMAGE_EDGE }}:${{ steps.addon_version.outputs.version }}
+            ${{ env.HA_ADDON_IMAGE_EDGE }}:${{ steps.edge_version.outputs.version }}
             ${{ env.HA_ADDON_IMAGE_EDGE }}:edge
             ${{ env.HA_ADDON_IMAGE_EDGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=ha-edge
           cache-to: type=gha,mode=max,scope=ha-edge
           provenance: false
+
+      - name: Sync edge version into main
+        # Commit the bumped edge version directly to main. We work in a
+        # throwaway clone so we don't touch the dev checkout the build
+        # ran against. HA reads config.yaml off the default branch
+        # (main) — without this sync, edge users never see new versions.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VERSION: ${{ steps.edge_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          git clone --branch main --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$work"
+          cd "$work"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Replace only the top-level "version:" line in the edge
+          # config.yaml. Using 0,/pat/ limits sed to the first match so
+          # nested version-like strings (schema fields etc.) stay put.
+          sed -i "0,/^version: /{s|^version: .*|version: ${NEW_VERSION}|}" \
+            home_assistant/wyze_bridge_edge/config.yaml
+          if git diff --quiet; then
+            echo "Edge version on main already matches ${NEW_VERSION}; nothing to commit"
+            exit 0
+          fi
+          git add home_assistant/wyze_bridge_edge/config.yaml
+          git commit -m "edge: publish ${NEW_VERSION}"
+          git push origin main
 
   # On a semver tag push, bump the stable add-on's config.yaml version
   # to match the tag, then commit back to main. Edge config.yaml is

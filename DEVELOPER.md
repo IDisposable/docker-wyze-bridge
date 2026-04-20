@@ -240,3 +240,60 @@ internal/
 1. Add the handler in `internal/webui/api.go`
 2. Register the route in `registerRoutes()` in `server.go`
 3. Add a test in `api_test.go` using `httptest`
+
+## Release Flow
+
+Two long-lived branches, two add-on channels.
+
+| Branch | HA add-on | Image tag | Who pushes |
+|--------|-----------|-----------|------------|
+| `dev`  | Wyze Bridge (Edge) | `-homeassistant-edge:{version}` where `{version}` is `X.Y.Z-edge.YYYYMMDD.HHMM` | developer merges land here |
+| `main` | Wyze Bridge (stable) | `-homeassistant:{version}` where `{version}` is the last semver tag | only tag-release commits + CI-driven edge config bumps |
+
+### Daily edge flow
+
+1. Commit to `dev` (directly or via PR).
+2. CI builds the bridge image + edge add-on image and pushes both. The
+   edge image is tagged with a timestamped version
+   (`X.Y.Z-edge.YYYYMMDD.HHMM`).
+3. CI's `addon-edge` job clones `main`, bumps
+   `home_assistant/wyze_bridge_edge/config.yaml` `version:` to the same
+   timestamped string, and commits directly to `main`.
+4. HA users on the edge channel see an "update available" within
+   minutes.
+
+The base of the edge version (`X.Y.Z-edge`, the part before the
+timestamp) lives in `home_assistant/wyze_bridge_edge/config.yaml` on
+`dev`. Bump it there when you start a new minor cycle (e.g.
+`4.3.0-edge`); CI strips any existing `.YYYYMMDD.HHMM` suffix before
+appending the current timestamp so you never get compounding suffixes.
+
+### Promoting an edge release to stable
+
+When `dev` is ready to become the new stable:
+
+```bash
+# 1. Open the release PR
+gh pr create --base main --head dev \
+  --title "Release v4.2.0" \
+  --body "## Changes since 4.1.0\n\n- ..."
+
+# 2. Review + merge the PR in the GitHub UI or via
+gh pr merge --merge   # or --squash if you prefer linear history on main
+
+# 3. Tag the release on main
+git checkout main && git pull
+git tag v4.2.0
+git push origin v4.2.0
+```
+
+The tag push triggers CI's `version-bump` job, which rewrites
+`home_assistant/wyze_bridge/config.yaml` `version:` to `4.2.0` and
+commits it back to `main`. The stable add-on image is published with
+that tag.
+
+**Conflict note:** PR merges rarely conflict on
+`home_assistant/wyze_bridge_edge/config.yaml` because `dev` doesn't
+touch the timestamped suffix — CI only bumps it on `main`. If a
+conflict does appear, take `main`'s (timestamped) version; the merge
+commit should leave `dev`'s base edge version intact otherwise.
