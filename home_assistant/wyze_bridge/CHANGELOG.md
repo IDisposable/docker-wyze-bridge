@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.0-beta
+## 4.2.2
 
 Complete rewrite in Go. See [MIGRATION.md](https://github.com/IDisposable/docker-wyze-bridge/blob/main/MIGRATION.md) for upgrade instructions.
 
@@ -12,6 +12,7 @@ Complete rewrite in Go. See [MIGRATION.md](https://github.com/IDisposable/docker
 - Structured JSON logging via zerolog
 - Recording with configurable path templates and auto-pruning
 - Sunrise/sunset snapshot scheduling
+- Metrics endpoints
 
 ### Changed
 
