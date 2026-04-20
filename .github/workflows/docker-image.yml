@@ -302,7 +302,14 @@ jobs:
             exit 0
           fi
           git add home_assistant/wyze_bridge_edge/config.yaml
-          git commit -m "edge: publish ${NEW_VERSION}"
+          # [skip ci] suppresses the main-push workflow this commit would
+          # otherwise trigger. That workflow would re-run test + build +
+          # addon-stable, republishing the stable image with the
+          # currently-tagged wyze_bridge/config.yaml version — wasteful
+          # and occasionally misleading (stable image published off a
+          # commit that only touched edge config). Skipping it keeps the
+          # workflow side of the release flow tag-driven only.
+          git commit -m "edge: publish ${NEW_VERSION} [skip ci]"
           git push origin main
 
   # On a semver tag push, bump the stable add-on's config.yaml version
@@ -335,5 +342,9 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           branch: main
-          commit_message: 'v${{ steps.bump.outputs.tag }}'
+          # [skip ci]: the stable image for this tag was already
+          # published by addon-stable; re-running the whole workflow on
+          # this version-bump commit would just rebuild + republish the
+          # same bytes under the same tag.
+          commit_message: 'v${{ steps.bump.outputs.tag }} [skip ci]'
           file_pattern: home_assistant/wyze_bridge/config.yaml
