@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.3.0
+
+MQTT Phase 1 release focused on control parity improvements with the legacy bridge,
+while documenting go2rtc-era control boundaries.
+
+### Added
+
+- MQTT stream control topics:
+	- `{topic}/{cam}/state/set` (`start`/`stop`)
+	- `{topic}/{cam}/power/set` (`on`/`off`/`restart`)
+- MQTT power state publishing on `{topic}/{cam}/power`
+- Cloud-backed MQTT property control mapping (write-only mirror):
+	- `night_vision`, `irled`, `status_light`, `motion_detection`,
+		`motion_tagging`, `bitrate`, `fps`, `hor_flip`, `ver_flip`
+- Home Assistant discovery entities for Phase 1 controls:
+	- stream switch, power switch, reboot button, snapshot button
+	- IR/status light/motion detection/motion tagging switches
+	- bitrate/fps number controls
+	- horizontal/vertical flip switches
+- MQTT capability and scope reference in `DOCS/MQTT_SPEC.md`
+
+### Changed
+
+- Night vision mapping aligned to cloud property semantics (`auto` => `3`)
+- MQTT expectations now explicitly split into `Implemented`, `Phase 1`, and `Deferred`
+	in the spec to clarify what requires direct TUTK control vs. cloud API fallback
+
+### Notes
+
+- Live camera property readback parity from the Python bridge remains deferred because
+	go2rtc owns the active TUTK session and does not expose a Wyze property-control API.
+- Pan/tilt K110xx command parity and full `{prop}/get` MQTT readback are out of scope
+	for this phase.
+
 ## 4.2.2
 
 Complete rewrite in Go. See [MIGRATION.md](https://github.com/IDisposable/docker-wyze-bridge/blob/main/MIGRATION.md) for upgrade instructions.

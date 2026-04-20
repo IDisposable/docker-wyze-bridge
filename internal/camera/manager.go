@@ -431,6 +431,31 @@ func (m *Manager) RestartStream(ctx context.Context, name string) {
 	m.connectCamera(ctx, cam)
 }
 
+// StartStream ensures a camera stream is active.
+func (m *Manager) StartStream(ctx context.Context, name string) {
+	cam := m.GetCamera(name)
+	if cam == nil {
+		return
+	}
+	if cam.GetState() == StateStreaming {
+		return
+	}
+	m.changeState(cam, StateOffline)
+	m.connectCamera(ctx, cam)
+}
+
+// StopStream removes a stream from go2rtc and marks the camera offline.
+func (m *Manager) StopStream(ctx context.Context, name string) {
+	cam := m.GetCamera(name)
+	if cam == nil {
+		return
+	}
+	if go2rtc := m.go2rtcClient(); go2rtc != nil {
+		_ = go2rtc.DeleteStream(ctx, name)
+	}
+	m.changeState(cam, StateOffline)
+}
+
 func (m *Manager) changeState(cam *Camera, newState State) {
 	oldState := cam.GetState()
 	if oldState == newState {

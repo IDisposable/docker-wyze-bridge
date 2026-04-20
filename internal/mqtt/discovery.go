@@ -50,6 +50,56 @@ func (c *Client) PublishDiscovery(cam *camera.Camera) {
 		"device":                device,
 	})
 
+	// Stream switch entity
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_stream/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Stream",
+		"unique_id":             "wyze_" + mac + "_stream",
+		"state_topic":           fmt.Sprintf("%s/%s/state", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/state/set", c.topic, name),
+		"payload_on":            "start",
+		"payload_off":           "stop",
+		"state_on":              "connected",
+		"state_off":             "disconnected",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	// Power switch entity
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_power/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Power",
+		"unique_id":             "wyze_" + mac + "_power",
+		"state_topic":           fmt.Sprintf("%s/%s/power", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/power/set", c.topic, name),
+		"payload_on":            "on",
+		"payload_off":           "off",
+		"state_on":              "on",
+		"state_off":             "off",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	// Reboot button entity
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/button/%s_reboot/config", c.dtopic, mac), map[string]interface{}{
+		"name":          info.Nickname + " Reboot",
+		"unique_id":     "wyze_" + mac + "_reboot",
+		"command_topic": fmt.Sprintf("%s/%s/power/set", c.topic, name),
+		"payload_press": "restart",
+		"device":        device,
+	})
+
+	// Snapshot button entity
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/button/%s_snapshot/config", c.dtopic, mac), map[string]interface{}{
+		"name":          info.Nickname + " Snapshot",
+		"unique_id":     "wyze_" + mac + "_snapshot",
+		"command_topic": fmt.Sprintf("%s/%s/snapshot/take", c.topic, name),
+		"payload_press": "take",
+		"device":        device,
+	})
+
 	// Quality select entity
 	c.publishDiscoveryConfig(fmt.Sprintf("%s/select/%s_quality/config", c.dtopic, mac), map[string]interface{}{
 		"name":                  info.Nickname + " Quality",
@@ -91,6 +141,111 @@ func (c *Client) PublishDiscovery(cam *camera.Camera) {
 		"payload_not_available": "disconnected",
 		"device":                device,
 	})
+
+	// Generic cloud-backed property controls (Phase 1 write-only).
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_irled/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " IR",
+		"unique_id":             "wyze_" + mac + "_irled",
+		"state_topic":           fmt.Sprintf("%s/%s/irled", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/irled", c.topic, name),
+		"payload_on":            "1",
+		"payload_off":           "2",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_status_light/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Status Light",
+		"unique_id":             "wyze_" + mac + "_status_light",
+		"state_topic":           fmt.Sprintf("%s/%s/status_light", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/status_light", c.topic, name),
+		"payload_on":            "1",
+		"payload_off":           "2",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_motion_detection/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Motion Detection",
+		"unique_id":             "wyze_" + mac + "_motion_detection",
+		"state_topic":           fmt.Sprintf("%s/%s/motion_detection", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/motion_detection", c.topic, name),
+		"payload_on":            "1",
+		"payload_off":           "2",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_motion_tagging/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Motion Tagging",
+		"unique_id":             "wyze_" + mac + "_motion_tagging",
+		"state_topic":           fmt.Sprintf("%s/%s/motion_tagging", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/motion_tagging", c.topic, name),
+		"payload_on":            "1",
+		"payload_off":           "2",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/number/%s_bitrate/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Bitrate",
+		"unique_id":             "wyze_" + mac + "_bitrate",
+		"state_topic":           fmt.Sprintf("%s/%s/bitrate", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/bitrate", c.topic, name),
+		"min":                   1,
+		"max":                   1000,
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/number/%s_fps/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " FPS",
+		"unique_id":             "wyze_" + mac + "_fps",
+		"state_topic":           fmt.Sprintf("%s/%s/fps", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/fps", c.topic, name),
+		"min":                   1,
+		"max":                   30,
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_hor_flip/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Flip Horizontal",
+		"unique_id":             "wyze_" + mac + "_hor_flip",
+		"state_topic":           fmt.Sprintf("%s/%s/hor_flip", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/hor_flip", c.topic, name),
+		"payload_on":            "1",
+		"payload_off":           "2",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
+
+	c.publishDiscoveryConfig(fmt.Sprintf("%s/switch/%s_ver_flip/config", c.dtopic, mac), map[string]interface{}{
+		"name":                  info.Nickname + " Flip Vertical",
+		"unique_id":             "wyze_" + mac + "_ver_flip",
+		"state_topic":           fmt.Sprintf("%s/%s/ver_flip", c.topic, name),
+		"command_topic":         fmt.Sprintf("%s/%s/set/ver_flip", c.topic, name),
+		"payload_on":            "1",
+		"payload_off":           "2",
+		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
+		"payload_available":     "connected",
+		"payload_not_available": "disconnected",
+		"device":                device,
+	})
 }
 
 // haDeviceFromInfo builds the HA device block from a pre-captured
@@ -116,9 +271,21 @@ func (c *Client) RemoveDiscovery(mac string) {
 		suffix    string
 	}{
 		{"camera", ""},
+		{"switch", "_stream"},
+		{"switch", "_power"},
+		{"button", "_reboot"},
+		{"button", "_snapshot"},
 		{"select", "_quality"},
 		{"select", "_night_vision"},
 		{"switch", "_audio"},
+		{"switch", "_irled"},
+		{"switch", "_status_light"},
+		{"switch", "_motion_detection"},
+		{"switch", "_motion_tagging"},
+		{"number", "_bitrate"},
+		{"number", "_fps"},
+		{"switch", "_hor_flip"},
+		{"switch", "_ver_flip"},
 		{"switch", "_recording"},
 	}
 	for _, e := range entities {

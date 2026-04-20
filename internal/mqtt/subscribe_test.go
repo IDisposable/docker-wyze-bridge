@@ -103,10 +103,10 @@ func TestAudioBoolParsing(t *testing.T) {
 }
 
 func TestNightVisionPIDMapping(t *testing.T) {
-	pidVal := map[string]string{"auto": "0", "on": "1", "off": "2"}
+	pidVal := map[string]string{"auto": "3", "on": "1", "off": "2"}
 
-	if pidVal["auto"] != "0" {
-		t.Error("auto should map to 0")
+	if pidVal["auto"] != "3" {
+		t.Error("auto should map to 3")
 	}
 	if pidVal["on"] != "1" {
 		t.Error("on should map to 1")
@@ -123,6 +123,8 @@ func TestSubscribePatterns(t *testing.T) {
 	topic := "wyzebridge"
 	patterns := []string{
 		topic + "/+/set/#",
+		topic + "/+/state/set",
+		topic + "/+/power/set",
 		topic + "/+/snapshot/take",
 		topic + "/+/stream/restart",
 	}
