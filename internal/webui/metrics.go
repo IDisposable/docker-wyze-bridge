@@ -59,12 +59,26 @@ func (s *Server) handleMetricsJSON(w http.ResponseWriter, r *http.Request) {
 // handleMetricsPage serves the human-readable HTML metrics page.
 // Templates live in templates.go (embedded) — here we just execute.
 func (s *Server) handleMetricsPage(w http.ResponseWriter, r *http.Request) {
-	snap := s.buildMetricsSnapshot()
+	data := metricsPageData{
+		BasePath:        ingressBasePath(r),
+		MetricsSnapshot: s.buildMetricsSnapshot(),
+	}
 	tmpl := metricsTemplate()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, snap); err != nil {
+	if err := tmpl.Execute(w, data); err != nil {
 		s.log.Error().Err(err).Msg("metrics template")
 	}
+}
+
+// metricsPageData decorates the snapshot with the HA ingress base path
+// so links inside the template (Cameras, Prometheus, JSON) resolve
+// inside the addon's iframe instead of escaping to Home Assistant's
+// root. Snapshot fields stay accessible at the template's top level
+// via struct embedding — no existing {{.Bridge}} / {{.Issues}} etc.
+// template bindings need to change.
+type metricsPageData struct {
+	BasePath string
+	MetricsSnapshot
 }
 
 // buildMetricsSnapshot gathers a read-only view across every injected
@@ -227,7 +241,7 @@ const metricsHTML = `<!DOCTYPE html>
 </head>
 <body>
 <h1>Bridge Metrics</h1>
-<p class="muted"><a href="/">← Cameras</a> &nbsp;·&nbsp; <a href="/metrics.prom">Prometheus</a> &nbsp;·&nbsp; <a href="/api/metrics">JSON</a> &nbsp;·&nbsp; auto-refresh 10s</p>
+<p class="muted"><a href="{{.BasePath}}/">← Cameras</a> &nbsp;·&nbsp; <a href="{{.BasePath}}/metrics.prom">Prometheus</a> &nbsp;·&nbsp; <a href="{{.BasePath}}/api/metrics">JSON</a> &nbsp;·&nbsp; auto-refresh 10s</p>
 
 {{- if .Issues}}
 <h2 class="issue-err">Issues ({{len .Issues}})</h2>
@@ -264,7 +278,7 @@ const metricsHTML = `<!DOCTYPE html>
 <tbody>
 {{- range .Cameras}}
   <tr>
-    <td><a href="/camera/{{.Name}}">{{.Nickname}}</a><br><code class="muted">{{.Name}}</code></td>
+    <td><a href="{{$.BasePath}}/camera/{{.Name}}">{{.Nickname}}</a><br><code class="muted">{{.Name}}</code></td>
     <td>{{.ModelName}}<br><code class="muted">{{.Model}}</code></td>
     <td>{{.Protocol}}</td>
     <td><span class="pill state-{{.State}}">{{.State}}</span></td>
