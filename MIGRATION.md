@@ -44,7 +44,7 @@ image: idisposablegithub365/wyze-bridge:go
 | **Gwell / WebRTC support** | OG-family Gwell cameras (GW_GC1/GC2) + Doorbell lineage (GW_BE1 / GW_DBD) now work end-to-end. See [Gwell Cameras Now Supported](#new-gwell-cameras-now-supported). |
 | **Record start/stop in the UI** | Every camera card has a record button. Click starts per-camera `ffmpeg -f segment`; click again stops it. Also flipped via MQTT or `POST /api/cameras/<name>/record`. |
 | **Observability surfaces** | `/metrics` HTML dashboard, `/metrics.prom` Prometheus exposition, `/api/metrics` JSON, expanded `/api/health`, auto-generated `/dashboard.yaml` for Home Assistant. |
-| **MQTT metric topics** | Bridge-wide gauges at `<topic>/bridge/*` (uptime, camera counts, config errors, recordings size) + per-camera `<topic>/<cam>/recording`. All auto-created via HA discovery. |
+| **MQTT metric topics** | Bridge-wide gauges at `<topic>/bridge/*` (uptime, camera counts, config errors, recordings size) + per-camera `<topic>/<cam>/recording`. All auto-created via HA discovery. See [DOCS/MQTT_SPEC.md](DOCS/MQTT_SPEC.md) for complete details |
 
 ## Breaking Changes
 
@@ -89,6 +89,10 @@ STREAM_AUTH=user:pass
 go2rtc's RTSP server uses a single username/password for all streams. Per-camera credential scoping is not supported. If you set a multi-user `STREAM_AUTH`, only the first user's credentials are applied globally.
 
 **Workaround:** Use your reverse proxy (nginx, Traefik) for per-path access control if needed.
+
+### Changed: Camera names
+
+In the previous version a camera with an embedded space would have the space replaced by a hypen `-`. In the code the space is replaced by an underscore `_`. So camera `Front Door` becomes `front_door` (not `front-door`) so you might need to adjust dashboards or actions.
 
 ### Changed: WebUI Appearance
 
