@@ -222,12 +222,14 @@ func (m *Manager) ConnectAll(ctx context.Context) {
 // API. The stream URL is picked by protocol:
 //
 //   - TUTK: wyze:// source — go2rtc dials the camera directly.
-//   - WebRTC (GW_BE1 / GW_DBD / any Gwell model without a LAN IP):
+//   - WebRTC (GW_BE1 / GW_DBD doorbell lineage):
 //     webrtc:http://loopback/internal/wyze/webrtc/<cam>#format=wyze —
 //     go2rtc's native handler fetches the Wyze KVS signaling URL from
 //     our shim and dials Wyze's mars-webcsrv itself.
-//   - Gwell P2P (OG with LAN IP): empty URL — publish-only slot. The
-//     gwell-proxy sidecar's ffmpeg RTSP PUBLISH lands on this slot.
+//   - Gwell P2P (OG family: GW_GC1/GC2): empty URL — publish-only
+//     slot. The gwell-proxy sidecar's ffmpeg RTSP PUBLISH lands on
+//     this slot. OG cameras always route here even when the Wyze cloud
+//     reports an empty LAN IP — gwell-proxy discovers the IP over P2P.
 func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	m.changeState(cam, StateConnecting)
 

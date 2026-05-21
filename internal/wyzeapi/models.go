@@ -37,6 +37,13 @@ var gwellModels = map[string]bool{
 	"GW_BE1": true, "GW_GC1": true, "GW_GC2": true, "GW_DBD": true,
 }
 
+// gwellP2PModels: OG-family cameras that always use Gwell P2P for
+// streaming, even when the Wyze cloud API reports an empty LAN IP.
+// gwell-proxy's own DiscoverDevices call recovers the IP over P2P.
+var gwellP2PModels = map[string]bool{
+	"GW_GC1": true, "GW_GC2": true,
+}
+
 // webRTCStreamerModels: Wyze cameras that stream live media over WebRTC
 // (Wyze's mars-webcsrv signaling + AWS TURN), handled by go2rtc's native
 // #format=wyze source. Doorbell lineage. OG cameras (GW_GC1/GC2) use
@@ -87,17 +94,26 @@ func (c CameraInfo) IsGwell() bool {
 	return gwellModels[c.Model]
 }
 
+// IsGwellP2P returns true for OG-family cameras that stream via Gwell
+// P2P on the LAN (handled by gwell-proxy), as opposed to doorbell-
+// lineage cameras which stream via WebRTC.
+func (c CameraInfo) IsGwellP2P() bool {
+	return gwellP2PModels[c.Model]
+}
+
 // IsWebRTCStreamer returns true when this camera streams via Wyze's
 // WebRTC path (served by go2rtc's native #format=wyze source). True if
-// either the model is in the allow-list OR the camera is Gwell-protocol
-// but has no LAN IP — the cloud not reporting a LAN IP is a reliable
-// signal for the doorbell lineage. OG cameras (LAN-direct Gwell P2P)
-// always have a LAN IP and stay on gwell-proxy.
+// the model is in the explicit allow-list OR the camera is Gwell-
+// protocol, not an OG-family model, and has no LAN IP — for non-OG
+// Gwell cameras, the cloud not reporting a LAN IP is a reliable signal
+// for the doorbell lineage. OG cameras always use Gwell P2P even when
+// the Wyze cloud doesn't report their LAN IP (gwell-proxy discovers it
+// over P2P independently).
 func (c CameraInfo) IsWebRTCStreamer() bool {
 	if webRTCStreamerModels[c.Model] {
 		return true
 	}
-	if c.IsGwell() && (c.LanIP == "" || c.LanIP == "0.0.0.0") {
+	if c.IsGwell() && !c.IsGwellP2P() && (c.LanIP == "" || c.LanIP == "0.0.0.0") {
 		return true
 	}
 	return false

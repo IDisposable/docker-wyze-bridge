@@ -46,12 +46,12 @@ func (s *Server) handleShimCameraList(w http.ResponseWriter, r *http.Request) {
 	// debugger.
 	all := s.camMgr.Cameras()
 	for _, cam := range all {
-		// gwell-proxy handles only Gwell-protocol cameras that actually
-		// use Gwell P2P for media — OG (GC1/GC2) with LAN IPs. The
-		// doorbell lineage (GW_BE1 / GW_DBD / any Gwell model without
-		// a LAN IP) streams over WebRTC; those go to wyze-webrtc-proxy
-		// and must be hidden from gwell-proxy to avoid a permanent
-		// Gwell-P2P retry loop that never produces video.
+	// gwell-proxy handles only Gwell-protocol cameras that use
+		// Gwell P2P for media — OG family (GC1/GC2). The doorbell
+		// lineage (GW_BE1 / GW_DBD) streams over WebRTC; those go
+		// to go2rtc's native #format=wyze handler and must be hidden
+		// from gwell-proxy to avoid a permanent Gwell-P2P retry loop
+		// that never produces video.
 		info := cam.GetInfo()
 		if info.IsGwell() && !info.IsWebRTCStreamer() {
 			ids = append(ids, info.MAC)

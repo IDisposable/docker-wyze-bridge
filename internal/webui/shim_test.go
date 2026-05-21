@@ -68,11 +68,6 @@ func TestShim_CameraList_ExcludesWebRTCStreamers(t *testing.T) {
 		Name: "front_door", Model: "GW_BE1", MAC: "AABBCC001122", LanIP: "",
 	}, "hd", true, false)
 	srv.camMgr.InjectCamera("front_door", webrtcByModel)
-	// GW_GC1 with no LAN IP: WebRTC by heuristic.
-	webrtcByHeuristic := camera.NewCamera(wyzeapi.CameraInfo{
-		Name: "mystery_og", Model: "GW_GC1", MAC: "DDEEFF001122", LanIP: "",
-	}, "hd", true, false)
-	srv.camMgr.InjectCamera("mystery_og", webrtcByHeuristic)
 
 	w := httptest.NewRecorder()
 	srv.handleShimCameraList(w, newShimReq("GET", "/internal/wyze/Camera/CameraList"))
@@ -80,7 +75,27 @@ func TestShim_CameraList_ExcludesWebRTCStreamers(t *testing.T) {
 	var got []string
 	_ = json.NewDecoder(w.Body).Decode(&got)
 	if len(got) != 0 {
-		t.Errorf("expected empty list (both WebRTC-routed), got %v", got)
+		t.Errorf("expected empty list (WebRTC-routed doorbell), got %v", got)
+	}
+}
+
+func TestShim_CameraList_IncludesOGWithEmptyIP(t *testing.T) {
+	// OG cameras (GW_GC1/GC2) always route through gwell-proxy even
+	// when the Wyze cloud reports an empty LAN IP — gwell-proxy's
+	// DiscoverDevices recovers the IP over P2P independently.
+	srv, _ := testServer(t)
+	ogNoIP := camera.NewCamera(wyzeapi.CameraInfo{
+		Name: "og_cam", Model: "GW_GC1", MAC: "DDEEFF001122", LanIP: "",
+	}, "hd", true, false)
+	srv.camMgr.InjectCamera("og_cam", ogNoIP)
+
+	w := httptest.NewRecorder()
+	srv.handleShimCameraList(w, newShimReq("GET", "/internal/wyze/Camera/CameraList"))
+
+	var got []string
+	_ = json.NewDecoder(w.Body).Decode(&got)
+	if len(got) != 1 || got[0] != "DDEEFF001122" {
+		t.Errorf("want [DDEEFF001122] (OG always Gwell P2P), got %v", got)
 	}
 }
 

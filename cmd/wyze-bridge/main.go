@@ -273,8 +273,8 @@ func startGwellProxyIfEnabled(ctx context.Context, cfg *config.Config, camMgr *c
 		log.Info().Msg("GWELL_ENABLED=false; GW_ cameras will be skipped")
 		return nil
 	}
-	// Only spawn if there's at least one OG-style Gwell camera (IsGwell
-	// and LAN-reachable). WebRTC-streamer cameras go to go2rtc's native
+	// Only spawn if there's at least one OG-style Gwell P2P camera.
+	// WebRTC-streamer cameras (doorbell lineage) go to go2rtc's native
 	// #format=wyze handler — gwell-proxy would just poll the shim and
 	// log "0 Gwell cameras, retrying in 30s" forever.
 	hasOG := false
