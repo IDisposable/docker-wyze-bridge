@@ -80,7 +80,10 @@ configure the path, the bridge routes based on the model.
   Gwell/IoTVideo LAN-direct UDP protocol. Enabled by default (set
   `GWELL_ENABLED=false` to opt out); the sidecar only actually spawns
   when an OG-family camera is discovered, so users without OG cameras
-  pay zero cost.
+  pay zero cost. Cameras whose LAN IP the Wyze cloud does not
+  report (e.g. `GW_DUO`) can be pinned via
+  `GWELL_LAN_IPS=DEVICEID=IP,DEVICEID=IP` (matched against the
+  device id) so the sidecar can seed its LAN-direct handshake.
 - **WebRTC (KVS)** — go2rtc's native `#format=wyze` handler dials
   Wyze's `wyze-mars-webcsrv.wyzecam.com` signaling server itself and
   speaks AWS-KVS WebRTC. Used by doorbell-lineage hardware that skips
@@ -107,6 +110,7 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam Doorbell Duo | `GW_DBD` | WebRTC | Expected (same lineage) |
 | Wyze Cam OG | `GW_GC1` | Gwell P2P | Expected (LAN-direct UDP) |
 | Wyze Cam OG Telephoto 3X | `GW_GC2` | Gwell P2P | Expected (LAN-direct UDP) |
+| Wyze Cam Duo | `GW_DUO` | Gwell P2P | Confirmed - LAN-direct, requires `GWELL_LAN_IPS` |
 | Wyze Battery Cam Pro | `AN_RSCW` | — | Not supported |
 | Wyze Cam Floodlight Pro (2K) | `LD_CFP` | — | Not supported |
 
