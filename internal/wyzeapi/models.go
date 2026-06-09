@@ -34,7 +34,7 @@ var ModelNames = map[string]string{
 
 // Gwell-protocol cameras (not supported by go2rtc TUTK).
 var gwellModels = map[string]bool{
-	"GW_BE1": true, "GW_GC1": true, "GW_GC2": true, "GW_DBD": true,
+	"GW_BE1": true, "GW_GC1": true, "GW_GC2": true, "GW_DBD": true, "GW_DUO": true,
 }
 
 // gwellP2PModels: OG-family cameras that always use Gwell P2P for
