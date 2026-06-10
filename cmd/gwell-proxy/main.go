@@ -338,7 +338,7 @@ func runCamera(client *wyzeShimClient, cameraID string,
 		if err != nil {
 			log.Printf("[%s] Stream error: %v", cameraID, err)
 			log.Printf("[%s] reconnect reason: stream_error", cameraID)
-			if derr := refreshDiscovery(client, cameraID, true); derr != nil {
+			if derr := refreshDiscovery(client, cameraID, false); derr != nil {
 				log.Printf("[%s] Re-discovery before reconnect failed: %v", cameraID, derr)
 			}
 		}
