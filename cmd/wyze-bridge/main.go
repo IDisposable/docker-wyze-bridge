@@ -616,6 +616,19 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, camMgr *camera.Manager
 		log.Info().Int("users", len(entries)).Msg("STREAM_AUTH configured")
 	}
 
+	// Pre-register Gwell cameras as empty publish-only slots so go2rtc
+	// holds the stream name and accepts the gwell-proxy's RTSP PUSH.
+	// Gwell streams have no go2rtc source (the proxy pushes into them);
+	// without a reserved slot the push is dropped ("broken pipe") and
+	// never reaches a consumer. TUTK/WebRTC cams get a real source via
+	// the runtime API instead.
+	for _, cam := range camMgr.Cameras() {
+		info := cam.GetInfo()
+		if info.IsGwell() && !info.IsWebRTCStreamer() {
+			configBuilder.AddStream(go2rtcmgr.StreamEntry{Name: cam.Name()})
+		}
+	}
+
 	go2rtcConfigPath := cfg.StateDir + "/go2rtc.yaml"
 	if err := configBuilder.WriteConfig(go2rtcConfigPath); err != nil {
 		log.Fatal().Err(err).Msg("write go2rtc config")
