@@ -49,11 +49,11 @@ func TestClient_GetCameraList(t *testing.T) {
 					map[string]interface{}{
 						"product_type":  "Camera",
 						"product_model": "HL_PAN3",
-						"mac":           "",       // Missing MAC → skip
+						"mac":           "", // Missing MAC → skip
 						"nickname":      "No MAC",
 						"device_params": map[string]interface{}{
-							"p2p_id":   "X",
-							"ip":       "10.0.0.2",
+							"p2p_id":            "X",
+							"ip":                "10.0.0.2",
 							"camera_thumbnails": map[string]interface{}{},
 						},
 					},
@@ -241,5 +241,25 @@ func TestClient_GetDeviceInfo(t *testing.T) {
 	}
 	if len(propList) != 3 {
 		t.Errorf("property count = %d, want 3", len(propList))
+	}
+}
+
+func TestFixKVSSignalingURL(t *testing.T) {
+	// Wyze's get_streams double-encodes the SigV4 query params for some
+	// cameras (observed on LD_CFP Floodlight Pro): %2F -> %252F etc. AWS
+	// KVS rejects the websocket handshake with 403 "Credential must have
+	// exactly 5 slash-delimited elements". Single-decode fixes it.
+	doubled := "wss://v.kinesisvideo.amazonaws.com/?X-Amz-ChannelARN=arn%253Aaws&X-Amz-Credential=ASIA%252F20260621%252Fus-west-2%252Fkinesisvideo%252Faws4_request&X-Amz-Security-Token=ab%252Bcd"
+	want := "wss://v.kinesisvideo.amazonaws.com/?X-Amz-ChannelARN=arn%3Aaws&X-Amz-Credential=ASIA%2F20260621%2Fus-west-2%2Fkinesisvideo%2Faws4_request&X-Amz-Security-Token=ab%2Bcd"
+	if got := FixKVSSignalingURL(doubled); got != want {
+		t.Errorf("double-encoded fix:\n got=%q\nwant=%q", got, want)
+	}
+
+	// Correctly single-encoded URL passes through untouched (no %25), so
+	// non-double-encoded cameras (e.g. Doorbell Pro) are unaffected and
+	// '+' is not mangled into a space.
+	single := "wss://v.kinesisvideo.amazonaws.com/?X-Amz-Credential=ASIA%2F20260621&X-Amz-Security-Token=ab%2Bcd"
+	if got := FixKVSSignalingURL(single); got != single {
+		t.Errorf("single-encoded URL changed:\n got=%q\nwant=%q", got, single)
 	}
 }

@@ -682,6 +682,9 @@ func (a kvsAdapter) GetCameraStream(ctx context.Context, mac, model string) (str
 	if signalingURL == "" {
 		return "", nil, "", fmt.Errorf("get_streams: empty signaling_url")
 	}
+	// Wyze double-encodes the SigV4 query params for some cameras (e.g.
+	// LD_CFP); undo it or AWS KVS rejects the handshake with 403.
+	signalingURL = wyzeapi.FixKVSSignalingURL(signalingURL)
 	authToken, _ := params["auth_token"].(string)
 
 	var ice []webui.KVSIceServer

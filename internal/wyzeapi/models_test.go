@@ -115,6 +115,22 @@ func TestCameraInfo_WindowCam_IsLanDirectGwell(t *testing.T) {
 	}
 }
 
+func TestCameraInfo_FloodlightPro_IsWebRTC(t *testing.T) {
+	// Floodlight Pro (LD_CFP) is NOT Gwell — Wyze serves it over AWS KVS
+	// WebRTC (get_streams returns a kinesisvideo signaling URL). It must
+	// route to the WebRTC streamer path, not TUTK or Gwell.
+	fl := CameraInfo{Model: "LD_CFP", LanIP: ""}
+	if fl.IsGwell() {
+		t.Error("LD_CFP must not be classified as Gwell")
+	}
+	if !fl.IsWebRTCStreamer() {
+		t.Error("LD_CFP should be a WebRTC streamer")
+	}
+	if got, want := fl.ModelName(), "Floodlight Pro"; got != want {
+		t.Errorf("ModelName(LD_CFP) = %q, want %q", got, want)
+	}
+}
+
 func TestCameraInfo_IsPanCam(t *testing.T) {
 	pan := CameraInfo{Model: "HL_PAN3"}
 	if !pan.IsPanCam() {
