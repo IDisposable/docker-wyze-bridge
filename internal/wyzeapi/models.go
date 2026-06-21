@@ -25,6 +25,7 @@ var ModelNames = map[string]string{
 	"AN_RDB1":       "Doorbell Pro 2",
 	"GW_GC1":        "OG",
 	"GW_GC2":        "OG 3X",
+	"GW_WC":         "Window Cam",
 	"WVOD1":         "Outdoor",
 	"HL_WCO2":       "Outdoor V2",
 	"AN_RSCW":       "Battery Cam Pro",
@@ -35,6 +36,22 @@ var ModelNames = map[string]string{
 // Gwell-protocol cameras (not supported by go2rtc TUTK).
 var gwellModels = map[string]bool{
 	"GW_BE1": true, "GW_GC1": true, "GW_GC2": true, "GW_DBD": true,
+	"GW_WC": true,
+}
+
+// lanDirectGwellModels: Gwell cameras that stream LAN-direct over Gwell
+// P2P (handled by gwell-proxy) for which the Wyze cloud reports an empty
+// LAN IP — so the generic "no LAN IP → WebRTC" heuristic in
+// IsWebRTCStreamer would otherwise misroute them to the doorbell/WebRTC
+// path. This set exempts them; the real LAN IP is recovered by P2P
+// discovery or supplied via manual_ips.json.
+//
+// OG (GW_GC1/GC2) is intentionally NOT here: the existing heuristic
+// treats a missing LAN IP as the doorbell-lineage signal for those, and
+// changing that is out of scope for window-cam support.
+//   - GW_WC: Window Cam
+var lanDirectGwellModels = map[string]bool{
+	"GW_WC": true,
 }
 
 // webRTCStreamerModels: Wyze cameras that stream live media over WebRTC
@@ -94,6 +111,12 @@ func (c CameraInfo) IsGwell() bool {
 // signal for the doorbell lineage. OG cameras (LAN-direct Gwell P2P)
 // always have a LAN IP and stay on gwell-proxy.
 func (c CameraInfo) IsWebRTCStreamer() bool {
+	// LAN-direct Gwell models (OG, Window Cam) always use gwell-proxy,
+	// even though the Wyze cloud reports an empty LAN IP for them — the
+	// proxy recovers the real IP via P2P discovery / manual override.
+	if lanDirectGwellModels[c.Model] {
+		return false
+	}
 	if webRTCStreamerModels[c.Model] {
 		return true
 	}

@@ -92,6 +92,29 @@ func TestCameraInfo_IsGwell(t *testing.T) {
 	}
 }
 
+func TestCameraInfo_WindowCam_IsLanDirectGwell(t *testing.T) {
+	// Wyze Window Cam (GW_WC) uses the same Gwell P2P stack as OG, but the
+	// Wyze cloud API returns an empty LAN IP for it. It must still be
+	// treated as a LAN-direct Gwell camera (handled by gwell-proxy), NOT
+	// misrouted to the WebRTC/doorbell path by the "no LAN IP" heuristic.
+	wc := CameraInfo{Model: "GW_WC", LanIP: ""}
+	if !wc.IsGwell() {
+		t.Error("GW_WC should be Gwell")
+	}
+	if wc.IsWebRTCStreamer() {
+		t.Error("GW_WC with empty LAN IP must NOT be a WebRTC streamer (it is LAN-direct Gwell)")
+	}
+	if got, want := wc.ModelName(), "Window Cam"; got != want {
+		t.Errorf("ModelName(GW_WC) = %q, want %q", got, want)
+	}
+
+	// Regression guard: doorbell-lineage Gwell with empty LAN IP IS WebRTC.
+	db := CameraInfo{Model: "GW_BE1", LanIP: ""}
+	if !db.IsWebRTCStreamer() {
+		t.Error("GW_BE1 with empty LAN IP should remain a WebRTC streamer")
+	}
+}
+
 func TestCameraInfo_IsPanCam(t *testing.T) {
 	pan := CameraInfo{Model: "HL_PAN3"}
 	if !pan.IsPanCam() {

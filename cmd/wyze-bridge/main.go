@@ -94,6 +94,14 @@ func main() {
 	webServer := webui.NewServer(cfg, camMgr, nil, Version, webuiLog)
 	webServer.SetIssuesRegistry(issueReg)
 	webServer.SetMarsMinter(apiClient)
+	// Manual LAN IPs for Gwell cameras the Wyze cloud doesn't surface
+	// (e.g. Window Cams / GW_WC). Missing file is a no-op.
+	if manualIPs, err := webui.LoadManualIPs(cfg.GwellManualIPs); err != nil {
+		log.Warn().Err(err).Str("path", cfg.GwellManualIPs).Msg("failed to load Gwell manual IPs; continuing without")
+	} else if len(manualIPs) > 0 {
+		log.Info().Int("count", len(manualIPs)).Str("path", cfg.GwellManualIPs).Msg("loaded Gwell manual LAN IPs")
+		webServer.SetManualIPs(manualIPs)
+	}
 	// KVS / WebRTC provider for the wyze-webrtc-proxy sidecar: answer
 	// /kvs-config/<streamID> by calling /v4/camera/get_streams and
 	// mapping the response into whep_proxy's WebRTCConfig shape.

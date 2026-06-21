@@ -43,20 +43,21 @@ type DiscoverRequester func(ctx context.Context)
 // the client. Handlers that need it use s.go2rtc() and return 503 if
 // the client isn't attached yet.
 type Server struct {
-	log       zerolog.Logger
-	cfg       *config.Config
-	camMgr    *camera.Manager
-	go2rtcAPI atomic.Pointer[go2rtcmgr.APIClient]
-	sseHub    *SSEHub
-	auth      *AuthMiddleware
-	srv       *http.Server
-	version   string
-	startTime time.Time
+	log           zerolog.Logger
+	cfg           *config.Config
+	camMgr        *camera.Manager
+	go2rtcAPI     atomic.Pointer[go2rtcmgr.APIClient]
+	sseHub        *SSEHub
+	auth          *AuthMiddleware
+	srv           *http.Server
+	version       string
+	startTime     time.Time
 	onSnapReq     SnapshotRequester
 	onDiscoverReq DiscoverRequester
-	mars      MarsTokenMinter
-	kvs       KVSStreamProvider
-	issues    *issues.Registry // optional
+	mars          MarsTokenMinter
+	manualIPs     ManualIPs // operator-supplied LAN IPs for Gwell cams (may be nil)
+	kvs           KVSStreamProvider
+	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup
 	// paths (bring-up before every subsystem wires in) stay legal.
 	recMgr   RecordingObserver

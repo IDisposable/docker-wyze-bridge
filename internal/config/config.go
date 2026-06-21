@@ -102,6 +102,7 @@ type Config struct {
 	GwellFFmpegLogLevel string // ffmpeg -loglevel inside gwell-proxy (quiet/panic/fatal/error/warning/info/verbose/debug/trace)
 	GwellDumpDir        string // if non-empty, gwell-proxy tees raw H.264 to this dir for offline ffprobe
 	GwellDeadmanTimeout time.Duration
+	GwellManualIPs      string // path to manual_ips.json mapping MAC->LAN IP for Gwell cams the cloud doesn't surface
 
 	// Per-camera overrides keyed by normalized camera name (UPPER_CASE)
 	CamOverrides map[string]CamOverride
@@ -221,6 +222,7 @@ func Load() (*Config, error) {
 		GwellFFmpegLogLevel: env("GWELL_FFMPEG_LOGLEVEL", "warning"),
 		GwellDumpDir:        env("GWELL_DUMP_DIR", ""),
 		GwellDeadmanTimeout: envDuration("GWELL_DEADMAN_TIMEOUT", 2*time.Minute),
+		GwellManualIPs:      env("GWELL_MANUAL_IPS", "/config/manual_ips.json"),
 
 		// Internals
 		CamOverrides:    make(map[string]CamOverride),
