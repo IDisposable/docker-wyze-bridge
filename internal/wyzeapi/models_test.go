@@ -131,6 +131,23 @@ func TestCameraInfo_FloodlightPro_IsWebRTC(t *testing.T) {
 	}
 }
 
+func TestCameraInfo_PanDuo_IsWebRTC(t *testing.T) {
+	// Cam Pan Duo (GW_DUO) streams over WebRTC via Wyze's mars-webcsrv
+	// signaling (get_streams returns wss://wyze-mars-webcsrv...), the same
+	// path as the Doorbell Pro. NOT a Gwell-P2P camera, NOT TUTK. The
+	// cloud reports no LAN IP, so it must route to the WebRTC path.
+	pd := CameraInfo{Model: "GW_DUO", LanIP: ""}
+	if pd.IsGwell() {
+		t.Error("GW_DUO must not be classified as Gwell")
+	}
+	if !pd.IsWebRTCStreamer() {
+		t.Error("GW_DUO should be a WebRTC streamer")
+	}
+	if got, want := pd.ModelName(), "Cam Pan Duo"; got != want {
+		t.Errorf("ModelName(GW_DUO) = %q, want %q", got, want)
+	}
+}
+
 func TestCameraInfo_IsPanCam(t *testing.T) {
 	pan := CameraInfo{Model: "HL_PAN3"}
 	if !pan.IsPanCam() {

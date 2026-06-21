@@ -31,6 +31,7 @@ var ModelNames = map[string]string{
 	"AN_RSCW":        "Battery Cam Pro",
 	"LD_CFP":         "Floodlight Pro",
 	"GW_DBD":         "Doorbell Duo",
+	"GW_DUO":         "Cam Pan Duo",
 }
 
 // Gwell-protocol cameras (not supported by go2rtc TUTK).
@@ -59,10 +60,12 @@ var lanDirectGwellModels = map[string]bool{
 // go2rtc's native #format=wyze source. OG cameras (GW_GC1/GC2) use Gwell
 // P2P on the LAN and don't belong here.
 //   - GW_BE1 / GW_DBD: Doorbell Pro / Duo (Gwell-lineage, WebRTC media)
-//   - LD_CFP:          Floodlight Pro (not Gwell; KVS WebRTC only —
+//   - LD_CFP:          Floodlight Pro (not Gwell; AWS-KVS WebRTC —
 //     get_streams returns a kinesisvideo signaling URL)
+//   - GW_DUO:          Cam Pan Duo (not Gwell; WebRTC via Wyze's own
+//     mars-webcsrv signaling, the Doorbell Pro backend — not AWS KVS)
 var webRTCStreamerModels = map[string]bool{
-	"GW_BE1": true, "GW_DBD": true, "LD_CFP": true,
+	"GW_BE1": true, "GW_DBD": true, "LD_CFP": true, "GW_DUO": true,
 }
 
 // PanCams is the set of pan/tilt camera models.
