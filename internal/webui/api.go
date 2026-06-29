@@ -29,16 +29,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version": s.version,
 		"uptime":  uptime,
 	}
-	// Surface the active issue count so HA users can wire a binary
-	// sensor ("config OK / problems") off /api/health without having
-	// to parse individual metric topics. Zero = no problems; any
-	// non-zero means operators should check /metrics.
-	if s.issues != nil {
-		body["config_errors"] = s.issues.Count()
-		if issueList := s.issues.List(); len(issueList) > 0 {
-			body["issues"] = issueList
-			body["status"] = "degraded"
-		}
+	// Surfaces the active issue count so HA can drive a binary
+	// sensor (config OK / problems) off /api/health.
+	body["config_errors"] = s.issues.Count()
+	if issueList := s.issues.List(); len(issueList) > 0 {
+		body["issues"] = issueList
+		body["status"] = "degraded"
 	}
 	writeJSON(w, body)
 }
@@ -65,14 +61,14 @@ func (s *Server) handleAPICameras(w http.ResponseWriter, r *http.Request) {
 // runDiscover write its completion Event to the metrics log.
 func (s *Server) handleAPIDiscover(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
 	if s.onDiscoverReq == nil {
-		http.Error(w, "discover hook not wired", http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "discover hook not wired")
 		return
 	}
-	go s.onDiscoverReq(context.Background())
+	go s.onDiscoverReq(s.rootCtx)
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -83,13 +79,13 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 	name := parts[0]
 
 	if name == "" {
-		http.Error(w, "camera name required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "camera name required")
 		return
 	}
 
 	cam := s.camMgr.GetCamera(name)
 	if cam == nil {
-		http.Error(w, "camera not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "camera not found")
 		return
 	}
 
@@ -100,11 +96,13 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	action := parts[1]
-	ctx := context.Background()
+	// reqCtx: synchronous handlers; cancelled on client disconnect.
+	// s.rootCtx: spawned supervisors; cancelled on bridge shutdown.
+	reqCtx := r.Context()
 
 	switch {
 	case action == "restart" && r.Method == "POST":
-		s.camMgr.RestartStream(ctx, name)
+		s.camMgr.RestartStream(reqCtx, name)
 		writeJSON(w, map[string]string{"status": "ok"})
 
 	case action == "quality" && r.Method == "POST":
@@ -112,15 +110,15 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			Quality string `json:"quality"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "invalid body", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
 		if body.Quality != "hd" && body.Quality != "sd" {
-			http.Error(w, "quality must be 'hd' or 'sd'", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "quality must be 'hd' or 'sd'")
 			return
 		}
-		if err := s.camMgr.SetQuality(ctx, name, body.Quality); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if err := s.camMgr.SetQuality(reqCtx, name, body.Quality); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, map[string]string{"status": "ok", "quality": body.Quality})
@@ -130,7 +128,7 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			Enabled bool `json:"enabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "invalid body", http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
 		cam.SetAudioOn(body.Enabled)
@@ -138,17 +136,16 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 
 	case action == "snapshot" && r.Method == "POST":
 		if s.onSnapReq == nil {
-			http.Error(w, "snapshot manager not wired", http.StatusServiceUnavailable)
+			writeJSONError(w, http.StatusServiceUnavailable, "snapshot manager not wired")
 			return
 		}
-		// Fire-and-forget — capture can take up to the go2rtc snapshot
-		// timeout, don't block the HTTP response on it.
-		go s.onSnapReq(context.Background(), name)
+		// Fire-and-forget: capture outlives the HTTP response.
+		go s.onSnapReq(s.rootCtx, name)
 		writeJSON(w, map[string]string{"status": "ok", "camera": name})
 
 	case action == "record" && r.Method == "POST":
 		if s.recMgr == nil {
-			http.Error(w, "recording manager not wired", http.StatusServiceUnavailable)
+			writeJSONError(w, http.StatusServiceUnavailable, "recording manager not wired")
 			return
 		}
 		var body struct {
@@ -157,15 +154,16 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body) // body optional; "start" default
 		controller, ok := s.recMgr.(recordingController)
 		if !ok {
-			http.Error(w, "recording manager does not support start/stop", http.StatusNotImplemented)
+			writeJSONError(w, http.StatusNotImplemented, "recording manager does not support start/stop")
 			return
 		}
 		switch body.Action {
 		case "stop":
 			controller.Stop(name)
 		default:
-			if err := controller.Start(context.Background(), name); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+			// rootCtx: the recorder supervisor outlives this request.
+			if err := controller.Start(s.rootCtx, name); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 		}
@@ -176,7 +174,7 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 		})
 
 	default:
-		http.Error(w, "not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "not found")
 	}
 }
 
@@ -191,20 +189,20 @@ type recordingController interface {
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/snapshot/")
 	if name == "" {
-		http.Error(w, "camera name required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "camera name required")
 		return
 	}
 
 	go2rtc := s.go2rtc()
 	if go2rtc == nil {
-		http.Error(w, "bridge still starting; go2rtc not yet ready", http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "bridge still starting; go2rtc not yet ready")
 		return
 	}
 	ctx := r.Context()
 	jpeg, err := go2rtc.GetSnapshot(ctx, name)
 	if err != nil {
 		s.log.Warn().Err(err).Str("cam", name).Msg("snapshot failed")
-		http.Error(w, "snapshot unavailable", http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "snapshot unavailable")
 		return
 	}
 
@@ -272,4 +270,12 @@ func (s *Server) handleStreamM3U8(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
+}
+
+// writeJSONError emits {"error":"..."} with the given status code.
+// Use for /api/* handlers so clients get a consistent error shape.
+func writeJSONError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

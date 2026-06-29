@@ -87,22 +87,52 @@ func main() {
 	// and /metrics so operators see problems without grepping logs.
 	issueReg := issues.New()
 
+	// Surface Wyze API auth failures via the issues registry.
+	apiClient.SetAuthObserver(
+		func(err error) {
+			issueReg.Report(issues.Issue{
+				ID:       "wyzeapi/auth",
+				Severity: issues.SeverityError,
+				Scope:    "auth",
+				Message:  "Wyze API authentication failed — bridge can't talk to the cloud",
+				Detail:   err.Error(),
+			})
+		},
+		func() { issueReg.Resolve("wyzeapi/auth") },
+	)
+
 	camLog := log.With().Str("c", "camera").Logger()
 	camMgr := camera.NewManager(cfg, apiClient, nil, camLog)
+	camMgr.OnChronicError(
+		func(camName string, errorCount int) {
+			issueReg.Report(issues.Issue{
+				ID:       "camera/chronic/" + camName,
+				Severity: issues.SeverityWarn,
+				Scope:    "camera",
+				Camera:   camName,
+				Message:  fmt.Sprintf("Camera stuck in error after %d consecutive failed connects", errorCount),
+				Detail:   "Backoff is capped at 5min; reconnects keep firing. Check logs for the underlying go2rtc / stream error.",
+			})
+		},
+		func(camName string) { issueReg.Resolve("camera/chronic/" + camName) },
+	)
 
 	webuiLog := log.With().Str("c", "webui").Logger()
-	webServer := webui.NewServer(cfg, camMgr, nil, Version, webuiLog)
-	webServer.SetIssuesRegistry(issueReg)
-	webServer.SetMarsMinter(apiClient)
-	// KVS / WebRTC provider for the wyze-webrtc-proxy sidecar: answer
-	// /kvs-config/<streamID> by calling /v4/camera/get_streams and
-	// mapping the response into whep_proxy's WebRTCConfig shape.
-	webServer.SetKVSProvider(kvsAdapter{api: apiClient})
-	webServer.SetAuthPhoneIDFn(func() string {
-		if a := apiClient.Auth(); a != nil {
-			return a.PhoneID
-		}
-		return ""
+	webServer := webui.NewServer(webui.Options{
+		Config:    cfg,
+		CameraMgr: camMgr,
+		Version:   Version,
+		Log:       webuiLog,
+		RootCtx:   ctx,
+		Issues:    issueReg,
+		Mars:      apiClient,
+		KVS:       kvsAdapter{api: apiClient},
+		AuthPhoneID: func() string {
+			if a := apiClient.Auth(); a != nil {
+				return a.PhoneID
+			}
+			return ""
+		},
 	})
 
 	// Start the WebUI HTTP listener ASAP. Handlers that need go2rtc
@@ -128,7 +158,7 @@ func main() {
 	// Gwell slots.
 	gwellProxy := startGwellProxyIfEnabled(ctx, cfg, camMgr)
 
-	mqttClient := setupMQTT(cfg, camMgr, apiClient)
+	mqttClient := setupMQTT(ctx, cfg, camMgr, apiClient)
 	webhookClient := setupWebhooks(cfg)
 	// Recording manager owns the per-camera ffmpeg supervisors. Needs
 	// to exist before wireCameraStateChanges so state-change callbacks
@@ -319,7 +349,7 @@ func (h *gwellProxyHandle) Stop(ctx context.Context) error {
 	}
 }
 
-func setupMQTT(cfg *config.Config, camMgr *camera.Manager, apiClient *wyzeapi.Client) *mqtt.Client {
+func setupMQTT(ctx context.Context, cfg *config.Config, camMgr *camera.Manager, apiClient *wyzeapi.Client) *mqtt.Client {
 	if !cfg.MQTTEnabled {
 		return nil
 	}
@@ -333,7 +363,7 @@ func setupMQTT(cfg *config.Config, camMgr *camera.Manager, apiClient *wyzeapi.Cl
 		DiscoveryTopic: cfg.MQTTDiscoveryTopic,
 	}
 	mqttLog := log.With().Str("c", "mqtt").Logger()
-	mqttClient := mqtt.NewClient(mqttCfg, camMgr, apiClient, cfg.BridgeIP, mqttLog)
+	mqttClient := mqtt.NewClient(ctx, mqttCfg, camMgr, apiClient, cfg.BridgeIP, mqttLog)
 
 	if err := mqttClient.Connect(); err != nil {
 		log.Error().Err(err).Msg("MQTT connect failed (non-fatal)")
@@ -357,79 +387,89 @@ func setupWebhooks(cfg *config.Config) *webhooks.Client {
 }
 
 func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *camera.Manager, webServer *webui.Server, mqttClient *mqtt.Client, webhookClient *webhooks.Client, apiClient *wyzeapi.Client, recMgr *recording.Manager, state *wyzeapi.StateFile) {
-	// Each notification fires in its own goroutine so none blocks the others.
 	camMgr.OnStateChange(func(cam *camera.Camera, oldState, newState camera.State) {
 		name := cam.Name()
 		snap := cam.Snapshot()
-		quality := snap.Quality
 
-		// Recording auto-starts only for cameras where RECORD_ALL or
-		// RECORD_<CAM> is true. Manual record-button clicks bypass
-		// IsEnabled via the REST endpoint calling Start() directly.
-		// Stop always runs on non-streaming transitions so a
-		// manually-started recording cleanly closes its segment when
-		// the camera drops.
-		switch newState {
-		case camera.StateStreaming:
-			if recMgr.IsEnabled(name) {
-				if err := recMgr.Start(ctx, name); err != nil {
-					log.Warn().Err(err).Str("cam", name).Msg("auto-start recording failed")
-					if evLog := webServer.Events(); evLog != nil {
-						evLog.Record(webui.Event{
-							Kind:    "recording",
-							Camera:  name,
-							Message: "auto-start failed: " + err.Error(),
-						})
-					}
-				}
-			}
-		default:
-			recMgr.Stop(name)
-		}
+		autoToggleRecording(ctx, recMgr, webServer, name, newState)
+		recordStateEvent(webServer, name, oldState, newState)
+		go pushStateSSE(webServer, name, snap.Quality, newState)
+		go publishStateMQTT(mqttClient, cam)
+		go sendStateWebhook(ctx, webhookClient, name, snap, newState)
+		go persistState(state, apiClient, cfg.StateDir)
+	})
+}
 
-		// Feed the metrics page event log.
-		if log := webServer.Events(); log != nil {
-			log.Record(webui.Event{
-				Kind:    "state",
+func autoToggleRecording(ctx context.Context, recMgr *recording.Manager, webServer *webui.Server, name string, newState camera.State) {
+	if newState != camera.StateStreaming {
+		recMgr.Stop(name)
+		return
+	}
+	if !recMgr.IsEnabled(name) {
+		return
+	}
+	if err := recMgr.Start(ctx, name); err != nil {
+		log.Warn().Err(err).Str("cam", name).Msg("auto-start recording failed")
+		if evLog := webServer.Events(); evLog != nil {
+			evLog.Record(webui.Event{
+				Kind:    "recording",
 				Camera:  name,
-				Message: oldState.String() + " → " + newState.String(),
+				Message: "auto-start failed: " + err.Error(),
 			})
 		}
+	}
+}
 
-		go webServer.SSE().SendJSON("camera_state", map[string]interface{}{
-			"name":    name,
-			"state":   newState.String(),
-			"quality": quality,
-		})
-
-		if mqttClient != nil && mqttClient.IsConnected() {
-			go mqttClient.PublishCameraState(cam)
-		}
-
-		if webhookClient != nil && webhookClient.Enabled() {
-			go func() {
-				data := webhooks.FormatCameraData(
-					snap.Info.LanIP, snap.Info.Model, snap.Info.FWVersion,
-					snap.Info.MAC, quality,
-				)
-				switch newState {
-				case camera.StateStreaming:
-					webhookClient.SendCameraOnline(ctx, name, data)
-				case camera.StateOffline:
-					webhookClient.SendCameraOffline(ctx, name, data)
-				case camera.StateError:
-					webhookClient.SendCameraError(ctx, name, data)
-				}
-			}()
-		}
-
-		go func() {
-			state.Auth = apiClient.Auth()
-			if err := state.Save(cfg.StateDir); err != nil {
-				log.Error().Err(err).Msg("save state on state change")
-			}
-		}()
+func recordStateEvent(webServer *webui.Server, name string, oldState, newState camera.State) {
+	evLog := webServer.Events()
+	if evLog == nil {
+		return
+	}
+	evLog.Record(webui.Event{
+		Kind:    "state",
+		Camera:  name,
+		Message: oldState.String() + " → " + newState.String(),
 	})
+}
+
+func pushStateSSE(webServer *webui.Server, name, quality string, newState camera.State) {
+	webServer.SSE().SendJSON("camera_state", map[string]interface{}{
+		"name":    name,
+		"state":   newState.String(),
+		"quality": quality,
+	})
+}
+
+func publishStateMQTT(mqttClient *mqtt.Client, cam *camera.Camera) {
+	if mqttClient == nil || !mqttClient.IsConnected() {
+		return
+	}
+	mqttClient.PublishCameraState(cam)
+}
+
+func sendStateWebhook(ctx context.Context, webhookClient *webhooks.Client, name string, snap camera.Snapshot, newState camera.State) {
+	if webhookClient == nil || !webhookClient.Enabled() {
+		return
+	}
+	data := webhooks.FormatCameraData(
+		snap.Info.LanIP, snap.Info.Model, snap.Info.FWVersion,
+		snap.Info.MAC, snap.Quality,
+	)
+	switch newState {
+	case camera.StateStreaming:
+		webhookClient.SendCameraOnline(ctx, name, data)
+	case camera.StateOffline:
+		webhookClient.SendCameraOffline(ctx, name, data)
+	case camera.StateError:
+		webhookClient.SendCameraError(ctx, name, data)
+	}
+}
+
+func persistState(state *wyzeapi.StateFile, apiClient *wyzeapi.Client, stateDir string) {
+	state.Auth = apiClient.Auth()
+	if err := state.Save(stateDir); err != nil {
+		log.Error().Err(err).Msg("save state on state change")
+	}
 }
 
 func wireSnapshotHandlers(webServer *webui.Server, snapMgr *snapshot.Manager, mqttClient *mqtt.Client) {
@@ -638,59 +678,22 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, camMgr *camera.Manager
 	return go2rtcAPI, mgr
 }
 
-// kvsAdapter satisfies webui.KVSStreamProvider by calling the
-// wyzeapi.Client's GetCameraStream helper and pulling the
-// signaling_url + ice_servers + auth_token fields out of the raw
-// /v4/camera/get_streams response. Parsing lives here (not in the
-// webui package) so webui stays independent of wyzeapi types.
-//
-// Response shape we navigate — top level has "data":[{...}], inside:
-//
-//	data[0].params.signaling_url: string
-//	data[0].params.ice_servers:   []{url,username,credential}
-//	data[0].params.auth_token:    string
+// kvsAdapter glues wyzeapi.GetCameraKVSConfig to webui's
+// KVSStreamProvider interface; parsing lives in wyzeapi/webrtc.go.
 type kvsAdapter struct {
 	api *wyzeapi.Client
 }
 
-func (a kvsAdapter) GetCameraStream(ctx context.Context, mac, model string) (string, []webui.KVSIceServer, string, error) {
-	resp, err := a.api.GetCameraStream(wyzeapi.CameraInfo{MAC: mac, Model: model})
+func (a kvsAdapter) GetCameraStream(_ context.Context, mac, model string) (string, []webui.KVSIceServer, string, error) {
+	cfg, err := a.api.GetCameraKVSConfig(mac, model)
 	if err != nil {
 		return "", nil, "", err
 	}
-	dataList, ok := resp["data"].([]interface{})
-	if !ok || len(dataList) == 0 {
-		return "", nil, "", fmt.Errorf("get_streams: missing data array in response")
+	ice := make([]webui.KVSIceServer, 0, len(cfg.IceServers))
+	for _, s := range cfg.IceServers {
+		ice = append(ice, webui.KVSIceServer{URL: s.URL, Username: s.Username, Credential: s.Credential})
 	}
-	first, ok := dataList[0].(map[string]interface{})
-	if !ok {
-		return "", nil, "", fmt.Errorf("get_streams: data[0] is not an object")
-	}
-	params, ok := first["params"].(map[string]interface{})
-	if !ok {
-		return "", nil, "", fmt.Errorf("get_streams: data[0].params missing")
-	}
-	signalingURL, _ := params["signaling_url"].(string)
-	if signalingURL == "" {
-		return "", nil, "", fmt.Errorf("get_streams: empty signaling_url")
-	}
-	authToken, _ := params["auth_token"].(string)
-
-	var ice []webui.KVSIceServer
-	if rawList, ok := params["ice_servers"].([]interface{}); ok {
-		for _, raw := range rawList {
-			if m, ok := raw.(map[string]interface{}); ok {
-				s := webui.KVSIceServer{}
-				s.URL, _ = m["url"].(string)
-				s.Username, _ = m["username"].(string)
-				s.Credential, _ = m["credential"].(string)
-				if s.URL != "" {
-					ice = append(ice, s)
-				}
-			}
-		}
-	}
-	return signalingURL, ice, authToken, nil
+	return cfg.SignalingURL, ice, cfg.AuthToken, nil
 }
 
 func findGo2RTCBinary() string {

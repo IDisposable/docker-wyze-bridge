@@ -128,9 +128,7 @@ func (s *Server) buildMetricsSnapshot() MetricsSnapshot {
 		snap.Cameras = append(snap.Cameras, cm)
 	}
 
-	if s.issues != nil {
-		snap.Issues = s.issues.List()
-	}
+	snap.Issues = s.issues.List()
 	if s.apiStats != nil {
 		snap.WyzeAPI = s.apiStats.EndpointStats()
 	}
@@ -237,6 +235,8 @@ const metricsHTML = `<!DOCTYPE html>
   .muted { color: #888; font-size: 0.85rem; }
   details summary { cursor: pointer; padding: 0.3rem 0; font-weight: 600; }
   code { background: rgba(128,128,128,0.15); padding: 0 0.3rem; border-radius: 3px; }
+  .legend { color: #888; font-size: 0.85rem; margin: 0.1rem 0 0.6rem; }
+  th[title] { cursor: help; border-bottom: 1px dotted #888; }
 </style>
 </head>
 <body>
@@ -245,8 +245,16 @@ const metricsHTML = `<!DOCTYPE html>
 
 {{- if .Issues}}
 <h2 class="issue-err">Issues ({{len .Issues}})</h2>
+<p class="legend">Soft failures the bridge wants you to know about. Each row stays until the underlying subsystem resolves it (auth recovers, camera reconnects, config is fixed). Hover any column header for details.</p>
 <table>
-  <thead><tr><th>Severity</th><th>Scope</th><th>Camera</th><th>Message</th><th>Last seen</th><th>Count</th></tr></thead>
+  <thead><tr>
+    <th title="error = a feature is degraded; warn = something's off but recoverable">Severity</th>
+    <th title="Which subsystem reported the issue (auth, config, camera, record, mqtt, …)">Scope</th>
+    <th title="Camera-specific issues name the camera; bridge-wide issues leave this blank">Camera</th>
+    <th title="One-line summary + optional detail line beneath in muted text">Message</th>
+    <th title="When the issue last fired (refreshed on every repeat report)">Last seen</th>
+    <th title="How many times the issue has been reported since first sighting">Count</th>
+  </tr></thead>
   <tbody>
   {{- range .Issues}}
     <tr>
@@ -263,18 +271,29 @@ const metricsHTML = `<!DOCTYPE html>
 {{- end}}
 
 <h2>Bridge</h2>
+<p class="legend">Top-level state at a glance. Streaming + errored together equal the camera count when everything is reachable.</p>
 <div class="summary">
-  <div><b>{{.Bridge.CameraCount}}</b><span class="muted">cameras</span></div>
-  <div><b>{{.Bridge.StreamingCount}}</b><span class="muted">streaming</span></div>
-  <div><b>{{.Bridge.ErrorCount}}</b><span class="muted">errored</span></div>
-  <div><b>{{uptime .Bridge.Uptime}}</b><span class="muted">uptime</span></div>
-  <div><b>{{.Bridge.SSEClients}}</b><span class="muted">SSE clients</span></div>
-  <div><b>{{.Bridge.Version}}</b><span class="muted">version</span></div>
+  <div title="Cameras visible to the Wyze API after filtering"><b>{{.Bridge.CameraCount}}</b><span class="muted">cameras</span></div>
+  <div title="Cameras currently in 'streaming' state (go2rtc has at least one producer)"><b>{{.Bridge.StreamingCount}}</b><span class="muted">streaming</span></div>
+  <div title="Cameras stuck in 'error' state (waiting on backoff to retry)"><b>{{.Bridge.ErrorCount}}</b><span class="muted">errored</span></div>
+  <div title="How long the bridge process has been running since last start"><b>{{uptime .Bridge.Uptime}}</b><span class="muted">uptime</span></div>
+  <div title="Browser tabs currently subscribed to live SSE updates"><b>{{.Bridge.SSEClients}}</b><span class="muted">SSE clients</span></div>
+  <div title="Bridge binary version"><b>{{.Bridge.Version}}</b><span class="muted">version</span></div>
 </div>
 
 <h2>Cameras</h2>
+<p class="legend">One row per camera. Click the nickname to open its detail page.</p>
 <table>
-<thead><tr><th>Name</th><th>Model</th><th>Path</th><th>State</th><th>Quality</th><th>Audio</th><th>Errors</th><th>Recording</th></tr></thead>
+<thead><tr>
+  <th title="Click to open the camera page. The lower line is the bridge-normalized name (URL-safe, used in MQTT topics and stream URLs)">Name</th>
+  <th title="Marketing name + raw Wyze product code">Model</th>
+  <th title="Streaming protocol the bridge uses for this camera: tutk = go2rtc direct, gwell = OG sidecar, webrtc = Wyze KVS via go2rtc">Path</th>
+  <th title="streaming = live, connecting = handshake in progress, offline = idle, error = backed off after failures">State</th>
+  <th title="hd or sd; override per-camera with QUALITY_&lt;CAM_NAME&gt;">Quality</th>
+  <th title="Whether audio is muxed into the stream">Audio</th>
+  <th title="Consecutive connect failures since last success; backoff doubles up to 5min">Errors</th>
+  <th title="● = ffmpeg recorder running; the byte count is the current segment size">Recording</th>
+</tr></thead>
 <tbody>
 {{- range .Cameras}}
   <tr>
@@ -293,8 +312,16 @@ const metricsHTML = `<!DOCTYPE html>
 
 {{- if .WyzeAPI}}
 <h2>Wyze Cloud API</h2>
+<p class="legend">Per-endpoint call stats since the bridge started. A consistently-non-zero Errors column points at flaky network, throttling, or a broken endpoint.</p>
 <table>
-<thead><tr><th>Endpoint</th><th>Calls</th><th>Errors</th><th>Avg latency</th><th>Last status</th><th>Last call</th></tr></thead>
+<thead><tr>
+  <th title="API endpoint path on Wyze's cloud (api.wyzecam.com or app.wyzecam.com)">Endpoint</th>
+  <th title="Total successful + failed calls">Calls</th>
+  <th title="Calls that returned a non-OK Wyze code or HTTP error">Errors</th>
+  <th title="Mean round-trip latency across all calls">Avg latency</th>
+  <th title="HTTP status of the most recent call">Last status</th>
+  <th title="How long ago the endpoint was last invoked">Last call</th>
+</tr></thead>
 <tbody>
 {{- range .WyzeAPI}}
   <tr>
@@ -312,6 +339,7 @@ const metricsHTML = `<!DOCTYPE html>
 
 {{- if .Storage}}
 <h2>Storage</h2>
+<p class="legend">Disk usage under RECORD_PATH, sampled every ~60s. Use this to size your media volume and verify the RECORD_KEEP pruner is doing its job.</p>
 <p>Recordings total: <b>{{bytes .Storage.RecordingsTotalBytes}}</b>
    <span class="muted">(last refresh {{sinceMs .Storage.LastRefresh}} ago)</span></p>
 {{- if .Storage.RecordingsPerCamera}}
@@ -328,6 +356,7 @@ const metricsHTML = `<!DOCTYPE html>
 
 {{- if .Events}}
 <h2>Recent Events ({{len .Events}})</h2>
+<p class="legend">Ring-buffered timeline of state changes, recording starts/stops, and other notable transitions. Not persisted across restarts.</p>
 <details>
 <summary>Show event log</summary>
 <table>

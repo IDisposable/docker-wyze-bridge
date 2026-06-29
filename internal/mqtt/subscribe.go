@@ -1,7 +1,6 @@
 package mqtt
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -65,8 +64,7 @@ func (c *Client) handleSetCommand(_ paho.Client, msg paho.Message) {
 	case "quality":
 		if value == "hd" || value == "sd" {
 			go func() {
-				ctx := context.Background()
-				if err := c.camMgr.SetQuality(ctx, camName, value); err != nil {
+				if err := c.camMgr.SetQuality(c.rootCtx, camName, value); err != nil {
 					c.log.Error().Err(err).Str("cam", camName).Msg("quality change failed")
 				} else {
 					c.publish(fmt.Sprintf("%s/%s/quality", c.topic, camName), value, true)
@@ -126,11 +124,11 @@ func (c *Client) handleStateCommand(_ paho.Client, msg paho.Message) {
 
 	switch payload {
 	case "start", "on", "1", "true":
-		go c.camMgr.StartStream(context.Background(), camName)
+		go c.camMgr.StartStream(c.rootCtx, camName)
 		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "connected", true)
 		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "on", true)
 	case "stop", "off", "0", "false":
-		go c.camMgr.StopStream(context.Background(), camName)
+		go c.camMgr.StopStream(c.rootCtx, camName)
 		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "disconnected", true)
 		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "off", true)
 	default:
@@ -155,15 +153,15 @@ func (c *Client) handlePowerCommand(_ paho.Client, msg paho.Message) {
 
 	switch payload {
 	case "on", "start", "1", "true":
-		go c.camMgr.StartStream(context.Background(), camName)
+		go c.camMgr.StartStream(c.rootCtx, camName)
 		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "on", true)
 		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "connected", true)
 	case "off", "stop", "0", "false":
-		go c.camMgr.StopStream(context.Background(), camName)
+		go c.camMgr.StopStream(c.rootCtx, camName)
 		c.publish(fmt.Sprintf("%s/%s/power", c.topic, camName), "off", true)
 		c.publish(fmt.Sprintf("%s/%s/state", c.topic, camName), "disconnected", true)
 	case "restart":
-		go c.camMgr.RestartStream(context.Background(), camName)
+		go c.camMgr.RestartStream(c.rootCtx, camName)
 		if c.wyzeAPI != nil {
 			info := cam.GetInfo()
 			go func() {
@@ -186,7 +184,7 @@ func (c *Client) handleSnapshotCommand(_ paho.Client, msg paho.Message) {
 	camName := parts[len(parts)-3]
 	c.log.Info().Str("cam", camName).Msg("snapshot requested via MQTT")
 	if c.onSnapshot != nil {
-		go c.onSnapshot(context.Background(), camName)
+		go c.onSnapshot(c.rootCtx, camName)
 	}
 }
 
@@ -198,7 +196,7 @@ func (c *Client) handleRestartCommand(_ paho.Client, msg paho.Message) {
 	}
 	camName := parts[len(parts)-3]
 	c.log.Info().Str("cam", camName).Msg("stream restart requested via MQTT")
-	go c.camMgr.RestartStream(context.Background(), camName)
+	go c.camMgr.RestartStream(c.rootCtx, camName)
 }
 
 // handleRecordCommand handles <topic>/<cam>/record/set commands.
@@ -228,7 +226,7 @@ func (c *Client) handleRecordCommand(_ paho.Client, msg paho.Message) {
 		return
 	}
 	if c.onRecord != nil {
-		go c.onRecord(context.Background(), camName, action)
+		go c.onRecord(c.rootCtx, camName, action)
 	}
 }
 
@@ -238,6 +236,6 @@ func (c *Client) handleRecordCommand(_ paho.Client, msg paho.Message) {
 func (c *Client) handleDiscoverCommand(_ paho.Client, _ paho.Message) {
 	c.log.Info().Msg("bridge rediscovery requested via MQTT")
 	if c.onDiscover != nil {
-		go c.onDiscover(context.Background())
+		go c.onDiscover(c.rootCtx)
 	}
 }

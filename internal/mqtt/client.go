@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
@@ -14,20 +15,30 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
+// maxInflightPublishes caps concurrent publish-token waiter goroutines.
+// publish() drops the message when saturated.
+const maxInflightPublishes = 1024
+
 // Client manages the MQTT broker connection and message handling.
+// rootCtx (set via SetRootContext) ties subscribe-handler goroutines
+// to the bridge's shutdown so fire-and-forget work cancels cleanly.
+// publishSem bounds concurrent publish-waiter goroutines.
 type Client struct {
-	log        zerolog.Logger
-	paho       paho.Client
-	topic      string // MQTT_TOPIC, default "wyzebridge"
-	dtopic     string // MQTT_DISCOVERY_TOPIC, default "homeassistant"
-	camMgr     *camera.Manager
-	wyzeAPI    *wyzeapi.Client
-	bridgeIP   string
-	onSnapshot func(ctx context.Context, camName string)        // snapshot trigger callback
-	onRecord   func(ctx context.Context, camName, action string) // record start/stop callback (action = "start"|"stop")
-	onDiscover func(ctx context.Context)                         // bridge-wide rediscovery trigger
-	mu         sync.Mutex
-	connected  bool
+	log           zerolog.Logger
+	paho          paho.Client
+	topic         string // MQTT_TOPIC, default "wyzebridge"
+	dtopic        string // MQTT_DISCOVERY_TOPIC, default "homeassistant"
+	camMgr        *camera.Manager
+	wyzeAPI       *wyzeapi.Client
+	bridgeIP      string
+	rootCtx       context.Context
+	publishSem    chan struct{}
+	droppedPubs   atomic.Uint64
+	onSnapshot    func(ctx context.Context, camName string)         // snapshot trigger callback
+	onRecord      func(ctx context.Context, camName, action string) // record start/stop callback (action = "start"|"stop")
+	onDiscover    func(ctx context.Context)                         // bridge-wide rediscovery trigger
+	mu            sync.Mutex
+	connected     bool
 }
 
 // Config holds MQTT connection settings.
@@ -40,15 +51,19 @@ type Config struct {
 	DiscoveryTopic string
 }
 
-// NewClient creates a new MQTT client.
-func NewClient(cfg Config, camMgr *camera.Manager, api *wyzeapi.Client, bridgeIP string, log zerolog.Logger) *Client {
+// NewClient creates a new MQTT client. ctx is the bridge's
+// signal-cancellable root context; subscribe-handler fire-and-forget
+// goroutines derive from it so they cancel on shutdown.
+func NewClient(ctx context.Context, cfg Config, camMgr *camera.Manager, api *wyzeapi.Client, bridgeIP string, log zerolog.Logger) *Client {
 	c := &Client{
-		log:      log,
-		topic:    cfg.Topic,
-		dtopic:   cfg.DiscoveryTopic,
-		camMgr:   camMgr,
-		wyzeAPI:  api,
-		bridgeIP: bridgeIP,
+		log:        log,
+		topic:      cfg.Topic,
+		dtopic:     cfg.DiscoveryTopic,
+		camMgr:     camMgr,
+		wyzeAPI:    api,
+		bridgeIP:   bridgeIP,
+		rootCtx:    ctx,
+		publishSem: make(chan struct{}, maxInflightPublishes),
 	}
 
 	opts := paho.NewClientOptions()
@@ -152,18 +167,29 @@ func (c *Client) onConnect() {
 }
 
 func (c *Client) publish(topic, payload string, retained bool) {
-	token := c.paho.Publish(topic, 1, retained, payload)
-	go func() {
-		token.Wait()
-		if err := token.Error(); err != nil {
-			c.log.Warn().Err(err).Str("topic", topic).Msg("MQTT publish failed")
-		}
-	}()
+	c.publishGuarded(topic, payload, retained)
 }
 
 func (c *Client) publishBytes(topic string, payload []byte, retained bool) {
+	c.publishGuarded(topic, payload, retained)
+}
+
+// publishGuarded acquires a publishSem slot or drops the message.
+// Drops are counted; logs fire on count == 1 and at every power of
+// two thereafter (loud-then-rate-limited).
+func (c *Client) publishGuarded(topic string, payload any, retained bool) {
+	select {
+	case c.publishSem <- struct{}{}:
+	default:
+		n := c.droppedPubs.Add(1)
+		if n == 1 || (n&(n-1)) == 0 {
+			c.log.Warn().Uint64("dropped_total", n).Str("topic", topic).Msg("MQTT publish saturated; dropping message")
+		}
+		return
+	}
 	token := c.paho.Publish(topic, 1, retained, payload)
 	go func() {
+		defer func() { <-c.publishSem }()
 		token.Wait()
 		if err := token.Error(); err != nil {
 			c.log.Warn().Err(err).Str("topic", topic).Msg("MQTT publish failed")

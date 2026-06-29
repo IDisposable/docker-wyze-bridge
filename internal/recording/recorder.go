@@ -254,12 +254,13 @@ func (m *Manager) runFFmpegOnce(ctx context.Context, camName string) error {
 	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	// Pin ffmpeg's -strftime 1 expansion to UTC so its output matches
-	// the directory we just mkdir'd with time.Now().UTC(). Without
-	// this, a container running with a non-UTC TZ env would have
-	// ffmpeg writing to "local-time/%Y/%m/%d" while we created
-	// "utc/%Y/%m/%d" — the two agree only in the Z timezone.
+	// Force ffmpeg's -strftime expansion to UTC so it matches the
+	// directory we MkdirAll'd with time.Now().UTC().
 	cmd.Env = append(os.Environ(), "TZ=UTC")
+	// SIGINT gives ffmpeg up to WaitDelay to flush the mp4 moov atom
+	// and close the current segment cleanly; SIGKILL after.
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 5 * time.Second
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 

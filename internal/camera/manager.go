@@ -34,7 +34,18 @@ type Manager struct {
 	cameras  map[string]*Camera // keyed by normalized name
 	mu       sync.RWMutex
 	onChange StateChangeFunc
+	// onChronicError fires once when a camera's error count first
+	// crosses chronicErrorThreshold; onChronicRecover fires when that
+	// same camera reaches StateStreaming again.
+	onChronicError   func(camName string, errorCount int)
+	onChronicRecover func(camName string)
+	chronicReported  map[string]bool
 }
+
+// chronicErrorThreshold is the consecutive-error count at which a
+// camera is considered "stuck" — beyond go2rtc's transient blip into
+// a sustained problem worth surfacing to operators.
+const chronicErrorThreshold = 10
 
 // NewManager creates a new camera manager. The go2rtcAPI may be nil
 // at construction time — call SetGo2RTCAPI once go2rtc is ready. In
@@ -56,7 +67,8 @@ func NewManager(
 			MACs:   cfg.FilterMACs,
 			Block:  cfg.FilterBlocks,
 		},
-		cameras: make(map[string]*Camera),
+		cameras:         make(map[string]*Camera),
+		chronicReported: make(map[string]bool),
 	}
 	if go2rtcAPI != nil {
 		m.go2rtc.Store(go2rtcAPI)
@@ -81,6 +93,14 @@ func (m *Manager) go2rtcClient() *go2rtcmgr.APIClient {
 // OnStateChange registers a callback for camera state changes.
 func (m *Manager) OnStateChange(fn StateChangeFunc) {
 	m.onChange = fn
+}
+
+// OnChronicError registers callbacks for a camera crossing the
+// chronic-error threshold and for the same camera later recovering.
+// Either may be nil. Each event fires at most once per crossing.
+func (m *Manager) OnChronicError(onErr func(camName string, errorCount int), onRecover func(camName string)) {
+	m.onChronicError = onErr
+	m.onChronicRecover = onRecover
 }
 
 // Cameras returns a snapshot of all managed cameras, sorted by name
@@ -253,12 +273,14 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
 		backoff := cam.IncrementError()
+		errors := cam.GetErrorCount()
 		m.log.Error().Err(err).
 			Str("cam", cam.Name()).
 			Str("protocol", protocol).
 			Dur("backoff", backoff).
-			Int("errors", cam.GetErrorCount()).
+			Int("errors", errors).
 			Msg("failed to add stream to go2rtc")
+		m.maybeReportChronic(cam.Name(), errors)
 		return
 	}
 
@@ -468,7 +490,44 @@ func (m *Manager) changeState(cam *Camera, newState State) {
 		Str("to", newState.String()).
 		Msg("state change")
 
+	if newState == StateStreaming {
+		m.clearChronic(cam.Name())
+	}
+
 	if m.onChange != nil {
 		m.onChange(cam, oldState, newState)
 	}
+}
+
+// maybeReportChronic fires onChronicError the first time errorCount
+// crosses chronicErrorThreshold for this camera.
+func (m *Manager) maybeReportChronic(camName string, errorCount int) {
+	if errorCount < chronicErrorThreshold {
+		return
+	}
+	m.mu.Lock()
+	already := m.chronicReported[camName]
+	if !already {
+		m.chronicReported[camName] = true
+	}
+	m.mu.Unlock()
+	if already || m.onChronicError == nil {
+		return
+	}
+	m.onChronicError(camName, errorCount)
+}
+
+// clearChronic fires onChronicRecover if the camera was previously
+// reported as chronic.
+func (m *Manager) clearChronic(camName string) {
+	m.mu.Lock()
+	had := m.chronicReported[camName]
+	if had {
+		delete(m.chronicReported, camName)
+	}
+	m.mu.Unlock()
+	if !had || m.onChronicRecover == nil {
+		return
+	}
+	m.onChronicRecover(camName)
 }

@@ -83,16 +83,25 @@ type WyzeAccount struct {
 
 // Client is the Wyze API client.
 type Client struct {
-	log         zerolog.Logger
-	httpClient  *http.Client
-	creds       Credentials
-	auth        *AuthState
-	bridgeVer   string
-	metrics     *apiMetrics
-	AuthURL     string // base URL for auth endpoints (default: DefaultAuthAPI)
-	WyzeURL     string // base URL for wyze app endpoints (default: DefaultWyzeAPI)
-	CloudURL    string // base URL for cloud endpoints (default: DefaultCloudAPI)
-	NewWyzeURL  string // base URL for "v4" app endpoints incl. get_streams (default: DefaultNewWyzeAPI)
+	log           zerolog.Logger
+	httpClient    *http.Client
+	creds         Credentials
+	auth          *AuthState
+	bridgeVer     string
+	metrics       *apiMetrics
+	onAuthFailure func(error) // optional; fires when EnsureAuth exhausts retries
+	onAuthRecover func()      // optional; fires when EnsureAuth succeeds after a prior failure
+	AuthURL       string      // base URL for auth endpoints (default: DefaultAuthAPI)
+	WyzeURL       string      // base URL for wyze app endpoints (default: DefaultWyzeAPI)
+	CloudURL      string      // base URL for cloud endpoints (default: DefaultCloudAPI)
+	NewWyzeURL    string      // base URL for "v4" app endpoints incl. get_streams (default: DefaultNewWyzeAPI)
+}
+
+// SetAuthObserver attaches callbacks for auth lifecycle events.
+// Either may be nil.
+func (c *Client) SetAuthObserver(onFailure func(error), onRecover func()) {
+	c.onAuthFailure = onFailure
+	c.onAuthRecover = onRecover
 }
 
 // NewClient creates a new Wyze API client.
@@ -256,11 +265,16 @@ func (c *Client) NeedsRefresh() bool {
 }
 
 // EnsureAuth ensures we have a valid token, refreshing if needed.
+// Fires the auth observer on failure / recovery.
 func (c *Client) EnsureAuth() error {
 	if c.auth == nil {
 		c.log.Debug().Msg("no auth state, initiating login")
-		_, err := c.Login()
-		return err
+		if _, err := c.Login(); err != nil {
+			c.notifyAuthFailure(fmt.Errorf("initial login: %w", err))
+			return err
+		}
+		c.notifyAuthRecover()
+		return nil
 	}
 	if c.NeedsRefresh() {
 		c.log.Debug().Time("expires_at", c.auth.ExpiresAt).Msg("token nearing expiry, refreshing")
@@ -268,11 +282,26 @@ func (c *Client) EnsureAuth() error {
 		if err != nil {
 			c.log.Warn().Err(err).Msg("token refresh failed, re-logging in")
 			c.auth = nil
-			_, err = c.Login()
-			return err
+			if _, err = c.Login(); err != nil {
+				c.notifyAuthFailure(fmt.Errorf("token refresh + relogin both failed: %w", err))
+				return err
+			}
 		}
+		c.notifyAuthRecover()
 	}
 	return nil
+}
+
+func (c *Client) notifyAuthFailure(err error) {
+	if c.onAuthFailure != nil {
+		c.onAuthFailure(err)
+	}
+}
+
+func (c *Client) notifyAuthRecover() {
+	if c.onAuthRecover != nil {
+		c.onAuthRecover()
+	}
 }
 
 // GetUserInfo retrieves the authenticated user's profile.

@@ -143,16 +143,14 @@ func (m *Manager) RecordFileNameForCamera(camName string) string {
 		m.log.Warn().
 			Str("path", combined).
 			Msg("recording path missing time variables, appending _%s")
-		if m.issues != nil {
-			m.issues.Report(issues.Issue{
-				ID:       "config/record_path/" + camName,
-				Severity: issues.SeverityWarn,
-				Scope:    "config",
-				Camera:   camName,
-				Message:  "RECORD_PATH / RECORD_FILE_NAME missing time variables — segments would overwrite; bridge appended _%s automatically",
-				RawValue: combined,
-			})
-		}
+		m.issues.Report(issues.Issue{
+			ID:       "config/record_path/" + camName,
+			Severity: issues.SeverityWarn,
+			Scope:    "config",
+			Camera:   camName,
+			Message:  "RECORD_PATH / RECORD_FILE_NAME missing time variables — segments would overwrite; bridge appended _%s automatically",
+			RawValue: combined,
+		})
 		combined += "_%s"
 	}
 

@@ -2,18 +2,24 @@ package wyzeapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 )
 
-// StateFile holds persisted auth and camera state.
+// StateFile holds persisted auth and camera state. Save() is safe
+// for concurrent callers (writeMu) and writes atomically via
+// write-to-temp + rename.
 type StateFile struct {
 	Auth    *AuthState            `json:"auth,omitempty"`
 	Cameras map[string]CameraInfo `json:"cameras"` // keyed by MAC
 	Updated time.Time             `json:"updated"`
+
+	writeMu sync.Mutex
 }
 
 // LoadState reads the state file from disk.
@@ -47,15 +53,26 @@ func LoadState(stateDir string, log zerolog.Logger) (*StateFile, error) {
 	return &sf, nil
 }
 
-// Save writes the state file to disk.
+// Save writes the state file to disk atomically.
 func (sf *StateFile) Save(stateDir string) error {
+	sf.writeMu.Lock()
+	defer sf.writeMu.Unlock()
+
 	sf.Updated = time.Now()
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return err
 	}
 	path := filepath.Join(stateDir, "wyze-bridge.state.json")
-	return os.WriteFile(path, data, 0600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("write tmp state file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename tmp state file: %w", err)
+	}
+	return nil
 }
 
 // UpdateCameras replaces the camera list in the state file.

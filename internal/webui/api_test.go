@@ -50,7 +50,13 @@ func testServer(t *testing.T) (*Server, *go2rtcmgr.APIClient) {
 	apiClient := wyzeapi.NewClient(wyzeapi.Credentials{}, "test", zerolog.Nop())
 	camMgr := camera.NewManager(cfg, apiClient, go2rtcAPI, zerolog.Nop())
 
-	srv := NewServer(cfg, camMgr, go2rtcAPI, "test-version", zerolog.Nop())
+	srv := NewServer(Options{
+		Config:    cfg,
+		CameraMgr: camMgr,
+		Version:   "test-version",
+		Log:       zerolog.Nop(),
+	})
+	srv.SetGo2RTCAPI(go2rtcAPI)
 	srv.startTime = time.Now()
 
 	return srv, go2rtcAPI

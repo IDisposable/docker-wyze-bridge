@@ -7,52 +7,49 @@ import (
 	"strings"
 )
 
-// ModelNames maps product_model codes to human-readable names.
-var ModelNames = map[string]string{
-	"WYZEC1":        "V1",
-	"WYZEC1-JZ":     "V2",
-	"WYZE_CAKP2JFUS": "V3",
-	"HL_CAM4":       "V4",
-	"HL_CAM3P":      "V3 Pro",
-	"WYZECP1_JEF":   "Pan",
-	"HL_PAN2":       "Pan V2",
-	"HL_PAN3":       "Pan V3",
-	"HL_PANP":       "Pan Pro",
-	"HL_CFL2":       "Floodlight V2",
-	"WYZEDB3":       "Doorbell",
-	"HL_DB2":        "Doorbell V2",
-	"GW_BE1":        "Doorbell Pro",
-	"AN_RDB1":       "Doorbell Pro 2",
-	"GW_GC1":        "OG",
-	"GW_GC2":        "OG 3X",
-	"WVOD1":         "Outdoor",
-	"HL_WCO2":       "Outdoor V2",
-	"AN_RSCW":       "Battery Cam Pro",
-	"LD_CFP":        "Floodlight Pro",
-	"GW_DBD":        "Doorbell Duo",
+// ModelSpec is the routing + UI metadata for a single Wyze product
+// code. New camera = one row in modelRegistry + a README table row.
+type ModelSpec struct {
+	Name string
+	// IsGwell: uses Wyze's Gwell/IoTVideo control plane. Doorbell-
+	// lineage Gwell models also set IsWebRTCStreamer; OG models don't.
+	IsGwell bool
+	// IsWebRTCStreamer: streams via Wyze's mars-webcsrv KVS signaling
+	// (go2rtc's native #format=wyze source).
+	IsWebRTCStreamer bool
+	IsPan            bool
+	IsDoorbell       bool
 }
 
-// Gwell-protocol cameras (not supported by go2rtc TUTK).
-var gwellModels = map[string]bool{
-	"GW_BE1": true, "GW_GC1": true, "GW_GC2": true, "GW_DBD": true,
+// modelRegistry is the single source of truth for per-model routing.
+var modelRegistry = map[string]ModelSpec{
+	"WYZEC1":         {Name: "V1"},
+	"WYZEC1-JZ":      {Name: "V2"},
+	"WYZE_CAKP2JFUS": {Name: "V3"},
+	"HL_CAM4":        {Name: "V4"},
+	"HL_CAM3P":       {Name: "V3 Pro"},
+	"WYZECP1_JEF":    {Name: "Pan", IsPan: true},
+	"HL_PAN2":        {Name: "Pan V2", IsPan: true},
+	"HL_PAN3":        {Name: "Pan V3", IsPan: true},
+	"HL_PANP":        {Name: "Pan Pro", IsPan: true},
+	"HL_CFL2":        {Name: "Floodlight V2"},
+	"WYZEDB3":        {Name: "Doorbell", IsDoorbell: true},
+	"HL_DB2":         {Name: "Doorbell V2", IsDoorbell: true},
+	"GW_BE1":         {Name: "Doorbell Pro", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
+	"AN_RDB1":        {Name: "Doorbell Pro 2", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
+	"GW_DBD":         {Name: "Doorbell Duo", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
+	"GW_GC1":         {Name: "OG", IsGwell: true},
+	"GW_GC2":         {Name: "OG 3X", IsGwell: true},
+	"WVOD1":          {Name: "Outdoor"},
+	"HL_WCO2":        {Name: "Outdoor V2"},
+	"AN_RSCW":        {Name: "Battery Cam Pro"},
+	"LD_CFP":         {Name: "Floodlight Pro"},
 }
 
-// webRTCStreamerModels: Wyze cameras that stream live media over WebRTC
-// (Wyze's mars-webcsrv signaling + AWS TURN), handled by go2rtc's native
-// #format=wyze source. Doorbell lineage. OG cameras (GW_GC1/GC2) use
-// Gwell P2P on the LAN and don't belong here.
-var webRTCStreamerModels = map[string]bool{
-	"GW_BE1": true, "GW_DBD": true,
-}
-
-// PanCams is the set of pan/tilt camera models.
-var PanCams = map[string]bool{
-	"WYZECP1_JEF": true, "HL_PAN2": true, "HL_PAN3": true, "HL_PANP": true,
-}
-
-// Doorbell models.
-var Doorbells = map[string]bool{
-	"WYZEDB3": true, "HL_DB2": true, "GW_DBD": true,
+// ModelSpecFor returns the registry entry for a model code, or the
+// zero spec if the model isn't registered.
+func ModelSpecFor(model string) ModelSpec {
+	return modelRegistry[model]
 }
 
 // CameraInfo holds discovered camera information from the Wyze API.
@@ -74,30 +71,32 @@ type CameraInfo struct {
 	Thumbnail   string `json:"thumbnail,omitempty"`
 }
 
-// ModelName returns the human-friendly model name.
+// ModelName returns the human-friendly model name, falling back to
+// the raw model code when the model isn't in the registry yet.
 func (c CameraInfo) ModelName() string {
-	if name, ok := ModelNames[c.Model]; ok {
-		return name
+	if spec, ok := modelRegistry[c.Model]; ok {
+		return spec.Name
 	}
 	return c.Model
 }
 
-// IsGwell returns true if this camera uses the Gwell protocol (unsupported).
+// IsGwell returns true if this camera uses the Gwell control plane
+// (gwell-proxy LAN-direct for OG models; WebRTC for doorbell lineage).
 func (c CameraInfo) IsGwell() bool {
-	return gwellModels[c.Model]
+	return modelRegistry[c.Model].IsGwell
 }
 
 // IsWebRTCStreamer returns true when this camera streams via Wyze's
-// WebRTC path (served by go2rtc's native #format=wyze source). True if
-// either the model is in the allow-list OR the camera is Gwell-protocol
-// but has no LAN IP — the cloud not reporting a LAN IP is a reliable
-// signal for the doorbell lineage. OG cameras (LAN-direct Gwell P2P)
-// always have a LAN IP and stay on gwell-proxy.
+// WebRTC path (served by go2rtc's native #format=wyze source). True
+// either because the model is explicitly flagged in the registry,
+// or because it's a Gwell model the cloud reports without a LAN IP
+// (a reliable runtime signal for the doorbell lineage).
 func (c CameraInfo) IsWebRTCStreamer() bool {
-	if webRTCStreamerModels[c.Model] {
+	spec := modelRegistry[c.Model]
+	if spec.IsWebRTCStreamer {
 		return true
 	}
-	if c.IsGwell() && (c.LanIP == "" || c.LanIP == "0.0.0.0") {
+	if spec.IsGwell && (c.LanIP == "" || c.LanIP == "0.0.0.0") {
 		return true
 	}
 	return false
@@ -105,12 +104,12 @@ func (c CameraInfo) IsWebRTCStreamer() bool {
 
 // IsPanCam returns true if this is a pan/tilt camera.
 func (c CameraInfo) IsPanCam() bool {
-	return PanCams[c.Model]
+	return modelRegistry[c.Model].IsPan
 }
 
 // IsDoorbell returns true if this is a doorbell camera.
 func (c CameraInfo) IsDoorbell() bool {
-	return Doorbells[c.Model]
+	return modelRegistry[c.Model].IsDoorbell
 }
 
 var nameCleanRE = regexp.MustCompile(`[^\w\-]+`)

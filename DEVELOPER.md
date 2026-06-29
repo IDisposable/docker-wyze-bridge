@@ -241,6 +241,40 @@ internal/
 2. Register the route in `registerRoutes()` in `server.go`
 3. Add a test in `api_test.go` using `httptest`
 
+### Adding a new camera model
+
+Every per-model attribute lives in one map: `modelRegistry` in
+`internal/wyzeapi/models.go`. Add a row there, then a README table
+row. That's it.
+
+1. **Find the model code.** Wyze's app reports it as `product_model`
+   in API responses. Easiest: enable `LOG_LEVEL=debug` and look for
+   the discovery log line listing each camera; the unknown model
+   shows up as the raw code rather than a friendly name.
+2. **Add to `modelRegistry`** in `internal/wyzeapi/models.go`:
+   ```go
+   "NEW_CODE": {Name: "Marketing Name", IsPan: true, IsDoorbell: false},
+   ```
+   Pick the protocol flags from this matrix:
+   - Plain TUTK camera (most models): no flags set.
+   - LAN-direct Gwell P2P (OG-class): `IsGwell: true` and *do not*
+     set `IsWebRTCStreamer`.
+   - Doorbell-lineage WebRTC: `IsGwell: true` *and*
+     `IsWebRTCStreamer: true` *and* `IsDoorbell: true`.
+   - Pan/tilt firmware (PTZ-capable): also set `IsPan: true`.
+3. **Add a row to the camera-support table in `README.md`** under
+   `## Camera Support`, with status `Should work` (untested) or
+   `Confirmed` (you've verified end-to-end).
+4. **No other code changes required.** All routing
+   (`streamSourceFor`, HA discovery, the gwell-proxy spawn check,
+   the KVS shim) reads from `modelRegistry` via the `CameraInfo`
+   accessor methods.
+
+If a confirmed model doesn't stream, the protocol routing is the
+suspect — flip the flags and re-test. The model logic is in
+`internal/wyzeapi/models.go`; the path selection is in
+`internal/camera/manager.go:streamSourceFor`.
+
 ## Release Flow
 
 Two long-lived branches, two add-on channels.

@@ -85,10 +85,10 @@ func New() *Registry {
 // on first sighting and refreshed on repeat reports — callers can
 // update the message over time as context changes.
 //
-// Report is safe to call from any goroutine and is cheap enough that
-// hot paths can invoke it without gating.
+// Report is safe to call from any goroutine, including on a nil
+// registry (no-op), so callers don't need to nil-check.
 func (r *Registry) Report(iss Issue) {
-	if iss.ID == "" {
+	if r == nil || iss.ID == "" {
 		return
 	}
 	r.mu.Lock()
@@ -114,10 +114,12 @@ func (r *Registry) Report(iss Issue) {
 	r.issues[iss.ID] = &iss
 }
 
-// Resolve removes an issue by ID. No-op if the ID isn't registered.
-// Call this when a subsystem verifies its earlier-reported problem
-// is no longer active (e.g. MQTT reconnected after a drop).
+// Resolve removes an issue by ID. No-op if the ID isn't registered
+// or if the registry is nil.
 func (r *Registry) Resolve(id string) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.issues, id)
@@ -126,6 +128,9 @@ func (r *Registry) Resolve(id string) {
 // List returns a snapshot of all current issues, sorted by Severity
 // (errors first) then by Scope + Camera + ID for stable UI rendering.
 func (r *Registry) List() []Issue {
+	if r == nil {
+		return nil
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -151,8 +156,11 @@ func (r *Registry) List() []Issue {
 
 // Count returns the current number of distinct issues. Cheap to
 // query from health endpoints that just want a "is everything OK"
-// number.
+// number. Returns 0 on a nil registry.
 func (r *Registry) Count() int {
+	if r == nil {
+		return 0
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.issues)

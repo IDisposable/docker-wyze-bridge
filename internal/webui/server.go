@@ -52,6 +52,9 @@ type Server struct {
 	srv       *http.Server
 	version   string
 	startTime time.Time
+	// rootCtx ties fire-and-forget handler goroutines to bridge
+	// shutdown. Set via SetRootContext; defaults to context.Background.
+	rootCtx       context.Context
 	onSnapReq     SnapshotRequester
 	onDiscoverReq DiscoverRequester
 	mars      MarsTokenMinter
@@ -109,47 +112,48 @@ func (s *Server) Events() *EventLog {
 	return s.events
 }
 
-// SetIssuesRegistry attaches the process-wide issue registry so the
-// health endpoint (and later the metrics page) can surface config
-// errors. Safe to pass nil for tests.
-func (s *Server) SetIssuesRegistry(r *issues.Registry) {
-	s.issues = r
+// Options bundles every startup-time dependency the Server needs.
+// Late-bound deps (go2rtc API, metrics sources, the snapshot/discover
+// callbacks) stay as Set* methods because they're constructed after
+// the server is already listening.
+type Options struct {
+	Config      *config.Config       // required
+	CameraMgr   *camera.Manager      // required
+	Version     string               // required
+	Log         zerolog.Logger       // required
+	RootCtx     context.Context      // optional; defaults to context.Background
+	Issues      *issues.Registry     // optional; nil-safe
+	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
+	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
+	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
 }
 
-// SetAuthPhoneIDFn attaches a getter for the Wyze PhoneID. Called
-// once at startup with a closure over the wyzeapi.Client's auth state.
-func (s *Server) SetAuthPhoneIDFn(f func() string) {
-	s.authPhoneID = f
-}
-
-// NewServer creates a new WebUI server. go2rtcAPI may be nil; attach
-// it later via SetGo2RTCAPI once go2rtc is ready.
-func NewServer(
-	cfg *config.Config,
-	camMgr *camera.Manager,
-	go2rtcAPI *go2rtcmgr.APIClient,
-	version string,
-	log zerolog.Logger,
-) *Server {
+// NewServer constructs a Server from Options. go2rtc, metrics
+// sources, and snapshot/discover callbacks are attached later via
+// their Set/On methods because they're built downstream.
+func NewServer(opts Options) *Server {
 	s := &Server{
-		log:       log,
-		cfg:       cfg,
-		camMgr:    camMgr,
-		sseHub:    NewSSEHub(log),
-		version:   version,
-		startTime: time.Now(),
+		log:         opts.Log,
+		cfg:         opts.Config,
+		camMgr:      opts.CameraMgr,
+		sseHub:      NewSSEHub(opts.Log),
+		version:     opts.Version,
+		startTime:   time.Now(),
+		rootCtx:     opts.RootCtx,
+		issues:      opts.Issues,
+		mars:        opts.Mars,
+		kvs:         opts.KVS,
+		authPhoneID: opts.AuthPhoneID,
 	}
-	if go2rtcAPI != nil {
-		s.go2rtcAPI.Store(go2rtcAPI)
+	if s.rootCtx == nil {
+		s.rootCtx = context.Background()
 	}
-
 	s.auth = NewAuthMiddleware(
-		cfg.BridgeAuth,
-		cfg.BridgeUsername,
-		cfg.BridgePassword,
-		cfg.BridgeAPIToken,
+		opts.Config.BridgeAuth,
+		opts.Config.BridgeUsername,
+		opts.Config.BridgePassword,
+		opts.Config.BridgeAPIToken,
 	)
-
 	return s
 }
 

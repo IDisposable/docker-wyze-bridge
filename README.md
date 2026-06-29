@@ -103,8 +103,9 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam Outdoor V2 | `HL_WCO2` | TUTK | Should work |
 | Wyze Cam Doorbell V1 | `WYZEDB3` | TUTK | Needs support in go2rtc |
 | Wyze Cam Doorbell V2 (2K) | `HL_DB2` | TUTK | Confirmed |
-| Wyze Cam Doorbell Pro | `GW_BE1` | WebRTC | **Confirmed 2026-04-20** |
-| Wyze Cam Doorbell Duo | `GW_DBD` | WebRTC | Expected (same lineage) |
+| Wyze Video Doorbell Pro | `GW_BE1` | WebRTC | **Confirmed 2026-04-20** |
+| Wyze Video Doorbell Pro 2 | `AN_RDB1` | WebRTC | Expected (same lineage) |
+| Wyze Video Doorbell Duo | `GW_DBD` | WebRTC | Expected (same lineage) |
 | Wyze Cam OG | `GW_GC1` | Gwell P2P | Expected (LAN-direct UDP) |
 | Wyze Cam OG Telephoto 3X | `GW_GC2` | Gwell P2P | Expected (LAN-direct UDP) |
 | Wyze Battery Cam Pro | `AN_RSCW` | — | Not supported |
@@ -347,15 +348,30 @@ toggle is available over:
 Whatever toggles recording fires an SSE `recording_state` event, so
 all open browser tabs + the metrics page update live.
 
-### Configuration issues surface on `/metrics`
+### Issues registry — what does `config_errors > 0` mean?
 
-When a subsystem hits a soft failure — a bad `RECORD_PATH` template,
-an unreachable MQTT broker, a future `RECORD_CMD` with an unknown
-token — it reports into the process-wide issues registry instead of
-silently logging a warning. The metrics page renders open issues in a
-red panel at the top; `/api/health` includes a `config_errors` count;
-the MQTT `wyze_bridge/bridge/config_errors` topic lets HA wire an
-alert on it.
+When the bridge hits a soft failure that an operator needs to know
+about, the affected subsystem posts an entry to a process-wide
+**issues registry** (keyed for deduplication) instead of silently
+warning to the log. The registry feeds three surfaces:
+
+| Surface | What you see |
+| ------- | ------------ |
+| `/metrics` HTML | A red **Issues** panel at the top of the page lists every open entry: severity, scope, camera (if camera-specific), one-line message, longer detail, and the offending raw value where useful. |
+| `/api/health` JSON | `config_errors` is the open issue count; `issues` is the full list; `status` flips to `"degraded"` when non-empty. Suitable for a HA `rest` sensor or a uptime monitor. |
+| HA MQTT discovery | `sensor.wyze_bridge_config_errors` exposes the count for HA dashboards/automations. Auto-published when MQTT is configured. |
+
+Current categories that report:
+
+- **`auth`** — Wyze API login or token refresh failed (bad credentials, MFA without a configured `WYZE_TOTP_KEY`, Wyze cloud down). Cleared automatically when the next attempt succeeds.
+- **`config`** — invalid `RECORD_PATH` / `RECORD_FILE_NAME` template (missing strftime tokens), malformed `RECORD_CMD` override, etc.
+- **`record_cmd/<cam>`** — a per-camera `RECORD_CMD` template failed to parse; bridge fell back to the built-in argv.
+- **`camera/chronic/<cam>`** — a camera has failed to connect ≥10 consecutive times (stuck in error state behind a 5-minute backoff). Cleared when that camera next reaches `streaming`.
+
+Each entry includes enough context to act: the camera name, the
+specific setting at fault, and (where available) a hint about what
+to change. Always start at `/metrics` — it groups everything in one
+view.
 
 ## FAQ
 

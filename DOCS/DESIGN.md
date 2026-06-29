@@ -403,6 +403,16 @@ State messages are only published on change (no spam). On reconnect, full state 
 {topic}/{cam}/set/quality             "hd" | "sd"
 {topic}/{cam}/set/audio               "true" | "false"
 {topic}/{cam}/set/night_vision        "auto" | "on" | "off"
+{topic}/{cam}/set/irled               "on" | "off"
+{topic}/{cam}/set/status_light        "on" | "off"
+{topic}/{cam}/set/motion_detection    "on" | "off"
+{topic}/{cam}/set/motion_tagging      "on" | "off"
+{topic}/{cam}/set/hor_flip            "on" | "off"
+{topic}/{cam}/set/ver_flip            "on" | "off"
+{topic}/{cam}/set/bitrate             integer kbps
+{topic}/{cam}/set/fps                 integer fps
+{topic}/{cam}/state/set               "start" | "stop" (alias: on|off|1|0|true|false)
+{topic}/{cam}/power/set               "on" | "off" | "restart"
 {topic}/{cam}/snapshot/take           any payload → trigger snapshot
 {topic}/{cam}/stream/restart          any payload → force reconnect
 {topic}/{cam}/record/set              "start"|"on"|"1"|"true" → start; anything else → stop
