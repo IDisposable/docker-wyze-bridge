@@ -45,6 +45,7 @@ var modelRegistry = map[string]ModelSpec{
 	"GW_DBD":         {Name: "Doorbell Duo", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
 	"GW_GC1":         {Name: "OG", IsGwell: true, IsGwellP2P: true},
 	"GW_GC2":         {Name: "OG 3X", IsGwell: true, IsGwellP2P: true},
+	"GW_DUO":         {Name: "Cam Pan Duo", IsGwell: true, IsGwellP2P: true},
 	"WVOD1":          {Name: "Outdoor"},
 	"HL_WCO2":        {Name: "Outdoor V2"},
 	"AN_RSCW":        {Name: "Battery Cam Pro"},

@@ -80,7 +80,10 @@ configure the path, the bridge routes based on the model.
   Gwell/IoTVideo LAN-direct UDP protocol. Enabled by default (set
   `GWELL_ENABLED=false` to opt out); the sidecar only actually spawns
   when an OG-family camera is discovered, so users without OG cameras
-  pay zero cost.
+  pay zero cost. Cameras whose LAN IP the Wyze cloud doesn't report
+  (e.g. `GW_DUO`) can be pinned via
+  `GWELL_LAN_IPS=DEVICEID=IP,DEVICEID=IP` (matched against the
+  camera's MAC) so gwell-proxy locks LAN-direct instead of relay.
 - **WebRTC (KVS)** — go2rtc's native `#format=wyze` handler dials
   Wyze's `wyze-mars-webcsrv.wyzecam.com` signaling server itself and
   speaks AWS-KVS WebRTC. Used by doorbell-lineage hardware that skips

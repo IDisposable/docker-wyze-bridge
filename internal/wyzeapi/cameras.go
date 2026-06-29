@@ -2,6 +2,7 @@ package wyzeapi
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -78,6 +79,16 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 		// Extract thumbnail
 		if thumbs, ok := params["camera_thumbnails"].(map[string]interface{}); ok {
 			cam.Thumbnail = getString(thumbs, "thumbnails_url")
+		}
+
+		// LAN-direct Gwell cameras (e.g. GW_DUO) get no LAN IP from the
+		// Wyze cloud. GWELL_LAN_IPS lets the operator pin them so the
+		// gwell-proxy establishes a LAN-direct session instead of the
+		// lossy relay.
+		if cam.LanIP == "" {
+			if ip := gwellLanIPOverride(cam.MAC); ip != "" {
+				cam.LanIP = ip
+			}
 		}
 
 		// Generate normalized name
@@ -246,4 +257,23 @@ func (c *Client) GetCameraStream(cam CameraInfo) (map[string]interface{}, error)
 		return nil, fmt.Errorf("get_streams: %w", err)
 	}
 	return resp, nil
+}
+
+// gwellLanIPOverride returns an operator-pinned LAN IP for a Gwell
+// camera whose LAN IP the Wyze cloud does not report (e.g. GW_DUO).
+// Configured via GWELL_LAN_IPS, formatted "DEVICEID=IP,DEVICEID=IP"
+// where DEVICEID matches CameraInfo.MAC (the id Wyze echoes for
+// Gwell).
+func gwellLanIPOverride(mac string) string {
+	raw := os.Getenv("GWELL_LAN_IPS")
+	if raw == "" {
+		return ""
+	}
+	for _, pair := range strings.Split(raw, ",") {
+		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), mac) {
+			return strings.TrimSpace(kv[1])
+		}
+	}
+	return ""
 }
