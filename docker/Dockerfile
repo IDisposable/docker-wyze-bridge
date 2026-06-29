@@ -14,7 +14,7 @@ RUN apk add --no-cache curl ca-certificates && \
       -o /video-rtc.js
 
 # ── Stage 2: Build Go binary ──────────────────────────────────────────────────
-FROM golang:1.26.2-alpine AS builder
+FROM golang:1.26.4-alpine AS builder
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
