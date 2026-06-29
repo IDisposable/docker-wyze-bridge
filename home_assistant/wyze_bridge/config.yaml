@@ -56,8 +56,10 @@ options:
   filter: {}
   location: {}
   webhooks: {}
-  gwell: {}
-  models: {}
+  gwell:
+    manual_ips: []
+  models:
+    overrides: []
   debug: {}
 schema:
   wyze:
