@@ -62,6 +62,98 @@ func ModelSpecFor(model string) ModelSpec {
 	return modelRegistry[model]
 }
 
+// RegisterModel adds or replaces a row in modelRegistry. Used by main
+// at startup to apply MODEL_OVERRIDES so operators can add a brand-new
+// Wyze model code or flip flags on an existing one without recompiling.
+// The supplied spec replaces any prior entry wholesale; partial updates
+// require reading the existing spec first.
+func RegisterModel(model string, spec ModelSpec) {
+	modelRegistry[model] = spec
+}
+
+// ApplyModelOverrides parses and applies the MODEL_OVERRIDES env-var
+// format. Each entry overrides (or adds) one model. Existing flags are
+// preserved unless mentioned in the override — set `flag=false` to
+// clear, omit to keep the registry's value.
+//
+// Format: `MODEL[:flag=value]*` entries joined by `;`. Whitespace OK.
+//
+//	GW_DUO:name=Cam Pan Duo,is_webrtc=true,is_pan=true
+//	GW_NEW:name=Made-up Cam,is_gwell=true,is_gwell_p2p=true
+//
+// Flag names (case-insensitive): name, is_gwell, is_gwell_p2p,
+// is_webrtc, is_pan, is_doorbell. Returns a slice of (model, err)
+// for entries that failed to parse so the caller can log them; the
+// successful entries are applied regardless.
+func ApplyModelOverrides(raw string) []ModelOverrideError {
+	var errs []ModelOverrideError
+	for _, entry := range strings.Split(raw, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		head, tail, _ := strings.Cut(entry, ":")
+		model := strings.TrimSpace(head)
+		if model == "" {
+			errs = append(errs, ModelOverrideError{Entry: entry, Err: fmt.Errorf("empty model code")})
+			continue
+		}
+		spec := modelRegistry[model] // start from existing or zero
+		entryErr := false
+		for _, kv := range strings.Split(tail, ",") {
+			kv = strings.TrimSpace(kv)
+			if kv == "" {
+				continue
+			}
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok {
+				errs = append(errs, ModelOverrideError{Entry: entry, Err: fmt.Errorf("flag %q missing '='", kv)})
+				entryErr = true
+				continue
+			}
+			k = strings.ToLower(strings.TrimSpace(k))
+			v = strings.TrimSpace(v)
+			switch k {
+			case "name":
+				spec.Name = v
+			case "is_gwell":
+				spec.IsGwell = parseBoolFlag(v)
+			case "is_gwell_p2p":
+				spec.IsGwellP2P = parseBoolFlag(v)
+			case "is_webrtc", "is_webrtc_streamer":
+				spec.IsWebRTCStreamer = parseBoolFlag(v)
+			case "is_pan":
+				spec.IsPan = parseBoolFlag(v)
+			case "is_doorbell":
+				spec.IsDoorbell = parseBoolFlag(v)
+			default:
+				errs = append(errs, ModelOverrideError{Entry: entry, Err: fmt.Errorf("unknown flag %q", k)})
+				entryErr = true
+			}
+		}
+		if !entryErr {
+			RegisterModel(model, spec)
+		}
+	}
+	return errs
+}
+
+// ModelOverrideError pairs the offending raw entry with its parse error
+// so callers can log them user-actionably.
+type ModelOverrideError struct {
+	Entry string
+	Err   error
+}
+
+func parseBoolFlag(v string) bool {
+	switch strings.ToLower(v) {
+	case "true", "yes", "1", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // CameraInfo holds discovered camera information from the Wyze API.
 type CameraInfo struct {
 	Name        string `json:"name"`

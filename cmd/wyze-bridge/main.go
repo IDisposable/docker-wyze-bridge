@@ -70,6 +70,15 @@ func main() {
 	}
 	apiClient := wyzeapi.NewClient(creds, Version, apiLog)
 
+	// MODEL_OVERRIDES — apply before discovery so the registry is
+	// authoritative when CameraInfo accessors are first called.
+	if cfg.ModelOverrides != "" {
+		for _, e := range wyzeapi.ApplyModelOverrides(cfg.ModelOverrides) {
+			log.Warn().Str("entry", e.Entry).Err(e.Err).Msg("MODEL_OVERRIDES parse error")
+		}
+		log.Info().Str("raw", cfg.ModelOverrides).Msg("applied model registry overrides")
+	}
+
 	// Restore auth from state if available
 	if state.Auth != nil && state.Auth.AccessToken != "" {
 		apiClient.SetAuth(state.Auth)
@@ -118,14 +127,6 @@ func main() {
 	)
 
 	webuiLog := log.With().Str("c", "webui").Logger()
-	// Manual LAN IPs for Gwell cameras the Wyze cloud doesn't surface
-	// (e.g. Window Cams / GW_WC). Missing file is a no-op.
-	manualIPs, err := webui.LoadManualIPs(cfg.GwellManualIPs)
-	if err != nil {
-		log.Warn().Err(err).Str("path", cfg.GwellManualIPs).Msg("failed to load Gwell manual IPs; continuing without")
-	} else if len(manualIPs) > 0 {
-		log.Info().Int("count", len(manualIPs)).Str("path", cfg.GwellManualIPs).Msg("loaded Gwell manual LAN IPs")
-	}
 	webServer := webui.NewServer(webui.Options{
 		Config:    cfg,
 		CameraMgr: camMgr,
@@ -135,7 +136,6 @@ func main() {
 		Issues:    issueReg,
 		Mars:      apiClient,
 		KVS:       kvsAdapter{api: apiClient},
-		ManualIPs: manualIPs,
 		AuthPhoneID: func() string {
 			if a := apiClient.Auth(); a != nil {
 				return a.PhoneID

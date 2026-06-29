@@ -244,6 +244,25 @@ func TestClient_GetDeviceInfo(t *testing.T) {
 	}
 }
 
+func TestGwellLanIPOverride(t *testing.T) {
+	t.Setenv("GWELL_LAN_IPS", "AABBCC112233=10.0.0.50, ddeeff445566=10.0.0.51")
+
+	if got := gwellLanIPOverride("AABBCC112233"); got != "10.0.0.50" {
+		t.Errorf("exact MAC lookup = %q, want 10.0.0.50", got)
+	}
+	if got := gwellLanIPOverride("DDEEFF445566"); got != "10.0.0.51" {
+		t.Errorf("case-insensitive MAC lookup = %q, want 10.0.0.51", got)
+	}
+	if got := gwellLanIPOverride("999999999999"); got != "" {
+		t.Errorf("unknown MAC = %q, want empty", got)
+	}
+
+	t.Setenv("GWELL_LAN_IPS", "")
+	if got := gwellLanIPOverride("AABBCC112233"); got != "" {
+		t.Errorf("unset env = %q, want empty", got)
+	}
+}
+
 func TestFixKVSSignalingURL(t *testing.T) {
 	// Wyze's get_streams double-encodes the SigV4 query params for some
 	// cameras (observed on LD_CFP Floodlight Pro): %2F -> %252F etc.

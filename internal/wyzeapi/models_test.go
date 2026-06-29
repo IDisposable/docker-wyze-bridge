@@ -189,6 +189,50 @@ func TestCameraInfo_PanDuo_IsWebRTC(t *testing.T) {
 	}
 }
 
+func TestApplyModelOverrides(t *testing.T) {
+	// Snapshot + restore so test mutations don't leak.
+	saved := make(map[string]ModelSpec, len(modelRegistry))
+	for k, v := range modelRegistry {
+		saved[k] = v
+	}
+	t.Cleanup(func() {
+		modelRegistry = saved
+	})
+
+	raw := strings.Join([]string{
+		"GW_NEW:name=Made-up Cam,is_gwell=true,is_gwell_p2p=true",
+		"GW_DUO:is_webrtc=false,is_gwell=true,is_gwell_p2p=true", // flip back to Gwell P2P
+		"  ", // empty line tolerated
+		"BAD_FLAG:fancy=true",
+		"BAD_KV:name",
+		":name=NoModel",
+	}, ";")
+
+	errs := ApplyModelOverrides(raw)
+
+	// New entry added.
+	if got := ModelSpecFor("GW_NEW"); got.Name != "Made-up Cam" || !got.IsGwell || !got.IsGwellP2P {
+		t.Errorf("GW_NEW spec = %+v", got)
+	}
+	// Existing entry flipped.
+	duo := ModelSpecFor("GW_DUO")
+	if duo.IsWebRTCStreamer || !duo.IsGwell || !duo.IsGwellP2P {
+		t.Errorf("GW_DUO override not applied: %+v", duo)
+	}
+	// Three error entries.
+	wantErrEntries := map[string]bool{
+		"BAD_FLAG:fancy=true": true,
+		"BAD_KV:name":         true,
+		":name=NoModel":       true,
+	}
+	for _, e := range errs {
+		delete(wantErrEntries, e.Entry)
+	}
+	if len(wantErrEntries) != 0 {
+		t.Errorf("missing expected errors for: %v (got: %v)", wantErrEntries, errs)
+	}
+}
+
 func TestCameraInfo_IsPanCam(t *testing.T) {
 	pan := CameraInfo{Model: "HL_PAN3"}
 	if !pan.IsPanCam() {

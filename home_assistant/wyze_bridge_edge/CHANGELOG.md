@@ -2,74 +2,134 @@
 
 ## 4.4.0-edge
 
-Code-review pass: hardening, parity, observability, docs, and tests across
-the bridge. CI appends the timestamp suffix on each dev push (e.g.
-`4.4.0-edge.20260629.0400`).
+Code-review pass + community PRs: hardening, parity, observability,
+new camera models, and tests across the bridge. CI appends the
+timestamp suffix on each dev push (e.g. `4.4.0-edge.20260629.0400`).
 
-### Added
+### Camera support
 
 - **AN_RDB1 (Doorbell Pro 2)** routed to the WebRTC path (was silently
-	falling through to TUTK)
-- Single `ModelSpec` registry in `internal/wyzeapi/models.go` replaces
-	five hardcoded maps; adding a new camera = one row
-- `DEVELOPER.md` "Adding a new camera model" section
-- `DOCS/GW_BE1_Research.md` capturing pcap-based Doorbell Pro protocol notes
-- Atomic state-file writes (write-to-temp + rename) under a write mutex
+	falling through to TUTK).
+- **GW_DUO (Cam Pan Duo)** routed to the WebRTC path (mars-webcsrv
+	signaling, same backend as the Doorbell Pro) with `is_pan` set.
+- **GW_WC (Window Cam)** routed to Gwell P2P (LAN-direct, same path
+	as OG cameras). Needs a manual LAN IP — see new HA UI below.
+- **LD_CFP (Floodlight Pro)** routed to WebRTC via AWS KVS.
+- **OG cameras (GW_GC1 / GC2)** now correctly classify as Gwell P2P
+	even when the Wyze cloud reports an empty LAN IP.
+- New `IsGwellP2P` registry flag distinguishes LAN-direct Gwell models
+	(OG, Window Cam) from doorbell-lineage Gwell (Doorbell Pro / Duo).
+
+### HA add-on UI
+
+- **Manual LAN IPs** for Gwell cameras (under "Gwell Protocol
+	Cameras → Manual LAN IPs"): list of `{mac, lan_ip}` entries that
+	feed the new `GWELL_LAN_IPS` env var, applied at discovery time.
+	Use this when the Wyze cloud doesn't report a LAN IP for `GW_DUO`
+	or `GW_WC` and gwell-proxy can't lock LAN-direct.
+- **Camera Model Registry overrides** (new section "Camera Model
+	Registry → Model Overrides"): list of `{model, name, is_*}`
+	entries that override or add rows in the bridge's model registry
+	at startup via the new `MODEL_OVERRIDES` env var. Lets operators
+	add a brand-new Wyze model code or flip routing flags on an
+	existing one without rebuilding the bridge.
+
+### Reliability
+
+- **Pre-registered Gwell publish slots**: gwell-proxy's RTSP PUSH no
+	longer races the runtime AddStream and gets dropped with a broken
+	pipe; the slot is reserved in go2rtc's startup YAML.
+- **gwell-proxy reconnect**: uses the cached P2P server endpoint on
+	stream-error retries instead of re-running full discovery.
+- **KVS signaling double-encode fix** (`FixKVSSignalingURL`): some
+	Wyze cameras (observed on LD_CFP) return a SigV4-encoded URL with
+	`%252F` instead of `%2F`; AWS KVS rejects with 403. Single-decode
+	when the tell-tale `%25` is present.
+- **WebRTC-streamer discovery branch**: `GetCameraList` skips the
+	LAN-IP / P2P-ID checks for WebRTC-only models (LD_CFP doesn't
+	report either) — MAC + Model is enough.
+- Atomic state-file writes (write-to-temp + rename) under a write
+	mutex; concurrent state-change goroutines no longer race the file.
 - Wyze API auth-lifecycle observer wires failures + recoveries to the
-	issues registry (visible on `/metrics`, `/api/health`,
-	`sensor.wyze_bridge_config_errors`)
-- Chronic camera-error reporting: >10 consecutive failed connects on a
-	camera posts a `camera/chronic/<name>` issue; cleared on next stream
-- MQTT publish backpressure: bounded waiter pool prevents goroutine leak
-	when the broker is unreachable; loud-then-rate-limited drop log
+	issues registry (`/metrics`, `/api/health`,
+	`sensor.wyze_bridge_config_errors`).
+- Chronic camera-error reporting: >10 consecutive failed connects on
+	a camera posts a `camera/chronic/<name>` issue; cleared on next
+	stream.
+- MQTT publish backpressure: bounded waiter pool prevents goroutine
+	leak when the broker is unreachable; loud-then-rate-limited drop
+	log.
 - Graceful ffmpeg recorder shutdown (SIGINT + `WaitDelay`) — last mp4
-	segment finalizes cleanly instead of being SIGKILL-truncated
-- README "Issues registry" subsection explaining `config_errors`, active
-	categories, and the three surfaces that show them
-- Actionable hints for known Wyze API response codes (1001 bad creds,
-	1003 bad API key, 2001 token expired, 3019 MFA, …)
-- Network-error classifier distinguishes DNS / timeout / `OpError` from
-	generic transport failures; HTTP 5xx / 429 / 401-403 render with text
-	the operator can act on
-- `/metrics` page: per-section legend captions + hover tooltips on every
-	column header and summary tile
-- Typed `wyzeapi.GetCameraKVSConfig` extracted from the previous raw-map
-	parsing; `cmd/wyze-bridge/main.go`'s `kvsAdapter` shrunk to a 6-line
-	type conversion
-- Smoke tests for webui surfaces (`prometheus`, `dashboard`, `metrics`
-	page+JSON, route table, HLS / WS proxy)
-- `mqtt.Client` tests (constructor defaults, callback registration,
-	`publishSem` saturation)
-- Deeper `/api/*` tests (audio toggle, quality validation, record
-	start/stop, `/api/discover` no-hook / GET-405 / with-hook, health
-	degraded mode with a real Issue, KVS shim happy path + non-WebRTC
-	rejection)
+	segment finalizes cleanly instead of being SIGKILL-truncated.
 
-### Changed
+### Architecture / quality
 
-- `webui.NewServer` takes an `Options` struct; drops `SetRootContext`,
-	`SetIssuesRegistry`, `SetAuthPhoneIDFn` setters (kept
-	`SetMarsMinter`/`SetKVSProvider` for test reuse)
-- `mqtt.NewClient` is ctx-first (drops `SetRootContext`)
+- Single `ModelSpec` registry replaces five hardcoded maps; adding a
+	new camera is one row (or one Model Override entry above).
+- `webui.NewServer` takes an `Options` struct (drops several Set*
+	setters); `mqtt.NewClient` is ctx-first.
 - `cmd/wyze-bridge/main.go`'s `wireCameraStateChanges` split into
-	`autoToggleRecording` / `recordStateEvent` / `pushStateSSE` /
-	`publishStateMQTT` / `sendStateWebhook` / `persistState` helpers
-- `mqtt.Client` and `webui.Server` propagate the bridge's signal-
-	cancellable root context to fire-and-forget handler goroutines
-	(replaces orphaned `context.Background()`)
-- `issues.Registry` methods are nil-safe (callers no longer guard with
-	`if r != nil`)
-- `/api/*` errors return JSON `{"error":"…"}` via `writeJSONError` for a
-	consistent error shape
+	per-subsystem helpers.
+- `issues.Registry` methods nil-safe (callers no longer guard).
+- Typed `wyzeapi.GetCameraKVSConfig` replaces raw-map parsing.
+- `/api/*` errors return JSON `{"error":"…"}` via `writeJSONError`.
+- `mqtt.Client` + `webui.Server` propagate the bridge's signal-
+	cancellable root context to fire-and-forget handler goroutines.
 - Doorbell labels aligned with Wyze marketing names ("Wyze Video
-	Doorbell Pro" / "Pro 2" / "Duo")
-- `.env.dev.example` aligned with current env-var names (`WB_IP` →
-	`BRIDGE_IP`, `TOTP_KEY` → `WYZE_TOTP_KEY`, `IMG_DIR` removed)
-- `DOCS/DESIGN.md` MQTT topic table synced (added `state/set`,
-	`power/set`, the cloud-set properties: `irled`, `status_light`,
-	`motion_detection`, `motion_tagging`, `hor_flip`, `ver_flip`,
-	`bitrate`, `fps`)
-- In-code comments tightened (terse, present-tense)
+	Doorbell Pro" / "Pro 2" / "Duo").
+- `DOCS/GW_BE1_Research.md` captures pcap-based protocol notes.
+
+### Observability & UX
+
+- README "Issues registry" subsection explaining `config_errors`,
+	active categories, and the three surfaces that show them.
+- Actionable hints for known Wyze API response codes (1001 bad creds,
+	1003 bad API key, 2001 token expired, 3019 MFA, …).
+- Network-error classifier distinguishes DNS / timeout / `OpError`
+	from generic transport failures; HTTP 5xx / 429 / 401-403 render
+	with actionable text.
+- `/metrics` page: per-section legend captions + hover tooltips on
+	every column header and summary tile.
+- DEVELOPER.md "Adding a new camera model" section.
+
+### New env vars
+
+- `GWELL_LAN_IPS=MAC=IP,MAC=IP` — pin LAN IPs for Gwell cameras the
+	Wyze cloud doesn't report. HA UI feeds this from Gwell → Manual
+	LAN IPs.
+- `MODEL_OVERRIDES=MODEL:flag=v,flag=v;MODEL:...` — override or add
+	model registry rows at startup. HA UI feeds this from Camera
+	Model Registry → Model Overrides. Flags: `name`, `is_gwell`,
+	`is_gwell_p2p`, `is_webrtc`, `is_pan`, `is_doorbell`.
+
+### Tests
+
+- Webui smoke coverage (prometheus, dashboard, metrics page+JSON,
+	route table, HLS / WS proxy).
+- `mqtt.Client` (constructor defaults, callback registration,
+	`publishSem` saturation).
+- `/api/*` actions (audio toggle, quality validation, record
+	start/stop, `/api/discover` no-hook / GET-405 / with-hook, health
+	degraded mode, KVS shim happy + reject).
+- Model registry (`IsGwellP2P`, `IsWebRTCStreamer` matrix,
+	`ApplyModelOverrides` parser, `FixKVSSignalingURL`,
+	`gwellLanIPOverride`).
+- New camera-classification tests for GW_WC, LD_CFP, GW_DUO.
+
+### Docs
+
+- `.env.dev.example` aligned with current env-var names.
+- `DOCS/DESIGN.md` MQTT topic table synced.
+- `DEVELOPER.md` release flow + Adding-a-camera-model.
+
+### Credits
+
+- PR #111 (Grady Neely): OG cameras (GW_GC1/GC2) classified as Gwell
+	P2P even when the Wyze cloud returns an empty LAN IP.
+- PR #116 (wlatic): GW_DUO + `GWELL_LAN_IPS` env var +
+	pre-registered Gwell publish slots + gwell-proxy reconnect fix.
+- PR #118 (Daniel Quick): GW_WC, LD_CFP, KVS double-encode fix,
+	GW_DUO via WebRTC.
 
 ## 4.3.0
 
