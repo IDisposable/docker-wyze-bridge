@@ -44,6 +44,32 @@ func TestManager_GwellOGCamera_RegistersPublishOnlySlot(t *testing.T) {
 	}
 }
 
+func TestManager_GwellOGCamera_EmptyLanIP_StillRegistersPublishOnlySlot(t *testing.T) {
+	// OG cameras route through gwell-proxy even when Wyze cloud reports
+	// empty LAN IP — gwell-proxy discovers the IP via P2P independently.
+	mgr, go2rtcAPI := newTestManager(t)
+	mgr.cfg.GwellEnabled = true
+
+	cam := NewCamera(wyzeapi.CameraInfo{
+		Name:  "og_no_ip",
+		MAC:   "AABBCCDDEE03",
+		Model: "GW_GC1",
+		LanIP: "", // empty — Wyze cloud doesn't always report OG LAN IPs
+	}, "hd", true, false)
+	mgr.cameras["og_no_ip"] = cam
+
+	mgr.connectCamera(context.Background(), cam)
+
+	if cam.GetState() != StateStreaming {
+		t.Errorf("state = %v, want Streaming (OG with empty IP should still use gwell)", cam.GetState())
+	}
+
+	streams, _ := go2rtcAPI.ListStreams(context.Background())
+	if _, has := streams["og_no_ip"]; !has {
+		t.Error("OG Gwell camera with empty LAN IP should have been registered via AddStream (publish-only slot)")
+	}
+}
+
 func TestManager_GwellWebRTCCamera_UsesWyzeFormatSource(t *testing.T) {
 	mgr, go2rtcAPI := newTestManager(t)
 	mgr.cfg.GwellEnabled = true

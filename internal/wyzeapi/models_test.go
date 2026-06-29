@@ -92,6 +92,147 @@ func TestCameraInfo_IsGwell(t *testing.T) {
 	}
 }
 
+func TestCameraInfo_IsGwellP2P(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"GW_GC1", true},
+		{"GW_GC2", true},
+		{"GW_BE1", false},
+		{"GW_DBD", false},
+		{"HL_CAM4", false},
+	}
+	for _, tt := range tests {
+		cam := CameraInfo{Model: tt.model}
+		if got := cam.IsGwellP2P(); got != tt.want {
+			t.Errorf("IsGwellP2P(%q) = %v, want %v", tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestCameraInfo_IsWebRTCStreamer(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		ip    string
+		want  bool
+	}{
+		{"doorbell pro always webrtc", "GW_BE1", "", true},
+		{"doorbell duo always webrtc", "GW_DBD", "10.0.0.1", true},
+		{"OG with LAN IP is gwell p2p", "GW_GC1", "10.0.0.7", false},
+		{"OG with empty IP is still gwell p2p", "GW_GC1", "", false},
+		{"OG 3X with empty IP is still gwell p2p", "GW_GC2", "", false},
+		{"OG with 0.0.0.0 is still gwell p2p", "GW_GC1", "0.0.0.0", false},
+		{"TUTK camera is not webrtc", "HL_CAM4", "10.0.0.5", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cam := CameraInfo{Model: tt.model, LanIP: tt.ip}
+			if got := cam.IsWebRTCStreamer(); got != tt.want {
+				t.Errorf("IsWebRTCStreamer() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCameraInfo_WindowCam_IsLanDirectGwell(t *testing.T) {
+	// Wyze Window Cam (GW_WC) uses the same Gwell P2P stack as OG, but
+	// the cloud returns an empty LAN IP for it. Must stay LAN-direct
+	// Gwell (gwell-proxy), NOT misrouted to WebRTC by the "no LAN IP"
+	// heuristic.
+	wc := CameraInfo{Model: "GW_WC", LanIP: ""}
+	if !wc.IsGwell() {
+		t.Error("GW_WC should be Gwell")
+	}
+	if wc.IsWebRTCStreamer() {
+		t.Error("GW_WC with empty LAN IP must NOT be a WebRTC streamer (it is LAN-direct Gwell)")
+	}
+	if got, want := wc.ModelName(), "Window Cam"; got != want {
+		t.Errorf("ModelName(GW_WC) = %q, want %q", got, want)
+	}
+
+	// Regression guard: doorbell-lineage Gwell with empty LAN IP IS WebRTC.
+	db := CameraInfo{Model: "GW_BE1", LanIP: ""}
+	if !db.IsWebRTCStreamer() {
+		t.Error("GW_BE1 with empty LAN IP should remain a WebRTC streamer")
+	}
+}
+
+func TestCameraInfo_FloodlightPro_IsWebRTC(t *testing.T) {
+	// Floodlight Pro (LD_CFP) is NOT Gwell — Wyze serves it over AWS KVS
+	// WebRTC. Must route to WebRTC, not TUTK or Gwell.
+	fl := CameraInfo{Model: "LD_CFP", LanIP: ""}
+	if fl.IsGwell() {
+		t.Error("LD_CFP must not be classified as Gwell")
+	}
+	if !fl.IsWebRTCStreamer() {
+		t.Error("LD_CFP should be a WebRTC streamer")
+	}
+	if got, want := fl.ModelName(), "Floodlight Pro"; got != want {
+		t.Errorf("ModelName(LD_CFP) = %q, want %q", got, want)
+	}
+}
+
+func TestCameraInfo_PanDuo_IsWebRTC(t *testing.T) {
+	// Cam Pan Duo (GW_DUO) streams over WebRTC via mars-webcsrv (same
+	// as Doorbell Pro). NOT Gwell-P2P, NOT TUTK.
+	pd := CameraInfo{Model: "GW_DUO", LanIP: ""}
+	if pd.IsGwell() {
+		t.Error("GW_DUO must not be classified as Gwell")
+	}
+	if !pd.IsWebRTCStreamer() {
+		t.Error("GW_DUO should be a WebRTC streamer")
+	}
+	if got, want := pd.ModelName(), "Cam Pan Duo"; got != want {
+		t.Errorf("ModelName(GW_DUO) = %q, want %q", got, want)
+	}
+}
+
+func TestApplyModelOverrides(t *testing.T) {
+	// Snapshot + restore so test mutations don't leak.
+	saved := make(map[string]ModelSpec, len(modelRegistry))
+	for k, v := range modelRegistry {
+		saved[k] = v
+	}
+	t.Cleanup(func() {
+		modelRegistry = saved
+	})
+
+	raw := strings.Join([]string{
+		"GW_NEW:name=Made-up Cam,is_gwell=true,is_gwell_p2p=true",
+		"GW_DUO:is_webrtc=false,is_gwell=true,is_gwell_p2p=true", // flip back to Gwell P2P
+		"  ", // empty line tolerated
+		"BAD_FLAG:fancy=true",
+		"BAD_KV:name",
+		":name=NoModel",
+	}, ";")
+
+	errs := ApplyModelOverrides(raw)
+
+	// New entry added.
+	if got := ModelSpecFor("GW_NEW"); got.Name != "Made-up Cam" || !got.IsGwell || !got.IsGwellP2P {
+		t.Errorf("GW_NEW spec = %+v", got)
+	}
+	// Existing entry flipped.
+	duo := ModelSpecFor("GW_DUO")
+	if duo.IsWebRTCStreamer || !duo.IsGwell || !duo.IsGwellP2P {
+		t.Errorf("GW_DUO override not applied: %+v", duo)
+	}
+	// Three error entries.
+	wantErrEntries := map[string]bool{
+		"BAD_FLAG:fancy=true": true,
+		"BAD_KV:name":         true,
+		":name=NoModel":       true,
+	}
+	for _, e := range errs {
+		delete(wantErrEntries, e.Entry)
+	}
+	if len(wantErrEntries) != 0 {
+		t.Errorf("missing expected errors for: %v (got: %v)", wantErrEntries, errs)
+	}
+}
+
 func TestCameraInfo_IsPanCam(t *testing.T) {
 	pan := CameraInfo{Model: "HL_PAN3"}
 	if !pan.IsPanCam() {

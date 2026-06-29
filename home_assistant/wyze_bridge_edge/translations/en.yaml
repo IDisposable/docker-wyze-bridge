@@ -185,6 +185,29 @@ configuration:
   gwell.enabled:
     name: Enable Gwell Proxy
     description: Toggle Gwell/IoTVideo P2P support for GW_* camera models
+  gwell.manual_ips:
+    name: Manual LAN IPs
+    description: >-
+      Pin a LAN IP for Gwell cameras the Wyze cloud doesn't report
+      (GW_DUO, GW_WC). MAC matches CameraInfo.MAC (12 hex chars, no
+      separators). Use this when the camera shows up but never
+      streams or falls back to cloud relay. Click + to add an entry.
+
+  models:
+    name: Camera Model Registry
+    description: >-
+      Override the built-in model registry to add brand-new Wyze model
+      codes or flip routing flags on existing ones without rebuilding
+      the bridge.
+  models.overrides:
+    name: Model Overrides
+    description: >-
+      One entry per model. Unset flags inherit the registry's value.
+      Flags only mean something for Wyze-protocol cameras —
+      `is_gwell_p2p` keeps a Gwell camera on the LAN-direct path,
+      `is_webrtc` routes via go2rtc's #format=wyze, `is_pan`/
+      `is_doorbell` are UI metadata. See DEVELOPER.md "Adding a
+      camera model" for the routing matrix.
 
   debug:
     name: Debugging

@@ -56,7 +56,10 @@ options:
   filter: {}
   location: {}
   webhooks: {}
-  gwell: {}
+  gwell:
+    manual_ips: []
+  models:
+    overrides: []
   debug: {}
 schema:
   wyze:
@@ -118,6 +121,18 @@ schema:
       - url?
   gwell:
     enabled: bool?
+    manual_ips:
+      - mac: str?
+        lan_ip: str?
+  models:
+    overrides:
+      - model: str?
+        name: str?
+        is_gwell: bool?
+        is_gwell_p2p: bool?
+        is_webrtc: bool?
+        is_pan: bool?
+        is_doorbell: bool?
   debug:
     log_level: list(trace|debug|info|warn|error)?
     force_iotc_detail: bool?

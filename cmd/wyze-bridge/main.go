@@ -70,6 +70,15 @@ func main() {
 	}
 	apiClient := wyzeapi.NewClient(creds, Version, apiLog)
 
+	// MODEL_OVERRIDES — apply before discovery so the registry is
+	// authoritative when CameraInfo accessors are first called.
+	if cfg.ModelOverrides != "" {
+		for _, e := range wyzeapi.ApplyModelOverrides(cfg.ModelOverrides) {
+			log.Warn().Str("entry", e.Entry).Err(e.Err).Msg("MODEL_OVERRIDES parse error")
+		}
+		log.Info().Str("raw", cfg.ModelOverrides).Msg("applied model registry overrides")
+	}
+
 	// Restore auth from state if available
 	if state.Auth != nil && state.Auth.AccessToken != "" {
 		apiClient.SetAuth(state.Auth)
@@ -654,6 +663,19 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, camMgr *camera.Manager
 		entries := go2rtcmgr.ParseStreamAuth(cfg.StreamAuth)
 		configBuilder.SetStreamAuth(entries)
 		log.Info().Int("users", len(entries)).Msg("STREAM_AUTH configured")
+	}
+
+	// Pre-register Gwell P2P cameras as empty publish-only slots so
+	// go2rtc holds the stream name and accepts gwell-proxy's RTSP
+	// PUSH the moment it starts. Without this the push lands before
+	// the runtime AddStream and gets dropped ("broken pipe"). TUTK
+	// and WebRTC cameras get their real source URL via runtime
+	// AddStream from camera.Manager once they reach Connecting.
+	for _, cam := range camMgr.Cameras() {
+		info := cam.GetInfo()
+		if info.IsGwell() && !info.IsWebRTCStreamer() {
+			configBuilder.AddStream(go2rtcmgr.StreamEntry{Name: cam.Name()})
+		}
 	}
 
 	go2rtcConfigPath := cfg.StateDir + "/go2rtc.yaml"

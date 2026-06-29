@@ -42,6 +42,9 @@ func (c *Client) GetCameraKVSConfig(mac, model string) (*KVSStreamConfig, error)
 	if signalingURL == "" {
 		return nil, fmt.Errorf("get_streams: empty signaling_url")
 	}
+	// Wyze double-encodes the SigV4 query params on some cameras
+	// (LD_CFP); undo it or AWS KVS rejects the handshake with 403.
+	signalingURL = FixKVSSignalingURL(signalingURL)
 	authToken, _ := params["auth_token"].(string)
 
 	var ice []KVSIceServer

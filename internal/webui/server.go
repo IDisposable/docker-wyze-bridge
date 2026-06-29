@@ -57,9 +57,9 @@ type Server struct {
 	rootCtx       context.Context
 	onSnapReq     SnapshotRequester
 	onDiscoverReq DiscoverRequester
-	mars      MarsTokenMinter
-	kvs       KVSStreamProvider
-	issues    *issues.Registry // optional
+	mars          MarsTokenMinter
+	kvs           KVSStreamProvider
+	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup
 	// paths (bring-up before every subsystem wires in) stay legal.
 	recMgr   RecordingObserver

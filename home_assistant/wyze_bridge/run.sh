@@ -96,6 +96,45 @@ export_opt 'gwell.enabled'           GWELL_ENABLED
 export_opt 'debug.log_level'         LOG_LEVEL
 export_opt 'debug.force_iotc_detail' FORCE_IOTC_DETAIL
 
+# Gwell manual LAN IPs — fan the schema's [{mac, lan_ip}, ...] into the
+# GWELL_LAN_IPS env var ("MAC=IP,MAC=IP") the bridge reads at discovery.
+# Used by cameras whose LAN IP the Wyze cloud doesn't report (GW_DUO,
+# GW_WC). Both keys must be non-empty for the entry to apply.
+if bashio::config.has_value 'gwell.manual_ips'; then
+    joined=$(jq -r '.gwell.manual_ips[]? | select(.mac and .lan_ip and .mac != "" and .lan_ip != "") | "\(.mac)=\(.lan_ip)"' /data/options.json | paste -sd,)
+    if [ -n "$joined" ]; then
+        export GWELL_LAN_IPS="$joined"
+        bashio::log.info "Pinned LAN IPs for $(echo "$joined" | tr ',' '\n' | wc -l) Gwell cameras"
+    fi
+fi
+
+# Model registry overrides — fan [{model, name, is_*}, ...] into the
+# MODEL_OVERRIDES env var format (`MODEL:flag=v,flag=v;MODEL:...`).
+# Lets the user add a brand-new Wyze model code or flip routing flags
+# on an existing one without a bridge rebuild.
+if bashio::config.has_value 'models.overrides'; then
+    joined=$(jq -r '
+        .models.overrides[]?
+        | select(.model and .model != "")
+        | [
+            .model + ":"
+            + ([
+                (if .name           then "name="           + (.name|tostring)           else empty end),
+                (if .is_gwell != null     then "is_gwell="     + (.is_gwell|tostring)     else empty end),
+                (if .is_gwell_p2p != null then "is_gwell_p2p=" + (.is_gwell_p2p|tostring) else empty end),
+                (if .is_webrtc != null    then "is_webrtc="    + (.is_webrtc|tostring)    else empty end),
+                (if .is_pan != null       then "is_pan="       + (.is_pan|tostring)       else empty end),
+                (if .is_doorbell != null  then "is_doorbell="  + (.is_doorbell|tostring)  else empty end)
+            ] | join(","))
+          ]
+        | join("")
+    ' /data/options.json | paste -sd';')
+    if [ -n "$joined" ]; then
+        export MODEL_OVERRIDES="$joined"
+        bashio::log.info "Model registry overrides: $joined"
+    fi
+fi
+
 # ── Per-camera overrides ────────────────────────────────────────────────────
 # Fan camera.options[] out to QUALITY_<NAME>/AUDIO_<NAME>/RECORD_<NAME> env
 # vars that internal/config/yaml.go:loadCamOverrides consumes. Bashio has no
