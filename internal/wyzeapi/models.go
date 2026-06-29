@@ -45,11 +45,15 @@ var modelRegistry = map[string]ModelSpec{
 	"GW_DBD":         {Name: "Doorbell Duo", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
 	"GW_GC1":         {Name: "OG", IsGwell: true, IsGwellP2P: true},
 	"GW_GC2":         {Name: "OG 3X", IsGwell: true, IsGwellP2P: true},
-	"GW_DUO":         {Name: "Cam Pan Duo", IsGwell: true, IsGwellP2P: true},
+	"GW_WC":          {Name: "Window Cam", IsGwell: true, IsGwellP2P: true},
+	// GW_DUO: PR #118 hardware-verified WebRTC via mars-webcsrv (same as
+	// GW_BE1 Doorbell Pro). PR #116 had it as Gwell P2P; PR #118 wins
+	// because get_streams returns a wyze-mars-webcsrv signaling URL.
+	"GW_DUO": {Name: "Cam Pan Duo", IsWebRTCStreamer: true, IsPan: true},
 	"WVOD1":          {Name: "Outdoor"},
 	"HL_WCO2":        {Name: "Outdoor V2"},
 	"AN_RSCW":        {Name: "Battery Cam Pro"},
-	"LD_CFP":         {Name: "Floodlight Pro"},
+	"LD_CFP":         {Name: "Floodlight Pro", IsWebRTCStreamer: true},
 }
 
 // ModelSpecFor returns the registry entry for a model code, or the

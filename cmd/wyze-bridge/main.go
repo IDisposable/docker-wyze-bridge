@@ -118,6 +118,14 @@ func main() {
 	)
 
 	webuiLog := log.With().Str("c", "webui").Logger()
+	// Manual LAN IPs for Gwell cameras the Wyze cloud doesn't surface
+	// (e.g. Window Cams / GW_WC). Missing file is a no-op.
+	manualIPs, err := webui.LoadManualIPs(cfg.GwellManualIPs)
+	if err != nil {
+		log.Warn().Err(err).Str("path", cfg.GwellManualIPs).Msg("failed to load Gwell manual IPs; continuing without")
+	} else if len(manualIPs) > 0 {
+		log.Info().Int("count", len(manualIPs)).Str("path", cfg.GwellManualIPs).Msg("loaded Gwell manual LAN IPs")
+	}
 	webServer := webui.NewServer(webui.Options{
 		Config:    cfg,
 		CameraMgr: camMgr,
@@ -127,6 +135,7 @@ func main() {
 		Issues:    issueReg,
 		Mars:      apiClient,
 		KVS:       kvsAdapter{api: apiClient},
+		ManualIPs: manualIPs,
 		AuthPhoneID: func() string {
 			if a := apiClient.Auth(); a != nil {
 				return a.PhoneID

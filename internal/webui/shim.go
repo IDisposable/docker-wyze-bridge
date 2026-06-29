@@ -26,6 +26,13 @@ func (s *Server) SetMarsMinter(m MarsTokenMinter) {
 	s.mars = m
 }
 
+// SetManualIPs attaches operator-supplied LAN IPs (keyed by MAC) used
+// by the shim's DeviceInfo endpoint to override the empty LAN IP the
+// Wyze cloud returns for Gwell cameras. A nil/empty map is a no-op.
+func (s *Server) SetManualIPs(m ManualIPs) {
+	s.manualIPs = m
+}
+
 // Shim endpoints live under /internal/wyze/Camera/* and re-expose our
 // bridge's state in the shape the gwell-proxy subprocess expects
 // (matches wlatic/hacky-wyze-gwell's Python wyze-api wire format so
@@ -96,10 +103,22 @@ func (s *Server) handleShimDeviceInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := cam.GetInfo()
+	lanIP := info.LanIP
+	// Cloud returns "" for Gwell cams. If the operator pinned one
+	// via manual_ips.json, prefer it so gwell-proxy goes LAN-direct.
+	if manual := s.manualIPs.lookup(info.MAC); manual != "" {
+		s.log.Debug().
+			Str("cam", cam.Name()).
+			Str("mac", info.MAC).
+			Str("manual_ip", manual).
+			Str("cloud_ip", info.LanIP).
+			Msg("shim DeviceInfo: using manual LAN IP override")
+		lanIP = manual
+	}
 	writeJSON(w, map[string]string{
 		"cameraId":   info.MAC,
 		"streamName": cam.Name(),
-		"lanIp":      info.LanIP,
+		"lanIp":      lanIP,
 	})
 }
 

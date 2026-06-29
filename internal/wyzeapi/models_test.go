@@ -136,6 +136,59 @@ func TestCameraInfo_IsWebRTCStreamer(t *testing.T) {
 	}
 }
 
+func TestCameraInfo_WindowCam_IsLanDirectGwell(t *testing.T) {
+	// Wyze Window Cam (GW_WC) uses the same Gwell P2P stack as OG, but
+	// the cloud returns an empty LAN IP for it. Must stay LAN-direct
+	// Gwell (gwell-proxy), NOT misrouted to WebRTC by the "no LAN IP"
+	// heuristic.
+	wc := CameraInfo{Model: "GW_WC", LanIP: ""}
+	if !wc.IsGwell() {
+		t.Error("GW_WC should be Gwell")
+	}
+	if wc.IsWebRTCStreamer() {
+		t.Error("GW_WC with empty LAN IP must NOT be a WebRTC streamer (it is LAN-direct Gwell)")
+	}
+	if got, want := wc.ModelName(), "Window Cam"; got != want {
+		t.Errorf("ModelName(GW_WC) = %q, want %q", got, want)
+	}
+
+	// Regression guard: doorbell-lineage Gwell with empty LAN IP IS WebRTC.
+	db := CameraInfo{Model: "GW_BE1", LanIP: ""}
+	if !db.IsWebRTCStreamer() {
+		t.Error("GW_BE1 with empty LAN IP should remain a WebRTC streamer")
+	}
+}
+
+func TestCameraInfo_FloodlightPro_IsWebRTC(t *testing.T) {
+	// Floodlight Pro (LD_CFP) is NOT Gwell — Wyze serves it over AWS KVS
+	// WebRTC. Must route to WebRTC, not TUTK or Gwell.
+	fl := CameraInfo{Model: "LD_CFP", LanIP: ""}
+	if fl.IsGwell() {
+		t.Error("LD_CFP must not be classified as Gwell")
+	}
+	if !fl.IsWebRTCStreamer() {
+		t.Error("LD_CFP should be a WebRTC streamer")
+	}
+	if got, want := fl.ModelName(), "Floodlight Pro"; got != want {
+		t.Errorf("ModelName(LD_CFP) = %q, want %q", got, want)
+	}
+}
+
+func TestCameraInfo_PanDuo_IsWebRTC(t *testing.T) {
+	// Cam Pan Duo (GW_DUO) streams over WebRTC via mars-webcsrv (same
+	// as Doorbell Pro). NOT Gwell-P2P, NOT TUTK.
+	pd := CameraInfo{Model: "GW_DUO", LanIP: ""}
+	if pd.IsGwell() {
+		t.Error("GW_DUO must not be classified as Gwell")
+	}
+	if !pd.IsWebRTCStreamer() {
+		t.Error("GW_DUO should be a WebRTC streamer")
+	}
+	if got, want := pd.ModelName(), "Cam Pan Duo"; got != want {
+		t.Errorf("ModelName(GW_DUO) = %q, want %q", got, want)
+	}
+}
+
 func TestCameraInfo_IsPanCam(t *testing.T) {
 	pan := CameraInfo{Model: "HL_PAN3"}
 	if !pan.IsPanCam() {

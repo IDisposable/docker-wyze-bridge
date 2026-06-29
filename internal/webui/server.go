@@ -57,9 +57,10 @@ type Server struct {
 	rootCtx       context.Context
 	onSnapReq     SnapshotRequester
 	onDiscoverReq DiscoverRequester
-	mars      MarsTokenMinter
-	kvs       KVSStreamProvider
-	issues    *issues.Registry // optional
+	mars          MarsTokenMinter
+	manualIPs     ManualIPs // operator-supplied LAN IPs for Gwell cams (may be nil)
+	kvs           KVSStreamProvider
+	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup
 	// paths (bring-up before every subsystem wires in) stay legal.
 	recMgr   RecordingObserver
@@ -126,6 +127,7 @@ type Options struct {
 	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
 	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
 	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
+	ManualIPs   ManualIPs            // optional; LAN IPs for Gwell cams the cloud doesn't report
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics
@@ -144,6 +146,7 @@ func NewServer(opts Options) *Server {
 		mars:        opts.Mars,
 		kvs:         opts.KVS,
 		authPhoneID: opts.AuthPhoneID,
+		manualIPs:   opts.ManualIPs,
 	}
 	if s.rootCtx == nil {
 		s.rootCtx = context.Background()

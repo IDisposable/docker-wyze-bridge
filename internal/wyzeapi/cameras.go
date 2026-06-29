@@ -2,10 +2,35 @@ package wyzeapi
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 )
+
+// FixKVSSignalingURL works around Wyze's get_streams double-encoding
+// the AWS SigV4 query parameters in the KVS WebRTC signaling URL for
+// some cameras (observed on the LD_CFP Floodlight Pro): the slashes
+// /colons in X-Amz-Credential, X-Amz-ChannelARN, X-Amz-Security-Token
+// come back as %252F/%253A/%252B instead of %2F/%3A/%2B. Sent
+// verbatim, AWS rejects the websocket handshake with 403 "Credential
+// must have exactly 5 slash-delimited elements".
+//
+// The tell-tale is a literal %25 (an encoded percent) — correctly
+// single-encoded presigned URLs never contain one. When present,
+// PathUnescape removes exactly one layer (and unlike QueryUnescape
+// leaves '+' alone so base64 tokens survive). Otherwise the URL is
+// returned untouched so non-double-encoded cameras (Doorbell Pro)
+// stay correct.
+func FixKVSSignalingURL(u string) string {
+	if !strings.Contains(u, "%25") {
+		return u
+	}
+	if dec, err := url.PathUnescape(u); err == nil {
+		return dec
+	}
+	return u
+}
 
 // GetCameraList fetches the list of cameras from the Wyze API.
 func (c *Client) GetCameraList() ([]CameraInfo, error) {
@@ -111,14 +136,20 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 		//  - TUTK cameras: need P2PID + LanIP + ENR + MAC + Model.
 		//    LanIP comes straight from the Wyze cloud response and is
 		//    non-empty for online cameras.
-		//  - Gwell cameras (GW_BE1/GC1/GC2/DBD): Wyze returns an empty
-		//    LanIP for these — the actual IP is recovered by the proxy
-		//    during P2P discovery. P2PID is just the device MAC echoed
-		//    back. Require MAC + ENR + Model only.
+		//  - Gwell cameras (GW_BE1/GC1/GC2/DBD/WC): Wyze returns an empty
+		//    LanIP — the actual IP is recovered by the proxy during P2P
+		//    discovery. P2PID is just the device MAC echoed back. Require
+		//    MAC + ENR + Model only.
+		//  - WebRTC/KVS cameras (LD_CFP Floodlight Pro, GW_BE1/DBD/AN_RDB1):
+		//    Wyze serves them per-session via get_streams; no LAN IP or
+		//    useful P2PID. Require MAC + Model only.
 		var missing bool
-		if cam.IsGwell() {
+		switch {
+		case cam.IsGwell():
 			missing = cam.MAC == "" || cam.ENR == "" || cam.Model == ""
-		} else {
+		case cam.IsWebRTCStreamer():
+			missing = cam.MAC == "" || cam.Model == ""
+		default:
 			missing = cam.P2PID == "" || cam.LanIP == "" || cam.ENR == "" || cam.MAC == "" || cam.Model == ""
 		}
 		if missing {

@@ -146,6 +146,28 @@ func TestShim_DeviceInfo_CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestShim_DeviceInfo_ManualIPOverride(t *testing.T) {
+	srv, _ := testServer(t)
+	// A Window Cam with no cloud LAN IP (the real-world case for GW_WC).
+	cam := camera.NewCamera(wyzeapi.CameraInfo{
+		Name: "kitchen_window", Model: "GW_WC", MAC: "80482CB9EF6E", LanIP: "",
+	}, "hd", true, false)
+	srv.camMgr.InjectCamera("kitchen_window", cam)
+	srv.SetManualIPs(ManualIPs{"80482CB9EF6E": "192.168.1.51"})
+
+	w := httptest.NewRecorder()
+	srv.handleShimDeviceInfo(w, newShimReq("GET", "/internal/wyze/Camera/DeviceInfo?deviceId=80482CB9EF6E"))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&got)
+	if got["lanIp"] != "192.168.1.51" {
+		t.Errorf("lanIp = %q, want manual override 192.168.1.51", got["lanIp"])
+	}
+}
+
 func TestShim_DeviceInfo_NotFound(t *testing.T) {
 	srv, _ := testServer(t)
 	w := httptest.NewRecorder()
