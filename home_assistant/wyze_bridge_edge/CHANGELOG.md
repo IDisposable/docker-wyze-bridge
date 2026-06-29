@@ -1,5 +1,76 @@
 # Changelog
 
+## 4.4.0-edge
+
+Code-review pass: hardening, parity, observability, docs, and tests across
+the bridge. CI appends the timestamp suffix on each dev push (e.g.
+`4.4.0-edge.20260629.0400`).
+
+### Added
+
+- **AN_RDB1 (Doorbell Pro 2)** routed to the WebRTC path (was silently
+	falling through to TUTK)
+- Single `ModelSpec` registry in `internal/wyzeapi/models.go` replaces
+	five hardcoded maps; adding a new camera = one row
+- `DEVELOPER.md` "Adding a new camera model" section
+- `DOCS/GW_BE1_Research.md` capturing pcap-based Doorbell Pro protocol notes
+- Atomic state-file writes (write-to-temp + rename) under a write mutex
+- Wyze API auth-lifecycle observer wires failures + recoveries to the
+	issues registry (visible on `/metrics`, `/api/health`,
+	`sensor.wyze_bridge_config_errors`)
+- Chronic camera-error reporting: >10 consecutive failed connects on a
+	camera posts a `camera/chronic/<name>` issue; cleared on next stream
+- MQTT publish backpressure: bounded waiter pool prevents goroutine leak
+	when the broker is unreachable; loud-then-rate-limited drop log
+- Graceful ffmpeg recorder shutdown (SIGINT + `WaitDelay`) — last mp4
+	segment finalizes cleanly instead of being SIGKILL-truncated
+- README "Issues registry" subsection explaining `config_errors`, active
+	categories, and the three surfaces that show them
+- Actionable hints for known Wyze API response codes (1001 bad creds,
+	1003 bad API key, 2001 token expired, 3019 MFA, …)
+- Network-error classifier distinguishes DNS / timeout / `OpError` from
+	generic transport failures; HTTP 5xx / 429 / 401-403 render with text
+	the operator can act on
+- `/metrics` page: per-section legend captions + hover tooltips on every
+	column header and summary tile
+- Typed `wyzeapi.GetCameraKVSConfig` extracted from the previous raw-map
+	parsing; `cmd/wyze-bridge/main.go`'s `kvsAdapter` shrunk to a 6-line
+	type conversion
+- Smoke tests for webui surfaces (`prometheus`, `dashboard`, `metrics`
+	page+JSON, route table, HLS / WS proxy)
+- `mqtt.Client` tests (constructor defaults, callback registration,
+	`publishSem` saturation)
+- Deeper `/api/*` tests (audio toggle, quality validation, record
+	start/stop, `/api/discover` no-hook / GET-405 / with-hook, health
+	degraded mode with a real Issue, KVS shim happy path + non-WebRTC
+	rejection)
+
+### Changed
+
+- `webui.NewServer` takes an `Options` struct; drops `SetRootContext`,
+	`SetIssuesRegistry`, `SetAuthPhoneIDFn` setters (kept
+	`SetMarsMinter`/`SetKVSProvider` for test reuse)
+- `mqtt.NewClient` is ctx-first (drops `SetRootContext`)
+- `cmd/wyze-bridge/main.go`'s `wireCameraStateChanges` split into
+	`autoToggleRecording` / `recordStateEvent` / `pushStateSSE` /
+	`publishStateMQTT` / `sendStateWebhook` / `persistState` helpers
+- `mqtt.Client` and `webui.Server` propagate the bridge's signal-
+	cancellable root context to fire-and-forget handler goroutines
+	(replaces orphaned `context.Background()`)
+- `issues.Registry` methods are nil-safe (callers no longer guard with
+	`if r != nil`)
+- `/api/*` errors return JSON `{"error":"…"}` via `writeJSONError` for a
+	consistent error shape
+- Doorbell labels aligned with Wyze marketing names ("Wyze Video
+	Doorbell Pro" / "Pro 2" / "Duo")
+- `.env.dev.example` aligned with current env-var names (`WB_IP` →
+	`BRIDGE_IP`, `TOTP_KEY` → `WYZE_TOTP_KEY`, `IMG_DIR` removed)
+- `DOCS/DESIGN.md` MQTT topic table synced (added `state/set`,
+	`power/set`, the cloud-set properties: `irled`, `status_light`,
+	`motion_detection`, `motion_tagging`, `hor_flip`, `ver_flip`,
+	`bitrate`, `fps`)
+- In-code comments tightened (terse, present-tense)
+
 ## 4.3.0
 
 MQTT Phase 1 release focused on control parity improvements with the legacy bridge,
