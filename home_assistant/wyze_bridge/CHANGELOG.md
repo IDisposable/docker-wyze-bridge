@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 4.4.0
 
 Code-review pass + community PRs: hardening, parity, observability,
 new camera models, and tests across the bridge.
