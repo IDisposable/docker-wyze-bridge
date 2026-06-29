@@ -14,6 +14,11 @@ type ModelSpec struct {
 	// IsGwell: uses Wyze's Gwell/IoTVideo control plane. Doorbell-
 	// lineage Gwell models also set IsWebRTCStreamer; OG models don't.
 	IsGwell bool
+	// IsGwellP2P: OG-family Gwell models that always stream via
+	// gwell-proxy on the LAN, even when the Wyze cloud reports an
+	// empty LAN IP. Pinned so they don't fall into the WebRTC
+	// fallback path that's meant for doorbell-lineage models.
+	IsGwellP2P bool
 	// IsWebRTCStreamer: streams via Wyze's mars-webcsrv KVS signaling
 	// (go2rtc's native #format=wyze source).
 	IsWebRTCStreamer bool
@@ -38,8 +43,8 @@ var modelRegistry = map[string]ModelSpec{
 	"GW_BE1":         {Name: "Doorbell Pro", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
 	"AN_RDB1":        {Name: "Doorbell Pro 2", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
 	"GW_DBD":         {Name: "Doorbell Duo", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
-	"GW_GC1":         {Name: "OG", IsGwell: true},
-	"GW_GC2":         {Name: "OG 3X", IsGwell: true},
+	"GW_GC1":         {Name: "OG", IsGwell: true, IsGwellP2P: true},
+	"GW_GC2":         {Name: "OG 3X", IsGwell: true, IsGwellP2P: true},
 	"WVOD1":          {Name: "Outdoor"},
 	"HL_WCO2":        {Name: "Outdoor V2"},
 	"AN_RSCW":        {Name: "Battery Cam Pro"},
@@ -86,17 +91,24 @@ func (c CameraInfo) IsGwell() bool {
 	return modelRegistry[c.Model].IsGwell
 }
 
+// IsGwellP2P returns true for OG-family cameras that always stream
+// via gwell-proxy, even when the cloud reports an empty LAN IP.
+func (c CameraInfo) IsGwellP2P() bool {
+	return modelRegistry[c.Model].IsGwellP2P
+}
+
 // IsWebRTCStreamer returns true when this camera streams via Wyze's
 // WebRTC path (served by go2rtc's native #format=wyze source). True
 // either because the model is explicitly flagged in the registry,
-// or because it's a Gwell model the cloud reports without a LAN IP
-// (a reliable runtime signal for the doorbell lineage).
+// or because it's a non-OG Gwell model the cloud reports without a
+// LAN IP (a reliable runtime signal for the doorbell lineage). OG
+// models are excluded — gwell-proxy discovers their LAN IP over P2P.
 func (c CameraInfo) IsWebRTCStreamer() bool {
 	spec := modelRegistry[c.Model]
 	if spec.IsWebRTCStreamer {
 		return true
 	}
-	if spec.IsGwell && (c.LanIP == "" || c.LanIP == "0.0.0.0") {
+	if spec.IsGwell && !spec.IsGwellP2P && (c.LanIP == "" || c.LanIP == "0.0.0.0") {
 		return true
 	}
 	return false

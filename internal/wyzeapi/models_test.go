@@ -92,6 +92,50 @@ func TestCameraInfo_IsGwell(t *testing.T) {
 	}
 }
 
+func TestCameraInfo_IsGwellP2P(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"GW_GC1", true},
+		{"GW_GC2", true},
+		{"GW_BE1", false},
+		{"GW_DBD", false},
+		{"HL_CAM4", false},
+	}
+	for _, tt := range tests {
+		cam := CameraInfo{Model: tt.model}
+		if got := cam.IsGwellP2P(); got != tt.want {
+			t.Errorf("IsGwellP2P(%q) = %v, want %v", tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestCameraInfo_IsWebRTCStreamer(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		ip    string
+		want  bool
+	}{
+		{"doorbell pro always webrtc", "GW_BE1", "", true},
+		{"doorbell duo always webrtc", "GW_DBD", "10.0.0.1", true},
+		{"OG with LAN IP is gwell p2p", "GW_GC1", "10.0.0.7", false},
+		{"OG with empty IP is still gwell p2p", "GW_GC1", "", false},
+		{"OG 3X with empty IP is still gwell p2p", "GW_GC2", "", false},
+		{"OG with 0.0.0.0 is still gwell p2p", "GW_GC1", "0.0.0.0", false},
+		{"TUTK camera is not webrtc", "HL_CAM4", "10.0.0.5", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cam := CameraInfo{Model: tt.model, LanIP: tt.ip}
+			if got := cam.IsWebRTCStreamer(); got != tt.want {
+				t.Errorf("IsWebRTCStreamer() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCameraInfo_IsPanCam(t *testing.T) {
 	pan := CameraInfo{Model: "HL_PAN3"}
 	if !pan.IsPanCam() {
