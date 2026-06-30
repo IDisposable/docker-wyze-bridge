@@ -6,7 +6,7 @@ description: >-
 slug: wyze_bridge_edge
 url: https://github.com/IDisposable/docker-wyze-bridge/tree/dev
 image: ghcr.io/idisposable/docker-wyze-bridge-homeassistant-edge
-version: 4.4.0-edge.20260701.0028
+version: 4.5.0-edge
 stage: experimental
 arch:
   - amd64

@@ -101,22 +101,34 @@ jobs:
             echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Both channels build go2rtc from the fork: dev -> edge branch,
+      # main/tags -> master.
+      - name: Determine go2rtc branch
+        id: go2rtc
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/dev ]]; then
+            echo "ref=edge" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=master" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           push: ${{ github.event_name != 'pull_request' }}
           context: .
           file: ./docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
+            GO2RTC_REF=${{ steps.go2rtc.outputs.ref }}
           labels: |
             ${{ steps.meta.outputs.labels }}
             io.hass.name=Wyze Bridge
             io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras
             io.hass.version=${{ steps.version.outputs.version }}
             io.hass.type=addon
-            io.hass.arch=amd64,aarch64
+            io.hass.arch=amd64,aarch64,armv7
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -168,6 +180,7 @@ jobs:
           push: true
           context: ./home_assistant/wyze_bridge
           file: ./home_assistant/wyze_bridge/Dockerfile
+          # ghcr.io/home-assistant/base has no armv7 manifest.
           platforms: linux/amd64,linux/arm64
           build-args: |
             WYZE_BRIDGE_IMAGE=${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
@@ -252,6 +265,7 @@ jobs:
           push: true
           context: ./home_assistant/wyze_bridge_edge
           file: ./home_assistant/wyze_bridge_edge/Dockerfile
+          # ghcr.io/home-assistant/base has no armv7 manifest.
           platforms: linux/amd64,linux/arm64
           build-args: |
             WYZE_BRIDGE_IMAGE=${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}

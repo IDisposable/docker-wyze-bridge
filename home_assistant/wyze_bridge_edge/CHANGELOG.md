@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.5.0-edge
+
+Changed to use a private build of go2rtc
+
 ## 4.4.1-edge
 
 Hotfix for [#119](https://github.com/IDisposable/docker-wyze-bridge/issues/119):

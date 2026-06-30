@@ -23,40 +23,27 @@ export SNAPSHOT_PATH="${SNAPSHOT_PATH:-$DEFAULT_SNAPSHOT_PATH}"
 export RECORD_PATH="${RECORD_PATH:-$DEFAULT_RECORD_PATH}"
 mkdir -p "$STATE_DIR" "$ROOT/local/snapshots" "$ROOT/local/recordings"
 
-# Fetch go2rtc binary to the repo root on first run. Version is read from
-# docker/Dockerfile so container and local dev stay in lockstep — that
-# ARG is the single source of truth. findGo2RTCBinary() in
-# cmd/wyze-bridge/main.go checks ./go2rtc[.exe] before falling back to
-# PATH, so this drops in without any env var.
-GO2RTC_VERSION="$(sed -n 's/^ARG GO2RTC_VERSION=\(.*\)$/\1/p' "$ROOT/docker/Dockerfile" | head -1)"
-if [ -z "$GO2RTC_VERSION" ]; then
-    echo "cycle.sh: could not extract GO2RTC_VERSION from docker/Dockerfile" >&2
+# Build go2rtc to the repo root on first run from the fork. Repo/branch
+# default to the docker/Dockerfile ARGs (stable = master); override with
+# GO2RTC_REF=edge ./cycle.sh to test the edge branch. findGo2RTCBinary() in
+# cmd/wyze-bridge/main.go prefers ./go2rtc[.exe]. Delete the binary to refresh.
+dockerfile_arg() { sed -n "s/^ARG $1=\(.*\)\$/\1/p" "$ROOT/docker/Dockerfile" | head -1; }
+GO2RTC_REPO="$(dockerfile_arg GO2RTC_REPO)"
+GO2RTC_REF="${GO2RTC_REF:-$(dockerfile_arg GO2RTC_REF)}"
+if [ -z "$GO2RTC_REPO" ] || [ -z "$GO2RTC_REF" ]; then
+    echo "cycle.sh: could not extract GO2RTC_REPO/GO2RTC_REF from docker/Dockerfile" >&2
     exit 1
 fi
 case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) GO2RTC_ASSET="go2rtc_win64.exe"; GO2RTC_BIN="$ROOT/go2rtc.exe" ;;
-    Linux)
-        case "$(uname -m)" in
-            x86_64)         GO2RTC_ASSET="go2rtc_linux_amd64" ;;
-            aarch64|arm64)  GO2RTC_ASSET="go2rtc_linux_arm64" ;;
-            armv7l)         GO2RTC_ASSET="go2rtc_linux_arm" ;;
-            *)              echo "cycle.sh: unsupported Linux arch $(uname -m)"; exit 1 ;;
-        esac
-        GO2RTC_BIN="$ROOT/go2rtc" ;;
-    Darwin)
-        case "$(uname -m)" in
-            x86_64) GO2RTC_ASSET="go2rtc_mac_amd64" ;;
-            arm64)  GO2RTC_ASSET="go2rtc_mac_arm64" ;;
-        esac
-        GO2RTC_BIN="$ROOT/go2rtc" ;;
-    *) echo "cycle.sh: unsupported OS $(uname -s)"; exit 1 ;;
+    MINGW*|MSYS*|CYGWIN*) GO2RTC_BIN="$ROOT/go2rtc.exe" ;;
+    *)                    GO2RTC_BIN="$ROOT/go2rtc" ;;
 esac
 if [ ! -f "$GO2RTC_BIN" ]; then
-    echo "Downloading go2rtc v${GO2RTC_VERSION} (${GO2RTC_ASSET})..."
-    curl -fsSL \
-      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/${GO2RTC_ASSET}" \
-      -o "$GO2RTC_BIN"
-    chmod +x "$GO2RTC_BIN"
+    echo "Building go2rtc (${GO2RTC_REF}) from ${GO2RTC_REPO}..."
+    GO2RTC_SRC="$(mktemp -d)"
+    git clone --depth 1 -b "$GO2RTC_REF" "$GO2RTC_REPO" "$GO2RTC_SRC"
+    ( cd "$GO2RTC_SRC" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$GO2RTC_BIN" )
+    rm -rf "$GO2RTC_SRC"
 fi
 
 # Fast path: just run tests. Set COVERAGE=1 to also emit coverage.html.

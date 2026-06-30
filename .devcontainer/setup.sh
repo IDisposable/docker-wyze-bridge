@@ -11,12 +11,19 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 cd /workspaces/docker-wyze-bridge
 go mod download
 
-# Verify go2rtc is available
-if command -v go2rtc &>/dev/null; then
-    echo "go2rtc: $(go2rtc --version 2>&1 || echo 'installed')"
-else
-    echo "WARNING: go2rtc not found"
-fi
+# Build go2rtc from the fork (repo/branch from docker/Dockerfile ARGs) so the
+# dev container matches the image. Produces ./go2rtc (preferred by
+# findGo2RTCBinary) and the matching video-rtc.js. Override with GO2RTC_REF.
+GO2RTC_ROOT="$PWD"
+GO2RTC_REPO="$(sed -n 's/^ARG GO2RTC_REPO=\(.*\)$/\1/p' docker/Dockerfile | head -1)"
+GO2RTC_REF="${GO2RTC_REF:-$(sed -n 's/^ARG GO2RTC_REF=\(.*\)$/\1/p' docker/Dockerfile | head -1)}"
+echo "Building go2rtc (${GO2RTC_REF}) from ${GO2RTC_REPO}..."
+GO2RTC_SRC="$(mktemp -d)"
+git clone --depth 1 -b "$GO2RTC_REF" "$GO2RTC_REPO" "$GO2RTC_SRC"
+( cd "$GO2RTC_SRC" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$GO2RTC_ROOT/go2rtc" )
+cp "$GO2RTC_SRC/www/video-rtc.js" "$GO2RTC_ROOT/internal/webui/static/video-rtc.js"
+rm -rf "$GO2RTC_SRC"
+echo "go2rtc + video-rtc.js built from ${GO2RTC_REF}"
 
 # Create local dirs if not present
 mkdir -p local/config local/img
@@ -36,15 +43,6 @@ fi
 if ! grep -q 'gpgconf --launch gpg-agent' /home/vscode/.bashrc; then
     echo 'gpgconf --launch gpg-agent >/dev/null 2>&1 || true' >> /home/vscode/.bashrc
 fi
-
-# Fetch the real video-rtc.js from go2rtc (overwrites the placeholder stub).
-# The Docker build does this at build time; for dev we do it here.
-GO2RTC_VERSION=1.9.14
-echo "Fetching video-rtc.js from go2rtc v${GO2RTC_VERSION}..."
-curl -fsSL "https://github.com/AlexxIT/go2rtc/raw/v${GO2RTC_VERSION}/www/video-rtc.js" \
-    -o internal/webui/static/video-rtc.js \
-    && echo "video-rtc.js installed" \
-    || echo "WARNING: could not fetch video-rtc.js (WebRTC player will not work)"
 
 # Remind about .env.dev
 if [ ! -f .env.dev ]; then
@@ -75,7 +73,10 @@ if command -v git &>/dev/null && command -v ssh-add &>/dev/null; then
     fi
 
     if [[ "$has_gpg_secret_key" == false ]]; then
-        existing_signing_key="$(git config --local --get user.signingkey || true)"
+        # Check the effective key (local OR global). The global config already
+        # signs with a portable ~/.ssh key that resolves in both the container
+        # and the Windows host, so don't clobber it with an absolute local path.
+        existing_signing_key="$(git config --get user.signingkey || true)"
         if [[ -z "$existing_signing_key" ]]; then
             ssh_pub_key=""
             for candidate in /home/vscode/.ssh/id_ed25519.pub /home/vscode/.ssh/id_ecdsa.pub /home/vscode/.ssh/id_rsa.pub; do
@@ -94,7 +95,7 @@ if command -v git &>/dev/null && command -v ssh-add &>/dev/null; then
                 echo "No GPG secret key found and no SSH public key file found for fallback signing."
             fi
         else
-            echo "Existing local user.signingkey detected; leaving signing config unchanged."
+            echo "Existing signing key detected ($existing_signing_key); leaving signing config unchanged."
         fi
     fi
 fi

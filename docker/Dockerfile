@@ -1,20 +1,25 @@
-# ── Stage 1: Fetch go2rtc binary + video-rtc.js ─────────────────────────────
-FROM alpine:3.21 AS go2rtc-fetch
-ARG GO2RTC_VERSION=1.9.14
+# ── Stage 1: Build go2rtc from the fork + provide video-rtc.js ──────────────
+# Both channels build from the IDisposable fork; only the branch differs.
+# Stable (default): master, kept in sync with upstream. Edge: GO2RTC_REF=edge.
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS go2rtc-fetch
+ARG GO2RTC_REPO=https://github.com/IDisposable/go2rtc
+ARG GO2RTC_REF=master
+ARG TARGETOS
 ARG TARGETARCH
-RUN apk add --no-cache curl ca-certificates && \
-    ARCH=${TARGETARCH}; \
-    if [ "$ARCH" = "arm" ]; then ARCH="arm"; fi; \
-    curl -fsSL \
-      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_${ARCH}" \
-      -o /go2rtc && \
-    chmod +x /go2rtc && \
-    curl -fsSL \
-      "https://github.com/AlexxIT/go2rtc/raw/v${GO2RTC_VERSION}/www/video-rtc.js" \
-      -o /video-rtc.js
+ARG TARGETVARIANT
+RUN apk add --no-cache git ca-certificates
+RUN git clone --depth 1 -b "${GO2RTC_REF}" "${GO2RTC_REPO}" /src && cd /src && \
+    case "${TARGETVARIANT}" in v7) GOARM=7 ;; *) GOARM= ;; esac && \
+    CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH}" GOARM="${GOARM}" \
+      go build -trimpath -ldflags="-s -w" -o /go2rtc && \
+    cp /src/www/video-rtc.js /video-rtc.js
 
 # ── Stage 2: Build Go binary ──────────────────────────────────────────────────
-FROM golang:1.26.4-alpine AS builder
+# Cross-compile from the native build platform (no QEMU) to the target arch.
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -23,7 +28,8 @@ COPY . .
 # Replace placeholder video-rtc.js with real one before embedding
 COPY --from=go2rtc-fetch /video-rtc.js ./internal/webui/static/video-rtc.js
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux \
+RUN case "$TARGETVARIANT" in v7) GOARM=7 ;; *) GOARM= ;; esac && \
+    CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="$TARGETARCH" GOARM="$GOARM" \
     go build -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /wyze-bridge ./cmd/wyze-bridge
 
@@ -33,7 +39,8 @@ RUN CGO_ENABLED=0 GOOS=linux \
 # handled by go2rtc's native `#format=wyze` source type — no sidecar
 # there, just a shim handler in internal/webui/shim_kvs.go that feeds
 # go2rtc the Wyze KVS signaling URL + ICE servers.
-RUN CGO_ENABLED=0 GOOS=linux \
+RUN case "$TARGETVARIANT" in v7) GOARM=7 ;; *) GOARM= ;; esac && \
+    CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="$TARGETARCH" GOARM="$GOARM" \
     go build -ldflags="-s -w" \
     -o /gwell-proxy ./cmd/gwell-proxy
 
