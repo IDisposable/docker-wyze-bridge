@@ -81,11 +81,21 @@ func TestCameraInfo_ModelName(t *testing.T) {
 }
 
 func TestCameraInfo_IsGwell(t *testing.T) {
-	gwell := CameraInfo{Model: "GW_GC1"}
+	// Doorbell-lineage Gwell models still carry IsGwell.
+	gwell := CameraInfo{Model: "GW_BE1"}
 	if !gwell.IsGwell() {
-		t.Error("GW_GC1 should be Gwell")
+		t.Error("GW_BE1 should be Gwell")
 	}
-
+	// LAN-direct Gwell (Window Cam) still carries IsGwell.
+	wc := CameraInfo{Model: "GW_WC"}
+	if !wc.IsGwell() {
+		t.Error("GW_WC should be Gwell")
+	}
+	// OG cameras default to WebRTC now — no longer Gwell by default.
+	og := CameraInfo{Model: "GW_GC1"}
+	if og.IsGwell() {
+		t.Error("GW_GC1 should default to WebRTC, not Gwell")
+	}
 	normal := CameraInfo{Model: "HL_CAM4"}
 	if normal.IsGwell() {
 		t.Error("HL_CAM4 should not be Gwell")
@@ -97,8 +107,9 @@ func TestCameraInfo_IsGwellP2P(t *testing.T) {
 		model string
 		want  bool
 	}{
-		{"GW_GC1", true},
-		{"GW_GC2", true},
+		{"GW_WC", true},
+		{"GW_GC1", false}, // now defaults to WebRTC
+		{"GW_GC2", false}, // now defaults to WebRTC
 		{"GW_BE1", false},
 		{"GW_DBD", false},
 		{"HL_CAM4", false},
@@ -120,10 +131,10 @@ func TestCameraInfo_IsWebRTCStreamer(t *testing.T) {
 	}{
 		{"doorbell pro always webrtc", "GW_BE1", "", true},
 		{"doorbell duo always webrtc", "GW_DBD", "10.0.0.1", true},
-		{"OG with LAN IP is gwell p2p", "GW_GC1", "10.0.0.7", false},
-		{"OG with empty IP is still gwell p2p", "GW_GC1", "", false},
-		{"OG 3X with empty IP is still gwell p2p", "GW_GC2", "", false},
-		{"OG with 0.0.0.0 is still gwell p2p", "GW_GC1", "0.0.0.0", false},
+		{"OG defaults to webrtc regardless of LAN IP", "GW_GC1", "10.0.0.7", true},
+		{"OG with empty IP is webrtc", "GW_GC1", "", true},
+		{"OG 3X with empty IP is webrtc", "GW_GC2", "", true},
+		{"OG with 0.0.0.0 is webrtc", "GW_GC1", "0.0.0.0", true},
 		{"TUTK camera is not webrtc", "HL_CAM4", "10.0.0.5", false},
 	}
 	for _, tt := range tests {

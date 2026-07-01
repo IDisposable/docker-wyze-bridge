@@ -11,24 +11,25 @@ import (
 // All stream registration goes through go2rtc's HTTP API (AddStream).
 // Source URL depends on protocol:
 //   - TUTK: wyze:// — go2rtc dials the camera directly.
-//   - OG Gwell (LAN-direct): empty URL → publish-only slot that
-//     gwell-proxy RTSP-PUSHes into.
-//   - WebRTC (GW_BE1 / GW_DBD / no-LAN-IP Gwell): webrtc:…#format=wyze
-//     — go2rtc's native handler runs the KVS signaling dance itself.
+//   - Gwell P2P (LAN-direct, Window Cam): empty URL → publish-only
+//     slot that gwell-proxy RTSP-PUSHes into.
+//   - WebRTC (GW_BE1 / GW_DBD / GW_GC1/GC2 / no-LAN-IP Gwell):
+//     webrtc:…#format=wyze — go2rtc's native handler runs the KVS
+//     signaling dance itself.
 // When GWELL_ENABLED=false, Gwell cameras are filtered out in Discover
 // so they never enter the registry.
 
-func TestManager_GwellOGCamera_RegistersPublishOnlySlot(t *testing.T) {
+func TestManager_GwellP2PCamera_RegistersPublishOnlySlot(t *testing.T) {
 	mgr, go2rtcAPI := newTestManager(t)
 	mgr.cfg.GwellEnabled = true
 
 	cam := NewCamera(wyzeapi.CameraInfo{
-		Name:  "og_cam",
+		Name:  "window_cam",
 		MAC:   "AABBCCDDEE01",
-		Model: "GW_GC1",
-		LanIP: "10.0.0.7", // has a LAN IP → not a WebRTC streamer
+		Model: "GW_WC",
+		LanIP: "10.0.0.7",
 	}, "hd", true, false)
-	mgr.cameras["og_cam"] = cam
+	mgr.cameras["window_cam"] = cam
 
 	mgr.connectCamera(context.Background(), cam)
 
@@ -36,37 +37,38 @@ func TestManager_GwellOGCamera_RegistersPublishOnlySlot(t *testing.T) {
 		t.Errorf("state = %v, want Streaming (slot registered, awaiting gwell-proxy publish)", cam.GetState())
 	}
 
-	// OG camera slot is registered via AddStream with an empty source
+	// Gwell P2P slot is registered via AddStream with an empty source
 	// URL so gwell-proxy's ffmpeg RTSP PUBLISH has a named target.
 	streams, _ := go2rtcAPI.ListStreams(context.Background())
-	if _, has := streams["og_cam"]; !has {
-		t.Error("OG Gwell camera should have been registered via AddStream (publish-only slot)")
+	if _, has := streams["window_cam"]; !has {
+		t.Error("Gwell P2P camera should have been registered via AddStream (publish-only slot)")
 	}
 }
 
-func TestManager_GwellOGCamera_EmptyLanIP_StillRegistersPublishOnlySlot(t *testing.T) {
-	// OG cameras route through gwell-proxy even when Wyze cloud reports
-	// empty LAN IP — gwell-proxy discovers the IP via P2P independently.
+func TestManager_OGCamera_UsesWebRTCPath(t *testing.T) {
+	// OG cameras (GW_GC1/GC2) default to WebRTC via mars-webcsrv, so
+	// connectCamera should register a webrtc:…#format=wyze source
+	// rather than a publish-only Gwell slot.
 	mgr, go2rtcAPI := newTestManager(t)
 	mgr.cfg.GwellEnabled = true
 
 	cam := NewCamera(wyzeapi.CameraInfo{
-		Name:  "og_no_ip",
+		Name:  "og_cam",
 		MAC:   "AABBCCDDEE03",
 		Model: "GW_GC1",
-		LanIP: "", // empty — Wyze cloud doesn't always report OG LAN IPs
+		LanIP: "",
 	}, "hd", true, false)
-	mgr.cameras["og_no_ip"] = cam
+	mgr.cameras["og_cam"] = cam
 
 	mgr.connectCamera(context.Background(), cam)
 
 	if cam.GetState() != StateStreaming {
-		t.Errorf("state = %v, want Streaming (OG with empty IP should still use gwell)", cam.GetState())
+		t.Errorf("state = %v, want Streaming (OG on WebRTC)", cam.GetState())
 	}
 
 	streams, _ := go2rtcAPI.ListStreams(context.Background())
-	if _, has := streams["og_no_ip"]; !has {
-		t.Error("OG Gwell camera with empty LAN IP should have been registered via AddStream (publish-only slot)")
+	if _, has := streams["og_cam"]; !has {
+		t.Error("OG camera should have been registered via AddStream (WebRTC source)")
 	}
 }
 
@@ -124,7 +126,7 @@ func TestManager_Discover_GwellFilter(t *testing.T) {
 	// API mock.
 	cameras := []wyzeapi.CameraInfo{
 		{Nickname: "V3", Model: "WYZE_CAKP2JFUS", MAC: "A1"},
-		{Nickname: "OG", Model: "GW_GC1", MAC: "A2"},
+		{Nickname: "WindowCam", Model: "GW_WC", MAC: "A2"},
 		{Nickname: "Door", Model: "GW_BE1", MAC: "A3"},
 	}
 

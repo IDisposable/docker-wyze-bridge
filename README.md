@@ -78,10 +78,11 @@ configure the path, the bridge routes based on the model.
   cloud-relayed P2P if the camera is remote) for most of the fleet.
 - **Gwell P2P** — `gwell-proxy` sidecar handles Wyze's newer
   Gwell/IoTVideo LAN-direct UDP protocol. Enabled by default (set
-  `GWELL_ENABLED=false` to opt out); the sidecar only actually spawns
-  when an OG-family camera is discovered, so users without OG cameras
-  pay zero cost. Cameras whose LAN IP the Wyze cloud doesn't report
-  (e.g. `GW_DUO`) can be pinned via
+  `GWELL_ENABLED=false` to opt out); the sidecar only actually
+  spawns when a Gwell-P2P model is discovered — currently just the
+  Window Cam (`GW_WC`), or an OG (`GW_GC1`/`GW_GC2`) explicitly
+  flipped back to Gwell via `MODEL_OVERRIDES`. Cameras whose LAN IP
+  the Wyze cloud doesn't report can be pinned via
   `GWELL_LAN_IPS=DEVICEID=IP,DEVICEID=IP` (matched against the
   camera's MAC) so gwell-proxy locks LAN-direct instead of relay.
 - **WebRTC (KVS)** — go2rtc's native `#format=wyze` handler dials
@@ -109,8 +110,8 @@ configure the path, the bridge routes based on the model.
 | Wyze Video Doorbell Pro | `GW_BE1` | WebRTC | **Confirmed 2026-04-20** |
 | Wyze Video Doorbell Pro 2 | `AN_RDB1` | WebRTC | Expected (same lineage) |
 | Wyze Video Doorbell Duo | `GW_DBD` | WebRTC | Expected (same lineage) |
-| Wyze Cam OG | `GW_GC1` | Gwell P2P | Expected (LAN-direct UDP) |
-| Wyze Cam OG Telephoto 3X | `GW_GC2` | Gwell P2P | Expected (LAN-direct UDP) |
+| Wyze Cam OG | `GW_GC1` | WebRTC | Confirmed (route via `is_webrtc=true` overrides `is_gwell` to reach mars-webcsrv) |
+| Wyze Cam OG Telephoto 3X | `GW_GC2` | WebRTC | Expected (same lineage as GW_GC1) |
 | Wyze Battery Cam Pro | `AN_RSCW` | — | Not supported |
 | Wyze Cam Floodlight Pro (2K) | `LD_CFP` | — | Not supported |
 

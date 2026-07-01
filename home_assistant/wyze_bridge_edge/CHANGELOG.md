@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.4.1-edge
+
+Hotfix for [#119](https://github.com/IDisposable/docker-wyze-bridge/issues/119):
+OG cameras (`GW_GC1` / `GW_GC2`) worked on 4.3.0 but broke on 4.4.0
+for many users. Field reports confirm Wyze's mars-webcsrv WebRTC
+backend serves OG hardware reliably, so the default has flipped to
+WebRTC. Users on 4.4.0 already applying the `is_webrtc=true` override
+can drop it.
+
+- **OG default is now WebRTC** (`GW_GC1`, `GW_GC2`) — no more
+	gwell-proxy sidecar spawn for OG-only fleets.
+
 ## 4.4.0-edge
 
 Code-review pass + community PRs: hardening, parity, observability,

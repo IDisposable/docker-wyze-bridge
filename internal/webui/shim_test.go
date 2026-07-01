@@ -21,15 +21,13 @@ func newShimReq(method, target string) *http.Request {
 	return req
 }
 
-// injectGwellCam adds a GW_GC1 (OG) to the manager. OG cameras are the
-// ones gwell-proxy actually handles, so using GW_GC1 keeps the CameraList
-// assertions accurate after the WebRTC split (GW_BE1/GW_DBD now route to
-// wyze-webrtc-proxy and are excluded from gwell-proxy's view). For a
-// WebRTC-lineage camera test, see TestShim_CameraList_ExcludesWebRTCStreamers.
+// injectGwellCam adds a GW_WC (Window Cam) — the sole LAN-direct
+// Gwell-P2P model in the default registry — to the manager. That's
+// the shape gwell-proxy's CameraList speaks: IsGwell && !IsWebRTC.
 func injectGwellCam(srv *Server, mac, name, lanIP string) {
 	cam := camera.NewCamera(wyzeapi.CameraInfo{
 		Name:  name,
-		Model: "GW_GC1",
+		Model: "GW_WC",
 		MAC:   mac,
 		LanIP: lanIP,
 	}, "hd", true, false)
@@ -78,23 +76,22 @@ func TestShim_CameraList_ExcludesWebRTCStreamers(t *testing.T) {
 	}
 }
 
-func TestShim_CameraList_IncludesOGWithEmptyIP(t *testing.T) {
-	// OG cameras (GW_GC1/GC2) always route through gwell-proxy even
-	// when the Wyze cloud reports an empty LAN IP — gwell-proxy's
-	// DiscoverDevices recovers the IP over P2P independently.
+func TestShim_CameraList_ExcludesOG(t *testing.T) {
+	// OG cameras (GW_GC1/GC2) default to WebRTC; gwell-proxy must not
+	// pick them up unless the operator flips them back via MODEL_OVERRIDES.
 	srv, _ := testServer(t)
-	ogNoIP := camera.NewCamera(wyzeapi.CameraInfo{
+	og := camera.NewCamera(wyzeapi.CameraInfo{
 		Name: "og_cam", Model: "GW_GC1", MAC: "DDEEFF001122", LanIP: "",
 	}, "hd", true, false)
-	srv.camMgr.InjectCamera("og_cam", ogNoIP)
+	srv.camMgr.InjectCamera("og_cam", og)
 
 	w := httptest.NewRecorder()
 	srv.handleShimCameraList(w, newShimReq("GET", "/internal/wyze/Camera/CameraList"))
 
 	var got []string
 	_ = json.NewDecoder(w.Body).Decode(&got)
-	if len(got) != 1 || got[0] != "DDEEFF001122" {
-		t.Errorf("want [DDEEFF001122] (OG always Gwell P2P), got %v", got)
+	if len(got) != 0 {
+		t.Errorf("expected empty list (OG now WebRTC), got %v", got)
 	}
 }
 

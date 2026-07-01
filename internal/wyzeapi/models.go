@@ -43,17 +43,22 @@ var modelRegistry = map[string]ModelSpec{
 	"GW_BE1":         {Name: "Doorbell Pro", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
 	"AN_RDB1":        {Name: "Doorbell Pro 2", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
 	"GW_DBD":         {Name: "Doorbell Duo", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
-	"GW_GC1":         {Name: "OG", IsGwell: true, IsGwellP2P: true},
-	"GW_GC2":         {Name: "OG 3X", IsGwell: true, IsGwellP2P: true},
-	"GW_WC":          {Name: "Window Cam", IsGwell: true, IsGwellP2P: true},
+	// OG cameras stream via Wyze's mars-webcsrv WebRTC backend
+	// (same path as the Doorbell Pro). The gwell-proxy LAN-direct
+	// path is no longer reliable for OG; users who still want it can
+	// flip via MODEL_OVERRIDES (HA: Camera Model Registry → Model
+	// Overrides) with `is_gwell=true,is_gwell_p2p=true,is_webrtc=false`.
+	"GW_GC1": {Name: "OG", IsWebRTCStreamer: true},
+	"GW_GC2": {Name: "OG 3X", IsWebRTCStreamer: true},
+	"GW_WC":  {Name: "Window Cam", IsGwell: true, IsGwellP2P: true},
 	// GW_DUO: PR #118 hardware-verified WebRTC via mars-webcsrv (same as
 	// GW_BE1 Doorbell Pro). PR #116 had it as Gwell P2P; PR #118 wins
 	// because get_streams returns a wyze-mars-webcsrv signaling URL.
-	"GW_DUO": {Name: "Cam Pan Duo", IsWebRTCStreamer: true, IsPan: true},
-	"WVOD1":          {Name: "Outdoor"},
-	"HL_WCO2":        {Name: "Outdoor V2"},
-	"AN_RSCW":        {Name: "Battery Cam Pro"},
-	"LD_CFP":         {Name: "Floodlight Pro", IsWebRTCStreamer: true},
+	"GW_DUO":  {Name: "Cam Pan Duo", IsWebRTCStreamer: true, IsPan: true},
+	"WVOD1":   {Name: "Outdoor"},
+	"HL_WCO2": {Name: "Outdoor V2"},
+	"AN_RSCW": {Name: "Battery Cam Pro"},
+	"LD_CFP":  {Name: "Floodlight Pro", IsWebRTCStreamer: true},
 }
 
 // ModelSpecFor returns the registry entry for a model code, or the
