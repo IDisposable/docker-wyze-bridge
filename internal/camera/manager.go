@@ -197,6 +197,8 @@ func (m *Manager) Discover(ctx context.Context) error {
 		}
 	}
 
+	m.reapRenameOrphans(ctx, filtered)
+
 	// Mark cameras not in discovery as offline
 	for name, cam := range m.cameras {
 		if !seen[name] && cam.GetState() != StateOffline {
@@ -270,6 +272,17 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		Bool("record", snap.Record).
 		Bool("dtls", snap.Info.DTLS).
 		Msg("connecting camera to go2rtc")
+
+	// Drop any prior go2rtc entry first so the PUT below is a clean
+	// re-create rather than an in-place source swap. Without this,
+	// a reconnect after HealthCheck saw 0 producers can leave the
+	// old (dead) source pool attached and the fresh AddStream never
+	// actually plays. Skipped for Gwell publish-only slots — those
+	// have an active RTSP publisher we'd disrupt (and HealthCheck
+	// already excludes Gwell, so we don't get here for them anyway).
+	if protocol != "gwell" {
+		_ = go2rtc.DeleteStream(ctx, cam.Name())
+	}
 
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
 		backoff := cam.IncrementError()
@@ -346,8 +359,20 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 
 		info, ok := streams[cam.Name()]
 		if !ok || len(info.Producers) == 0 {
-			m.log.Warn().Str("cam", cam.Name()).Msg("stream lost, reconnecting")
-			m.changeState(cam, StateOffline)
+			// Route through StateError with backoff so reconnectErrored's
+			// 10s ticker picks it up. Marking StateOffline used to leave
+			// the camera stuck until the next Discover refresh — reconnect
+			// only handles StateError, not StateOffline.
+			oldState := cam.GetState()
+			backoff := cam.IncrementError()
+			m.log.Warn().
+				Str("cam", cam.Name()).
+				Dur("backoff", backoff).
+				Msg("stream lost, will retry")
+			if m.onChange != nil && oldState != StateError {
+				m.onChange(cam, oldState, StateError)
+			}
+			m.maybeReportChronic(cam.Name(), cam.GetErrorCount())
 		}
 	}
 }
@@ -383,6 +408,41 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 		case <-reconnectTicker.C:
 			m.reconnectErrored(ctx)
 		}
+	}
+}
+
+// reapRenameOrphans removes m.cameras entries whose MAC matches a
+// just-discovered camera under a different normalized name (i.e. the
+// user renamed the camera in the Wyze app). Without this, the old
+// entry's go2rtc stream lingers forever — Discover only ever adds
+// new entries, and the old name stays "offline" while a fresh entry
+// is created under the new name. Called under m.mu.Lock() by Discover.
+func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.CameraInfo) {
+	newByMAC := make(map[string]string, len(filtered))
+	for _, info := range filtered {
+		if info.MAC == "" {
+			continue
+		}
+		newByMAC[info.MAC] = info.NormalizedName()
+	}
+	for oldName, existing := range m.cameras {
+		info := existing.GetInfo()
+		if info.MAC == "" {
+			continue
+		}
+		newName, ok := newByMAC[info.MAC]
+		if !ok || newName == oldName {
+			continue
+		}
+		m.log.Info().
+			Str("old_name", oldName).
+			Str("new_name", newName).
+			Str("mac", info.MAC).
+			Msg("camera rename detected, dropping orphan entry")
+		if go2rtc := m.go2rtcClient(); go2rtc != nil {
+			_ = go2rtc.DeleteStream(ctx, oldName)
+		}
+		delete(m.cameras, oldName)
 	}
 }
 
