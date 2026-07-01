@@ -171,7 +171,7 @@ const indexHTML = `<!DOCTYPE html>
             <div class="camera-card" data-cam="{{.Name}}" data-state="{{.State}}">
                 <div class="camera-preview">
                     {{if eq .State "streaming"}}
-                    <video-rtc src="{{.Go2RTCURL}}" data-poster="{{.SnapshotURL}}"></video-rtc>
+                    <video-rtc src="{{.Go2RTCURL}}" data-poster="{{.SnapshotURL}}" muted></video-rtc>
                     {{else}}
                     <img src="{{.SnapshotURL}}" alt="{{.Nickname}}" loading="lazy"
                          onerror="this.style.display='none'">
