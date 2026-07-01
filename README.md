@@ -96,7 +96,7 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam V2 | `WYZEC1-JZ` | TUTK | Should work |
 | Wyze Cam V3 | `WYZE_CAKP2JFUS` | TUTK | Confirmed |
 | Wyze Cam V3 Pro (2K) | `HL_CAM3P` | TUTK | Should work |
-| Wyze Cam V4 (2K) | `HL_CAM4` | TUTK | Confirmed |
+| Wyze Cam V4 (2K) | `HL_CAM4` | TUTK / WebRTC | Confirmed on FW <4.52; newer FW blocks TUTK — override to WebRTC (see below) |
 | Wyze Cam Floodlight | `WYZE_CAKP2JFUS` | TUTK | Should work |
 | Wyze Cam Floodlight V2 (2K) | `HL_CFL2` | TUTK | Should work |
 | Wyze Cam Pan | `WYZECP1_JEF` | TUTK | Should work |
@@ -118,6 +118,24 @@ configure the path, the bridge routes based on the model.
 "Expected" means the code path is plumbed and equivalent hardware is
 known to work, but we don't own a unit to confirm end-to-end. Bug
 reports welcome.
+
+### V4 (`HL_CAM4`) on new firmware
+
+Wyze pushed a firmware update in early 2025 that disabled the TUTK
+protocol on newer V4 units — cameras that used to work stop
+connecting with `IOTC_ER_TIMEOUT` even though the Wyze app still
+plays them. The stream is still available via Wyze's WebRTC backend
+(same one the doorbells use). Flip the route with a model override:
+
+```
+MODEL_OVERRIDES=HL_CAM4:is_webrtc=true
+```
+
+In the HA add-on: **Camera Model Registry → Model Overrides** →
+`model=HL_CAM4, is_webrtc=true`. Cameras on older FW (pre-4.52) that
+still speak TUTK don't need this; the auto-hint in the issues
+registry surfaces the workaround when it detects chronic TUTK
+timeouts on an `HL_CAM4`.
 
 ## Quick Start
 

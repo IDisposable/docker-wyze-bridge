@@ -186,6 +186,33 @@ Previously unsupported in the Python bridge, now handled in two ways:
 Battery Cam Pro, Floodlight Pro (LD_CFP) — different protocol than
 either of the above.
 
+## Known Issues
+
+### V4 (`HL_CAM4`) TUTK timeout on newer firmware
+
+Wyze's early-2025 firmware update disabled TUTK on newer `HL_CAM4`
+units — cameras that previously worked stop connecting with
+`IOTC_ER_TIMEOUT` even while the Wyze app plays them fine. The Wyze
+cloud continues to serve the same stream via WebRTC (the same
+mars-webcsrv backend the doorbells use), so the fix is a routing
+flip, not a code change on our side. Set:
+
+```
+MODEL_OVERRIDES=HL_CAM4:is_webrtc=true
+```
+
+(HA add-on users: **Camera Model Registry → Model Overrides** →
+`model=HL_CAM4, is_webrtc=true`.) Cameras on pre-4.52 firmware that
+still speak TUTK don't need this — leaving them on TUTK is faster
+and stays LAN-local. The issues registry auto-hints this workaround
+when it detects sustained TUTK failures on an `HL_CAM4`.
+
+Tracked in [#117](https://github.com/IDisposable/docker-wyze-bridge/issues/117),
+[#92](https://github.com/IDisposable/docker-wyze-bridge/issues/92),
+[#87](https://github.com/IDisposable/docker-wyze-bridge/issues/87);
+runtime auto-fallback is planned for 4.5 so the override becomes
+unnecessary.
+
 ## Default Behavior Changes (4.0)
 
 The rewrite is a good opportunity to pick sensible defaults. If you
