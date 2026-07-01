@@ -92,7 +92,7 @@ go2rtc's RTSP server uses a single username/password for all streams. Per-camera
 
 ### Changed: Camera names
 
-In the previous version a camera with an embedded space would have the space replaced by a hypen `-`. In the code the space is replaced by an underscore `_`. So camera `Front Door` becomes `front_door` (not `front-door`) so you might need to adjust dashboards or actions.
+The Python bridge replaced spaces in camera names with a hyphen (`-`); the Go bridge replaces them with an underscore (`_`). So camera `Front Door` is now published at `rtsp://…/front_door` (not `front-door`). Adjust anything that hard-codes the old URL — Frigate `cameras.*.ffmpeg.inputs.path`, Home Assistant `camera:` platform entries, Lovelace dashboards, Node-RED nodes, and any browser bookmarks.
 
 ### Changed: WebUI Appearance
 
