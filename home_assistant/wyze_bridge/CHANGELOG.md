@@ -1,5 +1,30 @@
 # Changelog
 
+## 4.5.0
+
+Runtime **TUTK → WebRTC auto-fallback** for cameras Wyze crippled
+via firmware. When a TUTK-path camera fails to stream 5 times in
+a row (configurable via `TUTK_FALLBACK_THRESHOLD`), the bridge
+promotes it to the WebRTC path for the rest of the process
+lifetime — no operator intervention, no config edits, no restart.
+Primarily targets `HL_CAM4` (Wyze V4) hit by the early-2025
+firmware update but works for any model Wyze exposes over
+mars-webcsrv.
+
+- New env var `TUTK_FALLBACK_THRESHOLD` (default `5`, `0` disables).
+- Per-camera `forceWebRTC` flag surfaces in `/api/metrics` as
+	`protocol_forced: true` and on the metrics page as `webrtc
+	(forced)`.
+- Auto-promotion fires the issues registry entry
+	`camera/fallback/<name>` (warn severity) so the change is
+	visible in `/metrics`, `/api/health`, and
+	`sensor.wyze_bridge_config_errors`.
+- Manual `MODEL_OVERRIDES=HL_CAM4:is_webrtc=true` still works and
+	takes precedence — operator intent wins over auto-fallback.
+- Full design + testing notes in `DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md`.
+- MIGRATION.md → Known Issues updated to reflect auto-recovery
+	is now the default fix path.
+
 ## 4.4.2
 
 Reliability + doc pass driven by open issue triage.

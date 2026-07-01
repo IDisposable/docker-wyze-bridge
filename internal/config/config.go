@@ -58,6 +58,14 @@ type Config struct {
 	Audio       bool
 	OfflineTime int
 
+	// TUTKFallbackThreshold is the consecutive-TUTK-failure count at
+	// which a camera is auto-promoted to the WebRTC path. Motivated
+	// by Wyze's 2025-02 firmware disabling TUTK on newer HL_CAM4
+	// units. Zero disables the auto-fallback (operators fall back to
+	// the manual MODEL_OVERRIDES workaround). See
+	// DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md.
+	TUTKFallbackThreshold int
+
 	// Recording
 	RecordAll      bool
 	RecordPath     string
@@ -166,9 +174,10 @@ func Load() (*Config, error) {
 		FilterBlocks: envBool("FILTER_BLOCKS", false),
 
 		// Camera Defaults
-		Quality:     env("QUALITY", "hd"),
-		Audio:       envBool("AUDIO", true),
-		OfflineTime: envInt("OFFLINE_TIME", 30),
+		Quality:               env("QUALITY", "hd"),
+		Audio:                 envBool("AUDIO", true),
+		OfflineTime:           envInt("OFFLINE_TIME", 30),
+		TUTKFallbackThreshold: envInt("TUTK_FALLBACK_THRESHOLD", 5),
 
 		// Recording — default under /media/recordings so bare-Docker
 		// users can mount a single host directory at /media and get

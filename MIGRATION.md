@@ -192,26 +192,32 @@ either of the above.
 
 Wyze's early-2025 firmware update disabled TUTK on newer `HL_CAM4`
 units — cameras that previously worked stop connecting with
-`IOTC_ER_TIMEOUT` even while the Wyze app plays them fine. The Wyze
-cloud continues to serve the same stream via WebRTC (the same
-mars-webcsrv backend the doorbells use), so the fix is a routing
-flip, not a code change on our side. Set:
+`IOTC_ER_TIMEOUT` even while the Wyze app plays them fine.
 
-```
-MODEL_OVERRIDES=HL_CAM4:is_webrtc=true
-```
+**4.5+ handles this automatically.** After
+`TUTK_FALLBACK_THRESHOLD` consecutive TUTK failures (default `5`)
+the bridge auto-promotes the camera to the WebRTC path (Wyze's
+mars-webcsrv backend, same one the doorbells use). No config
+changes required. The promotion is per-camera and sticky for the
+process lifetime; a restart re-probes TUTK from scratch so a
+firmware downgrade recovers on its own. Watch for the
+`camera/fallback/<name>` entry in `/metrics` and `webrtc (forced)`
+on the camera row.
 
-(HA add-on users: **Camera Model Registry → Model Overrides** →
-`model=HL_CAM4, is_webrtc=true`.) Cameras on pre-4.52 firmware that
-still speak TUTK don't need this — leaving them on TUTK is faster
-and stays LAN-local. The issues registry auto-hints this workaround
-when it detects sustained TUTK failures on an `HL_CAM4`.
+**Opt-outs and manual override.** Set `TUTK_FALLBACK_THRESHOLD=0`
+to disable the auto-fallback entirely (chronic-error hint remains).
+If you want to pin a specific camera to WebRTC without waiting for
+the streak to hit the threshold, use
+`MODEL_OVERRIDES=HL_CAM4:is_webrtc=true` (HA: **Camera Model
+Registry → Model Overrides** → `model=HL_CAM4, is_webrtc=true`) —
+manual overrides win over the auto-promotion. Cameras on pre-4.52
+firmware that still speak TUTK never trip the streak and stay on
+the faster LAN-local path.
 
 Tracked in [#117](https://github.com/IDisposable/docker-wyze-bridge/issues/117),
 [#92](https://github.com/IDisposable/docker-wyze-bridge/issues/92),
-[#87](https://github.com/IDisposable/docker-wyze-bridge/issues/87);
-runtime auto-fallback is planned for 4.5 so the override becomes
-unnecessary.
+[#87](https://github.com/IDisposable/docker-wyze-bridge/issues/87).
+Design + testing notes in `DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md`.
 
 ## Default Behavior Changes (4.0)
 

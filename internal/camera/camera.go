@@ -47,6 +47,14 @@ type Camera struct {
 	ConnectedAt time.Time
 	LastSeen    time.Time
 	ErrorCount  int
+	// tutkFailStreak counts consecutive TUTK-path connect failures.
+	// Reset on StateStreaming. Once it crosses the manager's threshold
+	// the camera flips to forceWebRTC. See DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md.
+	tutkFailStreak int
+	// forceWebRTC overrides the model registry's routing default and
+	// pins this camera to the WebRTC path. Sticky for the process
+	// lifetime; a restart re-probes TUTK from scratch.
+	forceWebRTC bool
 	mu          sync.RWMutex
 }
 
@@ -76,6 +84,7 @@ func (c *Camera) SetState(s State) {
 	if s == StateStreaming {
 		c.ConnectedAt = time.Now()
 		c.ErrorCount = 0
+		c.tutkFailStreak = 0
 	}
 	c.LastSeen = time.Now()
 }
@@ -87,6 +96,51 @@ func (c *Camera) IncrementError() time.Duration {
 	c.ErrorCount++
 	c.State = StateError
 	return c.BackoffDuration()
+}
+
+// IncrementTUTKFail bumps the TUTK-path failure streak and returns
+// the new count. Reset via SetState(StateStreaming) or ResetTUTKFail.
+func (c *Camera) IncrementTUTKFail() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tutkFailStreak++
+	return c.tutkFailStreak
+}
+
+// TUTKFailStreak returns the current consecutive-TUTK-failure count.
+func (c *Camera) TUTKFailStreak() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tutkFailStreak
+}
+
+// ResetTUTKFail clears the TUTK-failure streak without changing state.
+// Called when the routing decision no longer involves TUTK (e.g. after
+// promotion to WebRTC) so a later demotion starts from zero.
+func (c *Camera) ResetTUTKFail() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tutkFailStreak = 0
+}
+
+// ForceWebRTC returns true when this camera has been runtime-promoted
+// past the model registry's default routing.
+func (c *Camera) ForceWebRTC() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.forceWebRTC
+}
+
+// SetForceWebRTC pins (or unpins) this camera to the WebRTC path.
+// Idempotent; returns true when the flag actually changed.
+func (c *Camera) SetForceWebRTC(on bool) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.forceWebRTC == on {
+		return false
+	}
+	c.forceWebRTC = on
+	return true
 }
 
 // BackoffDuration returns the current backoff duration based on error count.
@@ -182,6 +236,10 @@ type Snapshot struct {
 	ErrorCount  int
 	ConnectedAt time.Time
 	LastSeen    time.Time
+	// ForceWebRTC reflects the runtime TUTK→WebRTC fallback. Rendered
+	// as `protocol_forced` in /api/metrics so operators can tell the
+	// registry default from the promoted-at-runtime state.
+	ForceWebRTC bool
 }
 
 // Snapshot returns a consistent view of the camera under RLock.
@@ -197,6 +255,7 @@ func (c *Camera) Snapshot() Snapshot {
 		ErrorCount:  c.ErrorCount,
 		ConnectedAt: c.ConnectedAt,
 		LastSeen:    c.LastSeen,
+		ForceWebRTC: c.forceWebRTC,
 	}
 }
 

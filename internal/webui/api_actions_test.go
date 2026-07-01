@@ -275,3 +275,29 @@ func TestHandleShimKVSSignaling_NonWebRTCCameraRejected(t *testing.T) {
 		t.Errorf("status = %d, want 404 for non-WebRTC camera", w.Code)
 	}
 }
+
+func TestHandleShimKVSSignaling_ForceWebRTCPassesGate(t *testing.T) {
+	// The runtime TUTK→WebRTC auto-fallback flips a per-Camera flag
+	// without changing the model registry. The shim must honor it so
+	// a promoted HL_CAM4 (or any other TUTK-default model) can
+	// actually mint a KVS signaling URL.
+	srv, _ := testServer(t)
+	cam := camera.NewCamera(wyzeapi.CameraInfo{
+		Name: "front_door", Model: "HL_CAM4", MAC: "AABB",
+	}, "hd", true, false)
+	cam.SetForceWebRTC(true)
+	srv.camMgr.InjectCamera("front_door", cam)
+	srv.kvs = &fakeKVSProvider{
+		signalingURL: "wss://wyze-mars-webcsrv.wyzecam.com?token=forced",
+		ice:          []KVSIceServer{{URL: "stun:stun.example.com:443"}},
+	}
+
+	req := httptest.NewRequest("GET", "/internal/wyze/webrtc/front_door", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+	srv.handleShimKVSSignaling(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s; force-promoted camera should reach KVS", w.Code, w.Body.String())
+	}
+}

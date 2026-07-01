@@ -32,17 +32,22 @@ type BridgeSummary struct {
 }
 
 type CameraMetric struct {
-	Name         string `json:"name"`
-	Nickname     string `json:"nickname"`
-	Model        string `json:"model"`
-	ModelName    string `json:"model_name"`
-	Protocol     string `json:"protocol"` // "tutk" | "gwell" | "webrtc"
-	State        string `json:"state"`
-	Quality      string `json:"quality"`
-	AudioOn      bool   `json:"audio"`
-	ErrorCount   int    `json:"error_count"`
-	Recording    bool   `json:"recording"`
-	SessionBytes int64  `json:"session_bytes,omitempty"`
+	Name      string `json:"name"`
+	Nickname  string `json:"nickname"`
+	Model     string `json:"model"`
+	ModelName string `json:"model_name"`
+	Protocol  string `json:"protocol"` // "tutk" | "gwell" | "webrtc"
+	// ProtocolForced is true when the current Protocol reflects a
+	// runtime TUTK→WebRTC auto-fallback rather than the model
+	// registry's default. Lets operators tell "Wyze pushed a bad FW"
+	// from "we always ran it this way." Omitted from JSON when false.
+	ProtocolForced bool   `json:"protocol_forced,omitempty"`
+	State          string `json:"state"`
+	Quality        string `json:"quality"`
+	AudioOn        bool   `json:"audio"`
+	ErrorCount     int    `json:"error_count"`
+	Recording      bool   `json:"recording"`
+	SessionBytes   int64  `json:"session_bytes,omitempty"`
 }
 
 type StorageSummary struct {
@@ -109,15 +114,16 @@ func (s *Server) buildMetricsSnapshot() MetricsSnapshot {
 			snap.Bridge.ErrorCount++
 		}
 		cm := CameraMetric{
-			Name:       cam.Name(),
-			Nickname:   cs.Info.Nickname,
-			Model:      cs.Info.Model,
-			ModelName:  cs.Info.ModelName(),
-			Protocol:   protocolFor(cs.Info),
-			State:      state,
-			Quality:    cs.Quality,
-			AudioOn:    cs.AudioOn,
-			ErrorCount: cs.ErrorCount,
+			Name:           cam.Name(),
+			Nickname:       cs.Info.Nickname,
+			Model:          cs.Info.Model,
+			ModelName:      cs.Info.ModelName(),
+			Protocol:       protocolFor(cs.Info, cs.ForceWebRTC),
+			ProtocolForced: cs.ForceWebRTC,
+			State:          state,
+			Quality:        cs.Quality,
+			AudioOn:        cs.AudioOn,
+			ErrorCount:     cs.ErrorCount,
 		}
 		if s.recMgr != nil {
 			cm.Recording = s.recMgr.IsRecording(cam.Name())
@@ -147,10 +153,11 @@ func (s *Server) buildMetricsSnapshot() MetricsSnapshot {
 
 // protocolFor matches camera.Manager.streamSourceFor's logic without
 // importing camera (it already imports wyzeapi). Keeps the view layer
-// from having to know the streamSourceFor contract.
-func protocolFor(info wyzeapi.CameraInfo) string {
+// from having to know the streamSourceFor contract. forceWebRTC
+// reflects the per-camera runtime auto-fallback state.
+func protocolFor(info wyzeapi.CameraInfo, forceWebRTC bool) string {
 	switch {
-	case info.IsWebRTCStreamer():
+	case forceWebRTC || info.IsWebRTCStreamer():
 		return "webrtc"
 	case info.IsGwell():
 		return "gwell"
@@ -299,7 +306,7 @@ const metricsHTML = `<!DOCTYPE html>
   <tr>
     <td><a href="{{$.BasePath}}/camera/{{.Name}}">{{.Nickname}}</a><br><code class="muted">{{.Name}}</code></td>
     <td>{{.ModelName}}<br><code class="muted">{{.Model}}</code></td>
-    <td>{{.Protocol}}</td>
+    <td>{{.Protocol}}{{if .ProtocolForced}} <span class="muted" title="Auto-promoted from TUTK after repeated failures — see /api/health for details">(forced)</span>{{end}}</td>
     <td><span class="pill state-{{.State}}">{{.State}}</span></td>
     <td>{{.Quality}}</td>
     <td>{{if .AudioOn}}✓{{else}}✗{{end}}</td>
