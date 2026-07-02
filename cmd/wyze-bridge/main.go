@@ -114,17 +114,44 @@ func main() {
 	camMgr := camera.NewManager(cfg, apiClient, nil, camLog)
 	camMgr.OnChronicError(
 		func(camName string, errorCount int) {
+			detail := "Backoff is capped at 5min; reconnects keep firing. Check logs for the underlying go2rtc / stream error."
+			// Model-specific hints for known-bad routing defaults.
+			// See MIGRATION.md "Known Issues" for the full list. When
+			// TUTK_FALLBACK_THRESHOLD > 0 the runtime auto-promotes
+			// affected cameras before this fires, so hitting the
+			// chronic threshold means fallback either failed or was
+			// disabled — the manual override still helps.
+			if cam := camMgr.GetCamera(camName); cam != nil {
+				info := cam.GetInfo()
+				switch info.Model {
+				case "HL_CAM4":
+					if !info.IsWebRTCStreamer() && !cam.ForceWebRTC() {
+						detail = "V4 on newer Wyze firmware (~2025-02+) blocks TUTK. Try MODEL_OVERRIDES=HL_CAM4:is_webrtc=true (HA: Camera Model Registry → Model Overrides → model=HL_CAM4, is_webrtc=true). See MIGRATION.md → Known Issues."
+					}
+				}
+			}
 			issueReg.Report(issues.Issue{
 				ID:       "camera/chronic/" + camName,
 				Severity: issues.SeverityWarn,
 				Scope:    "camera",
 				Camera:   camName,
 				Message:  fmt.Sprintf("Camera stuck in error after %d consecutive failed connects", errorCount),
-				Detail:   "Backoff is capped at 5min; reconnects keep firing. Check logs for the underlying go2rtc / stream error.",
+				Detail:   detail,
 			})
 		},
 		func(camName string) { issueReg.Resolve("camera/chronic/" + camName) },
 	)
+
+	camMgr.OnProtocolFallback(func(camName, oldProtocol, newProtocol string, streak int) {
+		issueReg.Report(issues.Issue{
+			ID:       "camera/fallback/" + camName,
+			Severity: issues.SeverityWarn,
+			Scope:    "camera",
+			Camera:   camName,
+			Message:  fmt.Sprintf("Auto-promoted %s → %s after %d consecutive failures", oldProtocol, newProtocol, streak),
+			Detail:   "Wyze's newer firmware disables TUTK on some models (notably HL_CAM4); the WebRTC path via mars-webcsrv still works. Persists for this process; restart to re-probe TUTK. Set TUTK_FALLBACK_THRESHOLD=0 to disable the auto-promotion.",
+		})
+	})
 
 	webuiLog := log.With().Str("c", "webui").Logger()
 	webServer := webui.NewServer(webui.Options{

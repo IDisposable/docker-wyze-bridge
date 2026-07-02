@@ -158,16 +158,29 @@ func TestManager_HealthCheck(t *testing.T) {
 	mgr, _ := newTestManager(t)
 	ctx := context.Background()
 
-	// Add a camera that thinks it's streaming but isn't in go2rtc
+	// Camera the manager thinks is streaming but that go2rtc has no
+	// entry for. HealthCheck should flip it to Error so the 10s
+	// reconnect ticker picks it up (issue #100 fix — StateOffline
+	// wasn't in reconnectErrored's filter).
 	cam := NewCamera(wyzeapi.CameraInfo{Name: "ghost_cam"}, "hd", true, false)
 	cam.SetState(StateStreaming)
 	mgr.cameras["ghost_cam"] = cam
 
+	var transitions []State
+	mgr.OnStateChange(func(c *Camera, old, new State) {
+		transitions = append(transitions, new)
+	})
+
 	mgr.HealthCheck(ctx)
 
-	// Should have been marked offline
-	if cam.GetState() != StateOffline {
-		t.Errorf("ghost cam should be offline, got %v", cam.GetState())
+	if cam.GetState() != StateError {
+		t.Errorf("ghost cam should be Error (so reconnectErrored picks it up), got %v", cam.GetState())
+	}
+	if cam.GetErrorCount() != 1 {
+		t.Errorf("error count should be 1, got %d", cam.GetErrorCount())
+	}
+	if len(transitions) != 1 || transitions[0] != StateError {
+		t.Errorf("expected 1 Error state-change hook, got %v", transitions)
 	}
 }
 
@@ -239,6 +252,53 @@ func TestManager_SetQuality_NonExistent(t *testing.T) {
 	err := mgr.SetQuality(context.Background(), "nonexistent", "sd")
 	if err != nil {
 		t.Errorf("SetQuality on nonexistent should return nil, got %v", err)
+	}
+}
+
+func TestManager_ReapRenameOrphans(t *testing.T) {
+	// When Wyze user renames "Front Door" → "Front Gate", the next
+	// Discover cycle adds a fresh "front_gate" entry — but the old
+	// "front_door" entry sits forever with its stale go2rtc stream.
+	// reapRenameOrphans matches on MAC and drops the orphan. Issue #100.
+	mgr, go2rtcAPI := newTestManager(t)
+	ctx := context.Background()
+
+	oldCam := NewCamera(wyzeapi.CameraInfo{
+		Name: "front_door", Nickname: "Front Door", MAC: "AABB01", Model: "HL_CAM4",
+	}, "hd", true, false)
+	oldCam.SetState(StateStreaming)
+	mgr.cameras["front_door"] = oldCam
+
+	untouched := NewCamera(wyzeapi.CameraInfo{
+		Name: "backyard", Nickname: "Backyard", MAC: "AABB02", Model: "WYZE_CAKP2JFUS",
+	}, "hd", true, false)
+	untouched.SetState(StateStreaming)
+	mgr.cameras["backyard"] = untouched
+
+	// Pre-register the old go2rtc stream so we can assert it's deleted.
+	if err := go2rtcAPI.AddStream(ctx, "front_door", "wyze://old"); err != nil {
+		t.Fatalf("seed old stream: %v", err)
+	}
+
+	// Discovery now returns the renamed camera + the untouched one.
+	discovered := []wyzeapi.CameraInfo{
+		{Nickname: "Front Gate", MAC: "AABB01", Model: "HL_CAM4"},
+		{Nickname: "Backyard", MAC: "AABB02", Model: "WYZE_CAKP2JFUS"},
+	}
+
+	mgr.mu.Lock()
+	mgr.reapRenameOrphans(ctx, discovered)
+	mgr.mu.Unlock()
+
+	if _, still := mgr.cameras["front_door"]; still {
+		t.Error("front_door orphan should have been reaped")
+	}
+	if _, still := mgr.cameras["backyard"]; !still {
+		t.Error("backyard should NOT have been touched (same name, same MAC)")
+	}
+	streams, _ := go2rtcAPI.ListStreams(ctx)
+	if _, still := streams["front_door"]; still {
+		t.Error("stale go2rtc stream 'front_door' should have been deleted")
 	}
 }
 

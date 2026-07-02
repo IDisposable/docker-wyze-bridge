@@ -1,5 +1,59 @@
 # Changelog
 
+## 4.5.0-edge
+
+Runtime **TUTK → WebRTC auto-fallback** for cameras Wyze crippled
+via firmware. When a TUTK-path camera fails to stream 5 times in
+a row (configurable via `TUTK_FALLBACK_THRESHOLD`), the bridge
+promotes it to the WebRTC path for the rest of the process
+lifetime — no operator intervention, no config edits, no restart.
+Primarily targets `HL_CAM4` (Wyze V4) hit by the early-2025
+firmware update but works for any model Wyze exposes over
+mars-webcsrv.
+
+- New env var `TUTK_FALLBACK_THRESHOLD` (default `5`, `0` disables).
+- Per-camera `forceWebRTC` flag surfaces in `/api/metrics` as
+	`protocol_forced: true` and on the metrics page as `webrtc
+	(forced)`.
+- Auto-promotion fires the issues registry entry
+	`camera/fallback/<name>` (warn severity) so the change is
+	visible in `/metrics`, `/api/health`, and
+	`sensor.wyze_bridge_config_errors`.
+- Manual `MODEL_OVERRIDES=HL_CAM4:is_webrtc=true` still works and
+	takes precedence — operator intent wins over auto-fallback.
+- Full design + testing notes in `DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md`.
+- MIGRATION.md → Known Issues updated to reflect auto-recovery
+	is now the default fix path.
+
+## 4.4.2-edge
+
+Reliability + doc pass driven by open issue triage.
+
+- **Stream auto-recovery** ([#100](https://github.com/IDisposable/docker-wyze-bridge/issues/100)):
+	HealthCheck now routes dropped streams through the error/backoff
+	path so the 10s reconnect ticker actually picks them up (was
+	logging "reconnecting" without reconnecting). `connectCamera` also
+	clears any prior go2rtc entry before re-registering so a stuck
+	source pool gets fully torn down. Rename-in-Wyze-app orphans are
+	reaped by MAC each discovery cycle instead of accumulating stale
+	streams forever.
+- **Grid audio stays muted** ([#112](https://github.com/IDisposable/docker-wyze-bridge/issues/112)):
+	`<video-rtc>` now honors a `muted` attribute proactively, so the
+	grid stays quiet even after the browser grants autoplay
+	permission from a single-camera click. Detail page is unchanged.
+- **Camera-name doc** ([#99](https://github.com/IDisposable/docker-wyze-bridge/issues/99)):
+	Expanded MIGRATION.md → "Changed: Camera names" with the specific
+	Frigate / HA `camera:` / Lovelace / Node-RED surfaces to update.
+- **HL_CAM4 (V4) auto-hint** ([#117](https://github.com/IDisposable/docker-wyze-bridge/issues/117),
+	[#92](https://github.com/IDisposable/docker-wyze-bridge/issues/92),
+	[#87](https://github.com/IDisposable/docker-wyze-bridge/issues/87)):
+	Wyze's early-2025 firmware disabled TUTK on newer V4 units. The
+	issues registry now emits a targeted hint when it sees chronic
+	TUTK timeouts on an `HL_CAM4` — the fix is a one-line override
+	(`MODEL_OVERRIDES=HL_CAM4:is_webrtc=true`) documented in README +
+	MIGRATION.md → "Known Issues". Runtime auto-fallback is designed
+	for 4.5.
+
 ## 4.4.1-edge
 
 Hotfix for [#119](https://github.com/IDisposable/docker-wyze-bridge/issues/119):

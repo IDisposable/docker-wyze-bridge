@@ -92,7 +92,7 @@ go2rtc's RTSP server uses a single username/password for all streams. Per-camera
 
 ### Changed: Camera names
 
-In the previous version a camera with an embedded space would have the space replaced by a hypen `-`. In the code the space is replaced by an underscore `_`. So camera `Front Door` becomes `front_door` (not `front-door`) so you might need to adjust dashboards or actions.
+The Python bridge replaced spaces in camera names with a hyphen (`-`); the Go bridge replaces them with an underscore (`_`). So camera `Front Door` is now published at `rtsp://…/front_door` (not `front-door`). Adjust anything that hard-codes the old URL — Frigate `cameras.*.ffmpeg.inputs.path`, Home Assistant `camera:` platform entries, Lovelace dashboards, Node-RED nodes, and any browser bookmarks.
 
 ### Changed: WebUI Appearance
 
@@ -185,6 +185,39 @@ Previously unsupported in the Python bridge, now handled in two ways:
 
 Battery Cam Pro, Floodlight Pro (LD_CFP) — different protocol than
 either of the above.
+
+## Known Issues
+
+### V4 (`HL_CAM4`) TUTK timeout on newer firmware
+
+Wyze's early-2025 firmware update disabled TUTK on newer `HL_CAM4`
+units — cameras that previously worked stop connecting with
+`IOTC_ER_TIMEOUT` even while the Wyze app plays them fine.
+
+**4.5+ handles this automatically.** After
+`TUTK_FALLBACK_THRESHOLD` consecutive TUTK failures (default `5`)
+the bridge auto-promotes the camera to the WebRTC path (Wyze's
+mars-webcsrv backend, same one the doorbells use). No config
+changes required. The promotion is per-camera and sticky for the
+process lifetime; a restart re-probes TUTK from scratch so a
+firmware downgrade recovers on its own. Watch for the
+`camera/fallback/<name>` entry in `/metrics` and `webrtc (forced)`
+on the camera row.
+
+**Opt-outs and manual override.** Set `TUTK_FALLBACK_THRESHOLD=0`
+to disable the auto-fallback entirely (chronic-error hint remains).
+If you want to pin a specific camera to WebRTC without waiting for
+the streak to hit the threshold, use
+`MODEL_OVERRIDES=HL_CAM4:is_webrtc=true` (HA: **Camera Model
+Registry → Model Overrides** → `model=HL_CAM4, is_webrtc=true`) —
+manual overrides win over the auto-promotion. Cameras on pre-4.52
+firmware that still speak TUTK never trip the streak and stay on
+the faster LAN-local path.
+
+Tracked in [#117](https://github.com/IDisposable/docker-wyze-bridge/issues/117),
+[#92](https://github.com/IDisposable/docker-wyze-bridge/issues/92),
+[#87](https://github.com/IDisposable/docker-wyze-bridge/issues/87).
+Design + testing notes in `DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md`.
 
 ## Default Behavior Changes (4.0)
 

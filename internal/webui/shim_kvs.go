@@ -56,7 +56,10 @@ func (s *Server) handleShimKVSSignaling(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	info := cam.GetInfo()
-	if !info.IsWebRTCStreamer() {
+	// Camera.ForceWebRTC lets the manager promote a runtime-flipped
+	// camera (see TUTK→WebRTC auto-fallback) even when the registry
+	// still marks the model as TUTK-only.
+	if !info.IsWebRTCStreamer() && !cam.ForceWebRTC() {
 		http.Error(w, "camera does not use WebRTC streaming", http.StatusNotFound)
 		return
 	}

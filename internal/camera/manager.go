@@ -40,6 +40,9 @@ type Manager struct {
 	onChronicError   func(camName string, errorCount int)
 	onChronicRecover func(camName string)
 	chronicReported  map[string]bool
+	// onProtocolFallback fires the first time a camera is auto-promoted
+	// from TUTK to WebRTC after crossing the fallback threshold.
+	onProtocolFallback func(camName string, oldProtocol, newProtocol string, failStreak int)
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a
@@ -101,6 +104,13 @@ func (m *Manager) OnStateChange(fn StateChangeFunc) {
 func (m *Manager) OnChronicError(onErr func(camName string, errorCount int), onRecover func(camName string)) {
 	m.onChronicError = onErr
 	m.onChronicRecover = onRecover
+}
+
+// OnProtocolFallback registers a callback for a camera being
+// auto-promoted between streaming protocols (currently only
+// TUTK → WebRTC). Fires once per camera per process lifetime.
+func (m *Manager) OnProtocolFallback(fn func(camName string, oldProtocol, newProtocol string, failStreak int)) {
+	m.onProtocolFallback = fn
 }
 
 // Cameras returns a snapshot of all managed cameras, sorted by name
@@ -197,6 +207,8 @@ func (m *Manager) Discover(ctx context.Context) error {
 		}
 	}
 
+	m.reapRenameOrphans(ctx, filtered)
+
 	// Mark cameras not in discovery as offline
 	for name, cam := range m.cameras {
 		if !seen[name] && cam.GetState() != StateOffline {
@@ -271,6 +283,17 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		Bool("dtls", snap.Info.DTLS).
 		Msg("connecting camera to go2rtc")
 
+	// Drop any prior go2rtc entry first so the PUT below is a clean
+	// re-create rather than an in-place source swap. Without this,
+	// a reconnect after HealthCheck saw 0 producers can leave the
+	// old (dead) source pool attached and the fresh AddStream never
+	// actually plays. Skipped for Gwell publish-only slots — those
+	// have an active RTSP publisher we'd disrupt (and HealthCheck
+	// already excludes Gwell, so we don't get here for them anyway).
+	if protocol != "gwell" {
+		_ = go2rtc.DeleteStream(ctx, cam.Name())
+	}
+
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
 		backoff := cam.IncrementError()
 		errors := cam.GetErrorCount()
@@ -281,6 +304,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 			Int("errors", errors).
 			Msg("failed to add stream to go2rtc")
 		m.maybeReportChronic(cam.Name(), errors)
+		m.recordTUTKFailure(cam, protocol)
 		return
 	}
 
@@ -297,7 +321,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
 	info := cam.GetInfo()
 	switch {
-	case info.IsWebRTCStreamer():
+	case cam.ForceWebRTC() || info.IsWebRTCStreamer():
 		return fmt.Sprintf("webrtc:http://127.0.0.1:%d/internal/wyze/webrtc/%s#format=wyze", m.cfg.BridgePort, cam.Name()), "webrtc"
 	case info.IsGwell():
 		return "", "gwell"
@@ -346,8 +370,27 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 
 		info, ok := streams[cam.Name()]
 		if !ok || len(info.Producers) == 0 {
-			m.log.Warn().Str("cam", cam.Name()).Msg("stream lost, reconnecting")
-			m.changeState(cam, StateOffline)
+			// Route through StateError with backoff so reconnectErrored's
+			// 10s ticker picks it up. Marking StateOffline used to leave
+			// the camera stuck until the next Discover refresh — reconnect
+			// only handles StateError, not StateOffline.
+			oldState := cam.GetState()
+			backoff := cam.IncrementError()
+			m.log.Warn().
+				Str("cam", cam.Name()).
+				Dur("backoff", backoff).
+				Msg("stream lost, will retry")
+			if m.onChange != nil && oldState != StateError {
+				m.onChange(cam, oldState, StateError)
+			}
+			m.maybeReportChronic(cam.Name(), cam.GetErrorCount())
+			// A stream that reached Streaming and then went 0-producers
+			// is a TUTK-path failure signal for HL_CAM4-class regressions
+			// where TUTK dial appears to succeed but the P2P session
+			// never delivers frames. The current-protocol lookup is
+			// per-call (streamSourceFor is idempotent).
+			_, protocol := m.streamSourceFor(cam)
+			m.recordTUTKFailure(cam, protocol)
 		}
 	}
 }
@@ -383,6 +426,41 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 		case <-reconnectTicker.C:
 			m.reconnectErrored(ctx)
 		}
+	}
+}
+
+// reapRenameOrphans removes m.cameras entries whose MAC matches a
+// just-discovered camera under a different normalized name (i.e. the
+// user renamed the camera in the Wyze app). Without this, the old
+// entry's go2rtc stream lingers forever — Discover only ever adds
+// new entries, and the old name stays "offline" while a fresh entry
+// is created under the new name. Called under m.mu.Lock() by Discover.
+func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.CameraInfo) {
+	newByMAC := make(map[string]string, len(filtered))
+	for _, info := range filtered {
+		if info.MAC == "" {
+			continue
+		}
+		newByMAC[info.MAC] = info.NormalizedName()
+	}
+	for oldName, existing := range m.cameras {
+		info := existing.GetInfo()
+		if info.MAC == "" {
+			continue
+		}
+		newName, ok := newByMAC[info.MAC]
+		if !ok || newName == oldName {
+			continue
+		}
+		m.log.Info().
+			Str("old_name", oldName).
+			Str("new_name", newName).
+			Str("mac", info.MAC).
+			Msg("camera rename detected, dropping orphan entry")
+		if go2rtc := m.go2rtcClient(); go2rtc != nil {
+			_ = go2rtc.DeleteStream(ctx, oldName)
+		}
+		delete(m.cameras, oldName)
 	}
 }
 
@@ -515,6 +593,51 @@ func (m *Manager) maybeReportChronic(camName string, errorCount int) {
 		return
 	}
 	m.onChronicError(camName, errorCount)
+}
+
+// recordTUTKFailure bumps the camera's TUTK-fail streak and, if the
+// configured threshold is met, flips the camera to the WebRTC path
+// for the rest of the process lifetime. Only counts when we're
+// currently attempting the TUTK protocol — WebRTC / Gwell paths and
+// already-promoted cameras are skipped. Wyze's 2025-02 firmware
+// disabled TUTK on newer HL_CAM4 units without disabling the mars-
+// webcsrv KVS path, so promotion recovers those cameras without
+// operator intervention. See DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md.
+func (m *Manager) recordTUTKFailure(cam *Camera, protocol string) {
+	if protocol != "tutk" {
+		return
+	}
+	threshold := m.cfg.TUTKFallbackThreshold
+	if threshold <= 0 {
+		return // operator disabled auto-fallback
+	}
+	if cam.ForceWebRTC() {
+		return // already promoted
+	}
+	streak := cam.IncrementTUTKFail()
+	if streak < threshold {
+		return
+	}
+	// Cross-check: only promote if the model can plausibly stream
+	// via WebRTC. The shim will call /v4/camera/get_streams which
+	// only returns a KVS URL for cameras Wyze configured for WebRTC;
+	// blindly flipping a model that doesn't have WebRTC available
+	// would just swap one failure mode for another. We approximate
+	// this by allowing promotion for any camera Wyze exposes MAC +
+	// Model on — the shim's error response is the operator-visible
+	// signal if the coin flip lands wrong.
+	if !cam.SetForceWebRTC(true) {
+		return
+	}
+	cam.ResetTUTKFail()
+	m.log.Warn().
+		Str("cam", cam.Name()).
+		Str("model", cam.GetInfo().Model).
+		Int("streak", streak).
+		Msg("TUTK failing repeatedly, promoting camera to WebRTC")
+	if m.onProtocolFallback != nil {
+		m.onProtocolFallback(cam.Name(), "tutk", "webrtc", streak)
+	}
 }
 
 // clearChronic fires onChronicRecover if the camera was previously

@@ -296,35 +296,56 @@ Two long-lived branches, two add-on channels.
 4. HA users on the edge channel see an "update available" within
    minutes.
 
-The base of the edge version (`X.Y.Z-edge`, the part before the
-timestamp) lives in `home_assistant/wyze_bridge_edge/config.yaml` on
-`dev`. Bump it there when you start a new minor cycle (e.g.
-`4.3.0-edge`); CI strips any existing `.YYYYMMDD.HHMM` suffix before
-appending the current timestamp so you never get compounding suffixes.
+When you start a new minor cycle, bump **both** on `dev` in the same
+commit:
+
+- `home_assistant/wyze_bridge_edge/config.yaml` → new edge base
+	(e.g. `4.5.0-edge` — CI strips any prior `.YYYYMMDD.HHMM` and
+	appends the current timestamp).
+- `home_assistant/wyze_bridge/config.yaml` → the eventual stable
+	version (e.g. `4.5.0`).
+
+Both `CHANGELOG.md` files should get the matching top entry at the
+same time so edge users see accurate notes on the first edge build
+and stable users see them the moment the merge lands.
+
+**Why bump stable on `dev`?** The `addon-stable` job builds the moment
+`main` is pushed and reads `home_assistant/wyze_bridge/config.yaml`
+at that commit to derive the image tag. If the merge lands with the
+old version still in the file, `addon-stable` publishes the new
+code under the *old* tag — HA users on the previous release get
+silent code updates without a version bump, and the eventual `v4.5.0`
+tag's `version-bump` job commits with `[skip ci]` so no build fires
+for the new tag. Keeping the config in lockstep on `dev` makes the
+merge idempotent: `addon-stable` publishes `4.5.0` on merge, the tag
+build publishes `4.5.0` again (harmless, same tag), and `version-bump`
+becomes a no-op.
 
 ### Promoting an edge release to stable
 
-When `dev` is ready to become the new stable:
+When `dev` is ready to become the new stable (both config.yaml files
+already bumped per the note above):
 
 ```bash
 # 1. Open the release PR
 gh pr create --base main --head dev \
-  --title "Release v4.2.0" \
-  --body "## Changes since 4.1.0\n\n- ..."
+  --title "Release v4.5.0" \
+  --body "## Changes since 4.4.x\n\n- ..."
 
 # 2. Review + merge the PR in the GitHub UI or via
 gh pr merge --merge   # or --squash if you prefer linear history on main
 
-# 3. Tag the release on main
+# 3. Tag the release on main (must match stable config.yaml's version)
 git checkout main && git pull
-git tag v4.2.0
-git push origin v4.2.0
+git tag v4.5.0
+git push origin v4.5.0
 ```
 
-The tag push triggers CI's `version-bump` job, which rewrites
-`home_assistant/wyze_bridge/config.yaml` `version:` to `4.2.0` and
-commits it back to `main`. The stable add-on image is published with
-that tag.
+The tag push re-triggers `addon-stable` (same version, same image —
+harmless idempotent republish) and fires the `version-bump` job. If
+the stable `config.yaml` version already matches the tag, `version-bump`
+is a no-op; if it doesn't, `version-bump` writes the tag's version
+into `config.yaml` and commits it back to `main` with `[skip ci]`.
 
 **Conflict note:** PR merges rarely conflict on
 `home_assistant/wyze_bridge_edge/config.yaml` because `dev` doesn't
