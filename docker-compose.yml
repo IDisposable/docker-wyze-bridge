@@ -1,12 +1,23 @@
+# Two ways to run:
+#   • Prebuilt image (fast, recommended)  → `docker compose pull && docker compose up -d`
+#   • Build from source (this repo)       → `docker compose up -d --build`
+# When both `image:` and `build:` are present, `--build` rebuilds and
+# retags the local image; a plain `up` pulls from the registry. Drop
+# the `build:` block if you only ever want to pull.
+
 services:
     wyze-bridge:
         container_name: wyze-bridge
+        image: idisposablegithub365/wyze-bridge:latest
         restart: unless-stopped
         build:
             context: .
             dockerfile: ./docker/Dockerfile
-            args:
-                - VERSION=4.0-beta
+        # network_mode: host    # Uncomment for TUTK / doorbell users
+                                # whose Docker bridge NAT drops the
+                                # camera's UDP dial-back (see README →
+                                # Quick Start). Comment out the whole
+                                # `ports:` block below when this is on.
         ports:
             - 5080:5080     # Bridge WebUI + REST API
             - 1984:1984     # go2rtc native API/WebUI (optional)
@@ -18,42 +29,140 @@ services:
             - ./config:/config
             - ./media:/media      # snapshots land in /media/snapshots, recordings in /media/recordings
         environment:
-            # Wyze credentials (required)
+            # ── Wyze credentials (required) ──────────────────────
+            # Get API_ID + API_KEY from https://developer-api-console.wyze.com/#/apikey/view
             - WYZE_EMAIL=
             - WYZE_PASSWORD=
             - WYZE_API_ID=
             - WYZE_API_KEY=
+            # RFC 6238 TOTP secret for 2FA. Only needed when the
+            # account has app-based 2FA enabled.
+            # - WYZE_TOTP_KEY=
 
-            # Network
-            # - BRIDGE_IP=192.168.1.50  # Required for WebRTC
+            # ── Bridge HTTP server (WebUI + REST API) ────────────
+            # BRIDGE_IP is required for WebRTC in-browser playback —
+            # it becomes the ICE candidate the browser dials back.
+            # - BRIDGE_IP=192.168.1.50
+            # - BRIDGE_PORT=5080                 # WebUI + REST API listener
+            # - STUN_SERVER=stun:stun.l.google.com:19302
 
-            # WebUI auth (default: false)
+            # ── WebUI auth (default off — no gate) ───────────────
             # - BRIDGE_AUTH=true
             # - BRIDGE_USERNAME=wyze
             # - BRIDGE_PASSWORD=
-            # - BRIDGE_API_TOKEN=          # bearer token for REST API
+            # - BRIDGE_API_TOKEN=                # bearer token for REST API
 
-            # MQTT (optional)
+            # ── Stream auth (RTSP/HLS/WebRTC consumers) ──────────
+            # go2rtc's RTSP server uses a single username/password;
+            # multi-user is not supported (only the first pair is
+            # honored). See README → Authentication.
+            # - STREAM_AUTH=viewer:secret
+
+            # ── External go2rtc (share with e.g. Frigate) ────────
+            # Non-empty = do NOT spawn go2rtc, use the given URL
+            # instead. In this mode we do NOT write go2rtc.yaml or
+            # configure recording; manage those upstream.
+            # - GO2RTC_URL=http://frigate:1984
+
+            # ── MQTT (optional) ──────────────────────────────────
+            # Any of the below MQTT_* implies MQTT_ENABLED=true.
+            # - MQTT_ENABLED=true
             # - MQTT_HOST=mosquitto
             # - MQTT_PORT=1883
             # - MQTT_USERNAME=
             # - MQTT_PASSWORD=
+            # - MQTT_TOPIC=wyzebridge             # base topic prefix
+            # - MQTT_DISCOVERY_TOPIC=homeassistant # HA discovery prefix
 
-            # Camera defaults
-            # - QUALITY=hd
+            # ── Camera filtering ─────────────────────────────────
+            # Comma-separated. Default = allow-list mode (only
+            # named entries are kept). FILTER_BLOCKS=true flips it
+            # to block-list mode (named entries are dropped).
+            # - FILTER_NAMES=Front Door,Backyard
+            # - FILTER_MODELS=WYZE_CAKP2JFUS,HL_CAM4
+            # - FILTER_MACS=AABBCC112233
+            # - FILTER_BLOCKS=false
+
+            # ── Camera defaults ──────────────────────────────────
+            # - QUALITY=hd                        # hd | sd
             # - AUDIO=true
+            # - OFFLINE_TIME=30                   # sec after which a
+                                                  #  stuck stream is flagged offline
+            # Per-camera overrides use CAM_NAME uppercased with
+            # spaces → underscores (matches the normalized name):
+            # - QUALITY_FRONT_DOOR=sd
+            # - AUDIO_FRONT_DOOR=false
+            # - RECORD_FRONT_DOOR=true            # override RECORD_ALL for this cam
+            # - RECORD_CMD_FRONT_DOOR=            # override the ffmpeg argv template
 
-            # Recording (disabled by default)
+            # ── Runtime TUTK → WebRTC auto-fallback (4.5+) ───────
+            # After N consecutive TUTK failures, promote the camera
+            # to Wyze's mars-webcsrv WebRTC path for the process
+            # lifetime. 0 disables. See MIGRATION.md → Known Issues.
+            # - TUTK_FALLBACK_THRESHOLD=5
+
+            # ── Recording (disabled by default) ──────────────────
+            # RECORD_ALL=true records every camera. Per-camera
+            # opt-in via RECORD_{CAM_NAME}=true above.
+            # RECORD_PATH tokens: {cam_name}, strftime %Y %m %d %H %M %S.
             # - RECORD_ALL=false
-            # - RECORD_PATH=/record/{cam_name}/%Y/%m/%d
-            # - RECORD_LENGTH=60s
-            # - RECORD_KEEP=0s
+            # - RECORD_PATH=/media/recordings/{cam_name}/%Y/%m/%d
+            # - RECORD_FILE_NAME=%H-%M-%S         # per-segment stem
+            # - RECORD_LENGTH=60s                 # segment length
+            # - RECORD_KEEP=0s                    # 0 = keep forever
+            # - RECORD_CMD=                       # advanced: override the
+                                                  #  full ffmpeg argv template
 
-            # Snapshots (disabled by default)
+            # ── Snapshots (disabled by default) ──────────────────
+            # SNAPSHOT_INTERVAL is seconds; 0 disables. Sunrise/
+            # sunset-driven captures use LOCATION_LATITUDE +
+            # LOCATION_LONGITUDE (bridge/YAML only, no env var).
             # - SNAPSHOT_INTERVAL=0
-            # - SNAPSHOT_PATH=/img
-            # - SNAPSHOT_FILE_NAME={cam_name}
+            # - SNAPSHOT_PATH=/media/snapshots/{cam_name}/%Y-%m-%d
+            # - SNAPSHOT_FILE_NAME=%H-%M-%S
+            # - SNAPSHOT_KEEP=0s                  # 0 = keep forever
+            # - SNAPSHOT_CAMERAS=front_door,backyard  # comma list; empty = all
 
-            # Debugging
-            # - LOG_LEVEL=info
-            # - FORCE_IOTC_DETAIL=false
+            # ── State persistence ────────────────────────────────
+            # Where wyze-bridge.state.json + gwell/token_cache.json
+            # live so container restarts stay auth-warm.
+            # - STATE_DIR=/config
+
+            # ── Webhooks (state change notifications) ────────────
+            # Comma-separated URLs. Each receives a POST with the
+            # camera-state JSON on every StateStreaming/StateError.
+            # - WEBHOOK_URLS=https://n8n.internal/hook,https://push.example/hook
+
+            # ── Gwell / OG-family cameras (LAN-direct UDP P2P) ───
+            # Sidecar only spawns when a Gwell-P2P model is
+            # discovered (currently just GW_WC, or GW_GC1/GC2 flipped
+            # via MODEL_OVERRIDES). Zero cost otherwise.
+            # - GWELL_ENABLED=true                # master switch
+            # - GWELL_BINARY=                     # path override; default = bundled sidecar
+            # - GWELL_RTSP_PORT=8564              # loopback RTSP sink
+            # - GWELL_CONTROL_PORT=18564          # loopback control API
+            # - GWELL_LOG_LEVEL=                  # empty = inherit from LOG_LEVEL
+            # - GWELL_FFMPEG_LOGLEVEL=warning
+            # - GWELL_DUMP_DIR=                   # /debug: capture raw P2P frames
+            # - GWELL_DEADMAN_TIMEOUT=2m          # kill a stuck sidecar after N without frames
+            # Pin LAN IPs for Gwell cameras the Wyze cloud reports
+            # with an empty IP (e.g. GW_DUO, sometimes GW_WC).
+            # Format: MAC=IP,MAC=IP.
+            # - GWELL_LAN_IPS=AABBCCDDEEFF=10.0.0.50,112233445566=10.0.0.51
+
+            # ── Model registry overrides ─────────────────────────
+            # Add/replace rows in the camera-model routing table
+            # without recompiling. Format:
+            #   MODEL[:flag=value]*[;MODEL:flag=value,...]
+            # Flags: name, is_gwell, is_gwell_p2p, is_webrtc,
+            # is_pan, is_doorbell.
+            # - MODEL_OVERRIDES=HL_CAM4:is_webrtc=true;GW_NEW:name=Made-up Cam,is_webrtc=true
+
+            # ── Camera discovery cadence ─────────────────────────
+            # How often to poll the Wyze cloud for
+            # added/removed/renamed cameras.
+            # - REFRESH_INTERVAL=30m
+
+            # ── Debug ────────────────────────────────────────────
+            # - LOG_LEVEL=info                    # trace|debug|info|warn|error
+            # - FORCE_IOTC_DETAIL=false           # verbose go2rtc + bridge streaming logs

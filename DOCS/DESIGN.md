@@ -960,10 +960,11 @@ README.md                      landing page
 Three-stage Alpine build: fetch go2rtc release binary + `video-rtc.js`,
 build our two Go binaries (`wyze-bridge`, `gwell-proxy`), then assemble
 a runtime image with ffmpeg bundled. Multi-arch via `TARGETARCH`
-(`amd64`, `arm64`, `arm/v7`). The pinned `GO2RTC_VERSION` ARG is the
-single source of truth — `cycle.sh` greps it out so local dev
-downloads the matching release. See `docker/Dockerfile` for the
-current recipe.
+(`amd64`, `arm64`). `linux/arm/v7` isn't shipped — the CI cross-build
+failed on a go2rtc-fetch / base-image incompatibility and hasn't been
+re-attempted. The pinned `GO2RTC_VERSION` ARG is the single source of
+truth — `cycle.sh` greps it out so local dev downloads the matching
+release. See `docker/Dockerfile` for the current recipe.
 
 Volumes: `/config` (state file, generated go2rtc.yaml, gwell token
 cache), `/media` (snapshots + recordings). HA add-on re-roots `/media`

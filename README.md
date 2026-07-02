@@ -16,7 +16,6 @@ snapshot extraction and MP4 recording. Docker image ~65 MB.
 
 ![Supports amd64](https://img.shields.io/badge/amd64-yes-success.svg)
 ![Supports arm64v8](https://img.shields.io/badge/arm64v8-yes-success.svg)
-![Supports arm32v7](https://img.shields.io/badge/arm32v7-yes-success.svg)
 ![Apple Silicon](https://img.shields.io/badge/apple_silicon-yes-success.svg)
 ![Home Assistant Add-on](https://img.shields.io/badge/home_assistant-add--on-blue.svg?logo=homeassistant&logoColor=white)
 
@@ -148,18 +147,48 @@ docker run -p 5080:5080 -p 8554:8554 -p 8888:8888 -p 8889:8889 -p 8189:8189/udp 
   -e WYZE_PASSWORD=yourpass \
   -e WYZE_API_ID=your-api-id \
   -e WYZE_API_KEY=your-api-key \
-  idisposablegithub365/wyze-bridge:go
+  idisposablegithub365/wyze-bridge:latest
 ```
 
 Then open `http://localhost:5080` for the WebUI.
 
+> [!TIP]
+> **TUTK / older doorbell users:** if streams fail with `discovery
+> timeout` and a packet capture shows ICMP `port unreachable` on the
+> return path, Docker's bridge NAT is dropping the camera's UDP
+> dial-back. Add `--network=host` (or `network_mode: host` in
+> compose) — the bridge then binds directly to the host network and
+> NAT is out of the way. The HA add-on already runs host-networked
+> for the same reason.
+
+## Docker image tags
+
+Published to both Docker Hub (`idisposablegithub365/wyze-bridge`) and
+GHCR (`ghcr.io/idisposable/docker-wyze-bridge`). Both registries carry
+the same image under the same tags.
+
+| Tag | What it is | When to use |
+| --- | ---------- | ----------- |
+| `latest` | Newest released stable version. Auto-advanced by CI when a new `v*.*.*` tag is pushed. | Default for most users. |
+| `4`, `4.5`, `4.5.0` | Semver-narrowed pins for the same release. `4.5` follows the newest 4.5.x patch, `4` follows the newest 4.x.y. | Pin the compatibility window you want. |
+| `main` | HEAD of the `main` branch. **May advance between tagged releases** because CI commits `[skip ci]` version-bumps to the edge add-on config on `main`. The bridge code itself matches `latest`; the extra commits are add-on metadata. | Only if you need something merged to `main` between tags. |
+| `edge` | HEAD of the `dev` branch. Bleeding-edge, may be unstable, refreshed by every dev push. Also published as `X.Y.Z-edge.YYYYMMDD.HHMM` per build. | Testing unreleased fixes; HA add-on's "Wyze Bridge (Edge)" pins to this. |
+| `sha-<40-char>` | Immutable per-commit pin. | Rollbacks, reproducible deployments. |
+
 ## Docker Compose
+
+**Option A — pull the prebuilt image** (recommended):
 
 ```yaml
 services:
   wyze-bridge:
-    image: idisposablegithub365/wyze-bridge:go
+    image: idisposablegithub365/wyze-bridge:latest
     restart: unless-stopped
+    # network_mode: host      # Uncomment for TUTK / doorbell users
+                              #  hit by Docker bridge NAT dropping the
+                              #  camera's UDP return path. When host
+                              #  mode is on, omit the `ports:` block
+                              #  below — host networking exposes them.
     ports:
       - 5080:5080            # WebUI + REST API
       - 8554:8554            # RTSP
@@ -179,6 +208,29 @@ services:
       # - RECORD_ALL=true
       # - MQTT_HOST=homeassistant.local    # Enables MQTT auto-discovery
 ```
+
+Then `docker compose pull && docker compose up -d`.
+
+**Option B — build from source**. Clone the repo and use the shipped
+[`docker-compose.yml`](docker-compose.yml) — it's already wired to
+build the image locally from the current `docker/Dockerfile`:
+
+```bash
+git clone https://github.com/IDisposable/docker-wyze-bridge.git
+cd docker-wyze-bridge
+# Fill in credentials in docker-compose.yml (or a .env file)
+docker compose up -d --build
+```
+
+Same environment / volumes / ports as Option A, just built from
+whatever revision you have checked out. Useful for testing unmerged
+branch changes.
+
+**Architectures.** We publish `linux/amd64` and `linux/arm64` only.
+32-bit ARM (`linux/arm/v7`, RPi 3 / RPi Zero 2 32-bit) isn't shipped
+— the CI build failed on a go2rtc-fetch / base-image incompatibility
+and hasn't been re-attempted. A native local build on an armv7 host
+may work, but is unsupported.
 
 ## Stream URLs
 
