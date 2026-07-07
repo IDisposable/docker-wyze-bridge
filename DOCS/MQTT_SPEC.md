@@ -198,23 +198,67 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 
 ## PID / command reference
 
-| Property | PID | GET command | SET command |
-|---|---|---|---|
-| status_light | P1 | K10030GetNetworkLightStatus | K10032SetNetworkLightStatus |
-| night_vision | P2 (mode) / P3 (status) | K10040GetNightVisionStatus | K10042SetNightVisionStatus |
-| bitrate | P3 | K10050GetVideoParam | — |
-| res | P4 | — | — |
-| fps | P5 | — | — |
-| hor_flip | P6 | — | K10052HorizontalFlip |
-| ver_flip | P7 | — | K10052VerticalFlip |
-| motion_detection | P13 | K10200GetMotionAlarm | — |
-| motion_tagging | P21 | K10290GetMotionTagging | K10292SetMotionTagging |
-| irled | P50 | K10044GetIRLEDStatus | K10046SetIRLEDStatus |
-| alarm | — | K10632GetAlarmFlashing | K10630SetAlarmFlashing |
-| pan_cruise | — | K11014GetCruise | K11016SetCruise |
-| motion_tracking (pan) | — | K11020GetMotionTracking | K11022SetMotionTracking |
-| rotary_degree | — | — | K11000SetRotaryByDegree |
-| reset_rotation | — | — | K11004ResetRotatePosition |
+All opcodes cross-referenced against wyzecam Python
+`tutk_protocol.py` @ mrlt8/docker-wyze-bridge blob 73dded9c
+(65-class catalog, HW-tested against production hardware for years).
+
+Response opcode is **always request + 1** — encoded in the `TutkWyzeProtocolMessage`
+base class. Verified across 9 request/response pairs in the source.
+
+| Property | PID | GET command | SET command | SET payload | Notes |
+|---|---|---|---|---|---|
+| status_light | P1 | K10030 GetNetworkLightStatus | K10032 SetNetworkLightStatus | `[value:1]` (1=on, 2=off) | |
+| night_vision | P2 / P3 | K10040 GetNightVisionStatus | K10042 SetNightVisionStatus | `[status:1]` (1=on, 2=off, **3=auto**) | |
+| bitrate | P3 | K10050 GetVideoParam | K10052 SetBitrate | `<HBBBB` = `bitrate:u16 LE + 4 zero bytes` | K10050 for GET only on FW 4.51+ |
+| res | P4 | — | K10056 SetResolvingBit (WYZEDB3 uses K10052 variant) | multi-field | |
+| fps | P5 | — | K10052 SetFPS | `[0,0,0,fps,0,0]` (6 bytes; fps at [3]) | |
+| hor_flip | P6 | — | K10052 HorizontalFlip | `[0,0,0,0,h,0]` (6 bytes; horizontal at [4]) | Shares opcode 10052 with FPS/bitrate/ver_flip |
+| ver_flip | P7 | — | K10052 VerticalFlip | `[0,0,0,0,0,v]` (6 bytes; vertical at [5]) | Shares opcode 10052 |
+| motion_detection | P13 | K10200 GetMotionAlarm | K10202 (WYZEDB3/WVOD1/HL_WCO2/WYZEC1) or K10206 SetMotionAlarm | `[value:1, 0]` | Model-branched SET |
+| motion_tagging | P21 | K10290 GetMotionTagging | K10292 SetMotionTagging | `[value:1]` | |
+| irled | P50 | K10044 GetIRLEDStatus | K10046 SetIRLEDStatus | `[status:1]` (1=850nm long-range/on, 2=940nm short-range/off) | |
+| alarm (siren) | — | K10632 GetAlarmFlashing | K10630 SetAlarmFlashing | `[value:1, value:1]` (**value duplicated, 2 bytes**) | Fires both siren AND flashing LED — no separate opcode |
+| spotlight | — | K10640 GetSpotlightStatus | K10646 SetSpotlightStatus | `[status:1]` (1=on, 2=off) | WYZEC3L / floodlight lineage only |
+| take_photo | — | — | K10058 TakePhoto | `[1]` (always) | To SD card; separate BOA retrieval |
+| pan_cruise | — | K11014 GetCruise | K11016 SetCruise | `[value:1]` | |
+| motion_tracking (pan) | — | K11020 GetMotionTracking | K11022 SetMotionTracking | `[value:1]` | |
+| rotate_degree | — | — | K11000 SetRotaryByDegree | `<hhB` = `h:i16 LE, v:i16 LE, speed:u8` | Vertical clamped to int8 range by firmware (#862) |
+| rotate_action | — | — | K11002 SetRotaryByAction | `[direction:1, direction:1, speed:1]` (3 bytes, direction duplicated) | 1=L, 2=R, 3=U, 4=D |
+| reset_rotation | — | — | K11004 ResetRotatePosition | `[position:1]` (default 3) | |
+| ptz_position | — | — | K11018 SetPTZPosition | `<IBH` = `timestamp_ms:u32 LE, v:u8 (0-40), h:u16 LE (0-350)` | **Absolute** position; timestamp injected by handler |
+| get_cruise_point | — | K11006 GetCurCruisePoint | — | resp: `<IBH` | |
+| cruise_points | — | K11010 GetCruisePoints | K11012 SetCruisePoints | multi-field | |
+| osd_text | — | K10070 GetOSDStatus | K10072 SetOSDStatus | `[value:1]` | Camera name overlay |
+| osd_logo | — | K10074 GetOSDLogoStatus | K10076 SetOSDLogoStatus | `[value:1]` | Wyze logo overlay |
+| camera_time | — | K10090 GetCameraTime | K10092 SetCameraTime | `<I` = `timestamp:u32 LE` | |
+| timezone | — | — | K10302 SetTimeZone | `<b` = `tz:i8 (-11..13)` | |
+| rtsp_switch | — | K10604 GetRtspParam | K10600 SetRtspSwitch | `[value:1]` | Turn cam into RTSP-firmware mode |
+| device_state | — | — | K10444 SetDeviceState | `[value:1]` | Outdoor Cam wake |
+| battery | — | K10448 GetBatteryUsage | — | resp: JSON | Battery-powered models |
+| format_sd | — | — | K10242 FormatSDCard | asserts `value==1` | **DESTRUCTIVE — not exposed via MQTT** |
+
+### Not implemented via TUTK
+
+- **`restart` / `reboot`** — there is no K-code for camera reboot in wyzecam.
+	Bridge uses Wyze cloud API `wyzeapi.RunAction(cam, "restart")` instead.
+
+### Fork-guess corrections (2026-07-06 research)
+
+Our private go2rtc fork's `pkg/wyze/control.go` initially shipped with 7
+opcodes reverse-engineered from public sources. Cross-referenced against
+wyzecam Python (5 parallel research angles), **all 7 were wrong**:
+
+| Fork guess (wrong) | What that opcode actually does | Correct opcode |
+|---|---|---|
+| SetSpotlight = 11000 | K11000 = PTZ rotate-by-degree | **K10646** |
+| SetNightVision = 10626 | K10626 = dusk/dark auto-switch threshold | **K10042** |
+| SetIRLED = 10646 | K10646 = spotlight | **K10046** |
+| SetSiren = 11635 | K11635 = doorbell quick-response canned phrases | **K10630** |
+| SetFlip = 10058 (1-byte per axis) | K10058 = TakePhoto | **K10052** (6-byte, index 4/5) |
+| PTZ = 11018 (2×i16) | K11018 payload is `<IBH` not `<hh` | **K11018** (`<IBH`) |
+| Restart = 10004 (empty) | No such opcode exists | none (use cloud API) |
+
+Fork PR to correct all 7 tracked in `DOCS/fork-control-plane-patch.md`.
 
 ---
 
@@ -241,9 +285,83 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 | Property publish mirror for the above SET commands | Phase 1 (Write-only) |
 | HA discovery: stream, power, reboot, update_snapshot, ir, status_light, motion_detection, motion_tagging, bitrate, fps, flip_h/v, recording | Phase 1 |
 | Notifications (`set/notifications`, discovery entity) | Deferred |
-| GET command subscriptions (`{prop}/get`) with live TUTK readback | Deferred |
+
+## Phase 2: TUTK control-plane (in progress, targets 4.7)
+
+The private go2rtc fork's `pkg/wyze/` exposes IOCtrl transport +
+HL K-command encoders. Fork PR (see `DOCS/fork-control-plane-patch.md`)
+adds HTTP endpoints so the bridge can send commands via
+`internal/wyzectl/` — one endpoint per Wyze-semantic command
+(Shape A). Send-only for Phase 2.0; property readback (SSE
+subscription) deferred to Phase 2.1.
+
+Scoping: TUTK cameras only. Doorbell / OG / floodlight-pro
+route through mars-webcsrv WebRTC and use the Wyze cloud API
+for control (unchanged from Phase 1).
+
+Confidence rating per command family:
+
+- `[HW-verified: V3]` — testable on the maintainer's V3 fleet
+- `[Spec-only]` — opcode/payload verified against wyzecam, but
+	no hardware in the test fleet. First community reporter to
+	confirm gets a mention.
+
+| Command | Wyze opcode | Confidence | Notes |
+|---|---|---|---|
+| SET `night_vision` (on/off/auto) | K10042 | HW-verified: V3 | 1/2/3 |
+| SET `ir_led` (on/off) | K10046 | HW-verified: V3 | 1/2 (850nm / 940nm) |
+| SET `hor_flip` (on/off) | K10052 (h at [4]) | HW-verified: V3 | |
+| SET `ver_flip` (on/off) | K10052 (v at [5]) | HW-verified: V3 | |
+| SET `spotlight` (on/off) | K10646 | HW-verified: WYZEC3L | Silent no-op on plain V3 |
+| SET `siren` (on/off) | K10630 | HW-verified: V3 | See safety note below |
+| CMD `take_photo` | K10058 | HW-verified: V3 | |
+| SET `pan_cruise` (on/off) | K11016 | Spec-only | Pan-cam only |
+| SET `motion_tracking` (on/off) | K11022 | Spec-only | Pan-cam only |
+| CMD `rotate_action` (L/R/U/D + speed) | K11002 | Spec-only | Pan-cam only |
+| CMD `rotate_degree` (h/v deg + speed) | K11000 | Spec-only | vDeg clamped to int8 range (#862) |
+| CMD `ptz_position` (v 0-40, h 0-350) | K11018 | Spec-only | |
+| CMD `reset_rotation` | K11004 | Spec-only | |
+
+### Safety notes
+
+**Siren** (K10630) fires the hardware siren (~90-100dB on V3-family)
+AND the flashing status LED simultaneously — there is no separate
+opcode for either. New env var `SIREN_ENABLED=false` (default) gates
+the entire `set/alarm` subscription so a stray MQTT publish can't
+trigger a 3-AM incident. Operators must explicitly opt in.
+
+**Format SD** (K10242) is deliberately not exposed via MQTT. Wiring
+an "erase disk" button through a subscribable topic is asking for
+trouble; if operators want this they can call the cloud API
+directly. No bridge surface will invoke K10242.
+
+**PTZ** commands have no camera-side rate limit but the motor can't
+absorb rapid direction changes without visible jitter (mrlt8 #728).
+The bridge does not debounce; upstream automations are responsible
+for reasonable command cadence.
+
+### Firmware quirks noted during research
+
+- **HL_CAM4 4.52.7.0367+** — WAN P2P blocked, some LAN works.
+	Bridge auto-fallback to WebRTC (4.5.0) is the recovery path.
+- **HL_PAN4 4.70.1.3311+** — `IOTC_ER_UNLICENSE (-10)` on session
+	setup, distinct from CAM4's issue. Wyze-side SDK-version bump.
+	No workaround known; can't be reached via TUTK at all.
+- **Cam v3 4.36.14.2589 / Pan v3 4.50.15.4900** — auth-drift Feb
+	2025. `network_mode: host` recovers LAN-mode for most.
+- **Motion alarm SET is model-branched**: K10202 on
+	WYZEDB3/WVOD1/HL_WCO2/WYZEC1; K10206 on everything else.
+	Fork PR handles the branch server-side.
+- **Bitrate GET** moved to K10050 on FW 4.51+ (was K10052).
+
+| Area | Status |
+|---|---|
+| Phase 2: fork PR (opcodes + HTTP endpoints) | In progress |
+| Phase 2: `internal/wyzectl/` HTTP client | Implemented |
+| Phase 2: MQTT `set/<control>` subscribers | Not started |
+| Phase 2: HA discovery for Phase 2 controls | Not started |
+| Phase 2: `SIREN_ENABLED` safety env | Not started |
+| Phase 2.1: SSE readback subscription | Deferred |
 | Property state from live TUTK polling (`param_info`, `K10050`) | Deferred |
 | Motion event parity (`{cam}/motion`) from camera alarm stream | Deferred |
-| Alarm (`K10630/K10632`) parity | Deferred |
-| Pan-cam state + K110xx commands | Deferred |
 | Sensors requiring live readback (`res`, `wifi`) | Deferred |
