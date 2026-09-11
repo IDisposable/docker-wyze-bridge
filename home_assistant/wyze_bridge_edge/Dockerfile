@@ -13,6 +13,7 @@ RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
 
 COPY --from=bridge-bin /usr/local/bin/wyze-bridge /usr/local/bin/wyze-bridge
 COPY --from=bridge-bin /usr/local/bin/go2rtc      /usr/local/bin/go2rtc
+COPY --from=bridge-bin /usr/local/bin/gwell-proxy /usr/local/bin/gwell-proxy
 
 COPY run.sh /
 RUN chmod +x /run.sh
