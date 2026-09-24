@@ -37,12 +37,16 @@ var modelRegistry = map[string]ModelSpec{
 	"HL_PAN2":        {Name: "Pan V2", IsPan: true},
 	"HL_PAN3":        {Name: "Pan V3", IsPan: true},
 	"HL_PANP":        {Name: "Pan Pro", IsPan: true},
-	"HL_CFL2":        {Name: "Floodlight V2"},
-	"WYZEDB3":        {Name: "Doorbell", IsDoorbell: true},
-	"HL_DB2":         {Name: "Doorbell V2", IsDoorbell: true},
-	"GW_BE1":         {Name: "Doorbell Pro", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
-	"AN_RDB1":        {Name: "Doorbell Pro 2", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
-	"GW_DBD":         {Name: "Doorbell Duo", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
+	// Pan v4: the cloud omits the TUTK uid, so TUTK cannot start.
+	"HL_PAN4": {Name: "Pan v4", IsWebRTCStreamer: true, IsPan: true},
+	"HL_CFL2": {Name: "Floodlight V2"},
+	// Bulb Cam: TUTK discovery does not complete. WebRTC does.
+	"HL_BC":   {Name: "Bulb Cam", IsWebRTCStreamer: true},
+	"WYZEDB3": {Name: "Doorbell", IsDoorbell: true},
+	"HL_DB2":  {Name: "Doorbell V2", IsDoorbell: true},
+	"GW_BE1":  {Name: "Doorbell Pro", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
+	"AN_RDB1": {Name: "Doorbell Pro 2", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
+	"GW_DBD":  {Name: "Doorbell Duo", IsGwell: true, IsWebRTCStreamer: true, IsDoorbell: true},
 	// OG cameras stream via Wyze's mars-webcsrv WebRTC backend
 	// (same path as the Doorbell Pro). The gwell-proxy LAN-direct
 	// path is no longer reliable for OG; users who still want it can

@@ -87,9 +87,9 @@ func fullMockServer(t *testing.T) (*Client, *atomic.Int32) {
 							"nickname":      "OG Cam",
 							"enr":           "og_enr",
 							"device_params": map[string]interface{}{
-								"p2p_id":   "UIDOGCAM00000000000",
-								"p2p_type": float64(4),
-								"ip":       "192.168.1.101",
+								"p2p_id":            "UIDOGCAM00000000000",
+								"p2p_type":          float64(4),
+								"ip":                "192.168.1.101",
 								"camera_thumbnails": map[string]interface{}{},
 							},
 						},
@@ -392,5 +392,127 @@ func TestIntegration_EnsureAuth_RefreshFails_ReLogin(t *testing.T) {
 	}
 	if c.Auth().AccessToken != "new_token" {
 		t.Errorf("token = %q, want new_token", c.Auth().AccessToken)
+	}
+}
+
+func TestGetCameraList_ReloginWhenTokenRejected(t *testing.T) {
+	var listCalls atomic.Int32
+	var loginCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/user/login":
+			loginCalls.Add(1)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": "1",
+				"data": map[string]interface{}{
+					"access_token":  "fresh_access",
+					"refresh_token": "fresh_refresh",
+					"user_id":       "uid_001",
+				},
+			})
+		case "/v2/home_page/get_object_list":
+			n := listCalls.Add(1)
+			if n == 1 {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"code": "2001",
+					"msg":  "access token expired",
+				})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": "1",
+				"data": map[string]interface{}{
+					"device_list": []interface{}{
+						map[string]interface{}{
+							"product_type":  "Camera",
+							"product_model": "HL_CAM4",
+							"mac":           "AABBCCDDEEFF",
+							"nickname":      "Front Door",
+							"enr":           "secret_enr",
+							"device_params": map[string]interface{}{
+								"p2p_id": "UIDFRONTDOOR12345678",
+								"ip":     "192.168.1.100",
+							},
+						},
+					},
+				},
+			})
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Credentials{Email: "a@b.com", Password: "p", APIID: "i", APIKey: "k"}, "v", zerolog.Nop())
+	c.AuthURL = srv.URL
+	c.WyzeURL = srv.URL
+	c.SetAuth(&AuthState{
+		AccessToken:  "stale",
+		RefreshToken: "still-looks-valid",
+		PhoneID:      "ph",
+		ExpiresAt:    time.Now().Add(2 * time.Hour),
+	})
+
+	cams, err := c.GetCameraList()
+	if err != nil {
+		t.Fatalf("GetCameraList: %v", err)
+	}
+	if len(cams) != 1 || cams[0].MAC != "AABBCCDDEEFF" {
+		t.Fatalf("cameras = %+v", cams)
+	}
+	if loginCalls.Load() != 1 {
+		t.Errorf("login calls = %d, want 1", loginCalls.Load())
+	}
+	if listCalls.Load() != 2 {
+		t.Errorf("list calls = %d, want 2", listCalls.Load())
+	}
+	if c.Auth().AccessToken != "fresh_access" {
+		t.Errorf("token = %q", c.Auth().AccessToken)
+	}
+	if c.Auth().PhoneID != "ph" {
+		t.Errorf("phone id = %q, want ph", c.Auth().PhoneID)
+	}
+}
+
+func TestGetCameraList_ReloginFailureDoesNotLoop(t *testing.T) {
+	var listCalls atomic.Int32
+	var loginCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/user/login":
+			loginCalls.Add(1)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": "1001",
+				"msg":  "bad credentials",
+			})
+		case "/v2/home_page/get_object_list":
+			listCalls.Add(1)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"code": "2001",
+				"msg":  "access token expired",
+			})
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(Credentials{Email: "a@b.com", Password: "p", APIID: "i", APIKey: "k"}, "v", zerolog.Nop())
+	c.AuthURL = srv.URL
+	c.WyzeURL = srv.URL
+	c.SetAuth(&AuthState{
+		AccessToken: "stale",
+		PhoneID:     "ph",
+		ExpiresAt:   time.Now().Add(2 * time.Hour),
+	})
+
+	_, err := c.GetCameraList()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if loginCalls.Load() != 1 || listCalls.Load() != 1 {
+		t.Fatalf("login=%d list=%d, want 1 and 1", loginCalls.Load(), listCalls.Load())
 	}
 }

@@ -170,11 +170,12 @@ Old pickle files are not migrated. The bridge will re-authenticate and re-discov
 
 Previously unsupported in the Python bridge, now handled in two ways:
 
-- **OG family** (`GW_GC1`, `GW_GC2`) — `gwell-proxy` sidecar speaks
-  Gwell P2P directly (LAN-direct UDP) and republishes to go2rtc via
-  RTSP. Enabled by default; the sidecar only spawns when an OG camera
-  is actually discovered, so users without OG cameras pay zero cost.
-  Set `GWELL_ENABLED=false` to opt out.
+- **OG family** (`GW_GC1`, `GW_GC2`) streams over WebRTC, same as
+  the doorbells. gwell-proxy is the opt-in path. Set
+  `MODEL_OVERRIDES=GW_GC1:is_gwell=true,is_gwell_p2p=true,is_webrtc=false`
+  (and the same for `GW_GC2`). The sidecar starts only when a
+  Gwell-P2P camera is discovered. Window Cam (`GW_WC`) uses that
+  path by default.
 - **Doorbell lineage** (`GW_BE1` Doorbell Pro, `GW_DBD` Doorbell Duo)
   — go2rtc's native `#format=wyze` source dials Wyze's
   `wyze-mars-webcsrv.wyzecam.com` WebRTC signaling server itself; our
@@ -183,8 +184,8 @@ Previously unsupported in the Python bridge, now handled in two ways:
 
 ### Not Supported
 
-Battery Cam Pro, Floodlight Pro (LD_CFP) — different protocol than
-either of the above.
+Battery Cam Pro (`AN_RSCW`). Floodlight Pro (`LD_CFP`) streams over
+WebRTC, same path as the doorbells.
 
 ## Known Issues
 

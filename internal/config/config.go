@@ -219,7 +219,7 @@ func Load() (*Config, error) {
 		// useful for integrations that poll for the current frame.
 		SnapshotPath:     env("SNAPSHOT_PATH", "/media/snapshots/{cam_name}/%Y-%m-%d"),
 		SnapshotFileName: env("SNAPSHOT_FILE_NAME", "%H-%M-%S"),
-		SnapshotInterval: envInt("SNAPSHOT_INTERVAL", 0),
+		SnapshotInterval: envSeconds("SNAPSHOT_INTERVAL", 0),
 		SnapshotKeep:     envDuration("SNAPSHOT_KEEP", 0),
 		SnapshotCameras:  envList("SNAPSHOT_CAMERAS"),
 

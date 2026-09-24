@@ -91,6 +91,33 @@ func TestEnvList(t *testing.T) {
 	}
 }
 
+func TestEnvSeconds(t *testing.T) {
+	tests := []struct {
+		val  string
+		want int
+	}{
+		{"60", 60},
+		{"60s", 60},
+		{"5m", 300},
+		{"1h", 3600},
+		{"1d", 86400},
+		{"0", 0},
+		{"bad", 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.val, func(t *testing.T) {
+			t.Setenv("TEST_SECS", tt.val)
+			got := envSeconds("TEST_SECS", 7)
+			if got != tt.want {
+				t.Errorf("envSeconds(%q) = %d, want %d", tt.val, got, tt.want)
+			}
+		})
+	}
+	if got := envSeconds("TEST_SECS_MISSING", 7); got != 7 {
+		t.Errorf("missing envSeconds = %d, want 7", got)
+	}
+}
+
 func TestEnvDuration(t *testing.T) {
 	tests := []struct {
 		val  string

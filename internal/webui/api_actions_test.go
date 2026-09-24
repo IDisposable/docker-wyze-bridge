@@ -104,9 +104,9 @@ type fakeRecMgr struct {
 	recording bool
 }
 
-func (f *fakeRecMgr) IsRecording(_ string) bool        { return f.recording }
-func (f *fakeRecMgr) ActiveRecorders() []string         { return nil }
-func (f *fakeRecMgr) SessionBytes(_ string) int64       { return 0 }
+func (f *fakeRecMgr) IsRecording(_ string) bool   { return f.recording }
+func (f *fakeRecMgr) ActiveRecorders() []string   { return nil }
+func (f *fakeRecMgr) SessionBytes(_ string) int64 { return 0 }
 
 func TestHandleAPICameraAction_RecordStartStop(t *testing.T) {
 	srv, _ := testServer(t)
@@ -253,7 +253,18 @@ func TestHandleShimKVSSignaling_HappyPath(t *testing.T) {
 	}
 	servers, _ := got["servers"].([]interface{})
 	if len(servers) != 2 {
-		t.Errorf("servers count = %d, want 2", len(servers))
+		t.Fatalf("servers count = %d, want 2", len(servers))
+	}
+	first, _ := servers[0].(map[string]interface{})
+	if first["urls"] != "stun:stun.kinesisvideo.us-west-2.amazonaws.com:443" {
+		t.Errorf("ice urls = %v", first["urls"])
+	}
+	if _, ok := first["url"]; ok {
+		t.Errorf("ice server used url key: %v", first)
+	}
+	second, _ := servers[1].(map[string]interface{})
+	if second["username"] != "u" || second["credential"] != "p" {
+		t.Errorf("turn auth = %v", second)
 	}
 }
 

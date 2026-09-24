@@ -136,6 +136,8 @@ func TestCameraInfo_IsWebRTCStreamer(t *testing.T) {
 		{"OG 3X with empty IP is webrtc", "GW_GC2", "", true},
 		{"OG with 0.0.0.0 is webrtc", "GW_GC1", "0.0.0.0", true},
 		{"TUTK camera is not webrtc", "HL_CAM4", "10.0.0.5", false},
+		{"bulb cam is webrtc", "HL_BC", "10.0.0.8", true},
+		{"pan v4 is webrtc", "HL_PAN4", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -253,6 +255,15 @@ func TestCameraInfo_IsPanCam(t *testing.T) {
 	notPan := CameraInfo{Model: "HL_CAM4"}
 	if notPan.IsPanCam() {
 		t.Error("HL_CAM4 should not be a pan cam")
+	}
+
+	pan4 := CameraInfo{Model: "HL_PAN4"}
+	if !pan4.IsPanCam() || !pan4.IsWebRTCStreamer() {
+		t.Errorf("HL_PAN4 pan=%v webrtc=%v", pan4.IsPanCam(), pan4.IsWebRTCStreamer())
+	}
+	bulb := CameraInfo{Model: "HL_BC"}
+	if bulb.IsPanCam() || !bulb.IsWebRTCStreamer() {
+		t.Errorf("HL_BC pan=%v webrtc=%v", bulb.IsPanCam(), bulb.IsWebRTCStreamer())
 	}
 }
 

@@ -32,6 +32,26 @@ go2rtc's ports, its API auth, and the stream set it serves.
 Internal WebUI URL generation (RTSP-copy button, WebRTC copy) now
 uses the configured ports instead of hard-coded 8554 / 1984.
 
+- **HA add-on includes gwell-proxy** ([#138](https://github.com/IDisposable/docker-wyze-bridge/issues/138)):
+	the stable image and the edge image copy `/usr/local/bin/gwell-proxy`
+	from the CI image. Without that file, Window Cam (`GW_WC`) and any
+	model flipped back to Gwell P2P log `gwell-proxy binary not found`
+	and send no video.
+- **WebRTC ICE servers use `urls`** ([#150](https://github.com/IDisposable/docker-wyze-bridge/issues/150)):
+	the KVS shim sent each ICE server as `url`. go2rtc reads `urls`,
+	so the list was empty and WebRTC cameras gathered host candidates
+	only. Remote cameras then failed with no media.
+- **Bulb Cam and Pan v4 default to WebRTC** ([#148](https://github.com/IDisposable/docker-wyze-bridge/issues/148), [#147](https://github.com/IDisposable/docker-wyze-bridge/issues/147)):
+	`HL_BC` and `HL_PAN4` are WebRTC streamers in the model registry.
+	Pan v4 is also a pan camera. No `MODEL_OVERRIDES` line is required.
+- **Expired Wyze access token forces a new login** ([#143](https://github.com/IDisposable/docker-wyze-bridge/issues/143)):
+	cloud code `2001` while the saved token still looks fresh now
+	drops that token, logs in again, retries the call once, and
+	writes the new token to the state file.
+- **`SNAPSHOT_INTERVAL` accepts durations** ([#128](https://github.com/IDisposable/docker-wyze-bridge/issues/128)):
+	`60`, `60s`, `5m`, and `1d` all work. `60s` used to be ignored,
+	which left snapshots off.
+
 ## 4.5.0-edge
 
 Runtime **TUTK → WebRTC auto-fallback** for cameras Wyze crippled

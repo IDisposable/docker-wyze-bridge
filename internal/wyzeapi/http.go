@@ -75,6 +75,33 @@ func (e *WyzeAPIError) AccessTokenExpired() bool {
 	return e.Code == "2001"
 }
 
+func isAccessTokenExpired(err error) bool {
+	var apiErr *WyzeAPIError
+	return errors.As(err, &apiErr) && apiErr.AccessTokenExpired()
+}
+
+// withFreshAuth runs an authenticated call. On code 2001 it logs in
+// again and retries the call once. call must build its payload inside
+// the closure so the retry uses the new token.
+func (c *Client) withFreshAuth(call func() (map[string]interface{}, error)) (map[string]interface{}, error) {
+	if err := c.EnsureAuth(); err != nil {
+		return nil, err
+	}
+	stale := ""
+	if c.auth != nil {
+		stale = c.auth.AccessToken
+	}
+	resp, err := call()
+	if !isAccessTokenExpired(err) {
+		return resp, err
+	}
+	c.log.Warn().Msg("Wyze rejected the access token; logging in again")
+	if rerr := c.forceRelogin(stale); rerr != nil {
+		return nil, fmt.Errorf("access token expired, re-login failed: %w", rerr)
+	}
+	return call()
+}
+
 // RateLimitError represents a Wyze API rate limit response.
 type RateLimitError struct {
 	Remaining int

@@ -30,6 +30,28 @@ func envBool(key string, fallback bool) bool {
 	return fallback
 }
 
+// envSeconds reads an interval in seconds. A plain integer is seconds.
+// A duration (60s, 5m, 1h, 1d) is converted to whole seconds.
+// A bad value returns fallback.
+func envSeconds(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return n
+	}
+	d := envDuration(key, -1)
+	if d < 0 {
+		return fallback
+	}
+	secs := int(d / time.Second)
+	if secs < 0 {
+		return fallback
+	}
+	return secs
+}
+
 // envInt returns an int from an environment variable.
 func envInt(key string, fallback int) int {
 	v := os.Getenv(key)

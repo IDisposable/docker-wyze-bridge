@@ -86,8 +86,8 @@ configure the path, the bridge routes based on the model.
   camera's MAC) so gwell-proxy locks LAN-direct instead of relay.
 - **WebRTC (KVS)** — go2rtc's native `#format=wyze` handler dials
   Wyze's `wyze-mars-webcsrv.wyzecam.com` signaling server itself and
-  speaks AWS-KVS WebRTC. Used by doorbell-lineage hardware that skips
-  both TUTK and Gwell P2P.
+  speaks AWS-KVS WebRTC. Used by doorbells, OG cameras, Bulb Cam,
+  Pan v4, and Floodlight Pro.
 
 | Camera | Wyze ID | Path | Status |
 | ------ | ------- | ---- | ------ |
@@ -98,10 +98,12 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam V4 (2K) | `HL_CAM4` | TUTK / WebRTC | Confirmed on FW <4.52; newer FW blocks TUTK, bridge auto-fallbacks to WebRTC (see below) |
 | Wyze Cam Floodlight | `WYZE_CAKP2JFUS` | TUTK | Should work |
 | Wyze Cam Floodlight V2 (2K) | `HL_CFL2` | TUTK | Should work |
+| Wyze Bulb Cam | `HL_BC` | WebRTC | Confirmed |
 | Wyze Cam Pan | `WYZECP1_JEF` | TUTK | Should work |
 | Wyze Cam Pan V2 | `HL_PAN2` | TUTK | Should work |
 | Wyze Cam Pan V3 | `HL_PAN3` | TUTK | Mostly working |
 | Wyze Cam Pan Pro (2K) | `HL_PANP` | TUTK | Should work |
+| Wyze Cam Pan v4 | `HL_PAN4` | WebRTC | Expected (cloud sends no TUTK uid) |
 | Wyze Cam Outdoor | `WVOD1` | TUTK | Should work |
 | Wyze Cam Outdoor V2 | `HL_WCO2` | TUTK | Should work |
 | Wyze Cam Doorbell V1 | `WYZEDB3` | TUTK | Needs support in go2rtc |
@@ -109,10 +111,11 @@ configure the path, the bridge routes based on the model.
 | Wyze Video Doorbell Pro | `GW_BE1` | WebRTC | **Confirmed 2026-04-20** |
 | Wyze Video Doorbell Pro 2 | `AN_RDB1` | WebRTC | Expected (same lineage) |
 | Wyze Video Doorbell Duo | `GW_DBD` | WebRTC | Expected (same lineage) |
-| Wyze Cam OG | `GW_GC1` | WebRTC | Confirmed (route via `is_webrtc=true` overrides `is_gwell` to reach mars-webcsrv) |
-| Wyze Cam OG Telephoto 3X | `GW_GC2` | WebRTC | Expected (same lineage as GW_GC1) |
+| Wyze Cam OG | `GW_GC1` | WebRTC | Confirmed |
+| Wyze Cam OG Telephoto 3X | `GW_GC2` | WebRTC | Expected (same path as OG) |
+| Wyze Window Cam | `GW_WC` | Gwell P2P | LAN-direct |
 | Wyze Battery Cam Pro | `AN_RSCW` | — | Not supported |
-| Wyze Cam Floodlight Pro (2K) | `LD_CFP` | — | Not supported |
+| Wyze Cam Floodlight Pro (2K) | `LD_CFP` | WebRTC | Confirmed |
 
 "Expected" means the code path is plumbed and equivalent hardware is
 known to work, but we don't own a unit to confirm end-to-end. Bug
@@ -364,7 +367,7 @@ JPEG frames grabbed periodically or on sunrise/sunset events via go2rtc's
 frame API.
 
 ```bash
-SNAPSHOT_INTERVAL=60s                       # periodic capture interval; 0 disables
+SNAPSHOT_INTERVAL=60s                       # 60, 60s, or 5m. 0 disables
 SNAPSHOT_PATH=/media/snapshots/{cam_name}/%Y-%m-%d
 SNAPSHOT_FILE_NAME=%H-%M-%S                 # no extension; .jpg is appended
 SNAPSHOT_KEEP=14d                           # retention; 0 = keep forever

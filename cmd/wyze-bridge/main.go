@@ -107,7 +107,12 @@ func main() {
 				Detail:   err.Error(),
 			})
 		},
-		func() { issueReg.Resolve("wyzeapi/auth") },
+		func() {
+			issueReg.Resolve("wyzeapi/auth")
+			// A fresh login must hit disk. Otherwise the next start
+			// reloads the token Wyze already rejected.
+			persistState(state, apiClient, cfg.StateDir)
+		},
 	)
 
 	camLog := log.With().Str("c", "camera").Logger()

@@ -34,17 +34,14 @@ func FixKVSSignalingURL(u string) string {
 
 // GetCameraList fetches the list of cameras from the Wyze API.
 func (c *Client) GetCameraList() ([]CameraInfo, error) {
-	if err := c.EnsureAuth(); err != nil {
-		return nil, err
-	}
-
-	c.log.Info().Msg("fetching camera list from Wyze API")
-
-	resp, err := c.postJSON(
-		c.WyzeURL+"/v2/home_page/get_object_list",
-		c.defaultHeaders(),
-		c.authenticatedPayload("default"),
-	)
+	resp, err := c.withFreshAuth(func() (map[string]interface{}, error) {
+		c.log.Info().Msg("fetching camera list from Wyze API")
+		return c.postJSON(
+			c.WyzeURL+"/v2/home_page/get_object_list",
+			c.defaultHeaders(),
+			c.authenticatedPayload("default"),
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get_camera_list: %w", err)
 	}
@@ -174,17 +171,14 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 
 // SetProperty sets a device property via the Wyze cloud API.
 func (c *Client) SetProperty(cam CameraInfo, pid, pvalue string) error {
-	if err := c.EnsureAuth(); err != nil {
-		return err
-	}
-
-	payload := c.authenticatedPayload("set_device_Info")
-	payload["device_mac"] = cam.MAC
-	payload["device_model"] = cam.Model
-	payload["pid"] = strings.ToUpper(pid)
-	payload["pvalue"] = pvalue
-
-	_, err := c.postJSON(c.WyzeURL+"/v2/device/set_property", c.defaultHeaders(), payload)
+	_, err := c.withFreshAuth(func() (map[string]interface{}, error) {
+		payload := c.authenticatedPayload("set_device_Info")
+		payload["device_mac"] = cam.MAC
+		payload["device_model"] = cam.Model
+		payload["pid"] = strings.ToUpper(pid)
+		payload["pvalue"] = pvalue
+		return c.postJSON(c.WyzeURL+"/v2/device/set_property", c.defaultHeaders(), payload)
+	})
 	if err != nil {
 		return fmt.Errorf("set_property: %w", err)
 	}
@@ -193,15 +187,12 @@ func (c *Client) SetProperty(cam CameraInfo, pid, pvalue string) error {
 
 // GetDeviceInfo fetches device properties from the Wyze cloud API.
 func (c *Client) GetDeviceInfo(cam CameraInfo) ([]map[string]interface{}, error) {
-	if err := c.EnsureAuth(); err != nil {
-		return nil, err
-	}
-
-	payload := c.authenticatedPayload("get_device_Info")
-	payload["device_mac"] = cam.MAC
-	payload["device_model"] = cam.Model
-
-	resp, err := c.postJSON(c.WyzeURL+"/v2/device/get_device_Info", c.defaultHeaders(), payload)
+	resp, err := c.withFreshAuth(func() (map[string]interface{}, error) {
+		payload := c.authenticatedPayload("get_device_Info")
+		payload["device_mac"] = cam.MAC
+		payload["device_model"] = cam.Model
+		return c.postJSON(c.WyzeURL+"/v2/device/get_device_Info", c.defaultHeaders(), payload)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get_device_info: %w", err)
 	}
@@ -262,28 +253,25 @@ func getInt(m map[string]interface{}, key string) int {
 //	                              "ice_servers":[{"url":"...","username":"...","credential":"..."}],
 //	                              "auth_token":""}}]}
 func (c *Client) GetCameraStream(cam CameraInfo) (map[string]interface{}, error) {
-	if err := c.EnsureAuth(); err != nil {
-		return nil, err
-	}
-	payload := map[string]interface{}{
-		"device_list": []interface{}{
-			map[string]interface{}{
-				"device_id":    cam.MAC,
-				"device_model": cam.Model,
-				"provider":     "webrtc",
-				"parameters":   map[string]interface{}{"use_trickle": true},
+	resp, err := c.withFreshAuth(func() (map[string]interface{}, error) {
+		payload := map[string]interface{}{
+			"device_list": []interface{}{
+				map[string]interface{}{
+					"device_id":    cam.MAC,
+					"device_model": cam.Model,
+					"provider":     "webrtc",
+					"parameters":   map[string]interface{}{"use_trickle": true},
+				},
 			},
-		},
-		"nonce": time.Now().UnixMilli(),
-	}
-	sorted := sortDict(payload)
-	headers := c.signPayloadHeaders("9319141212m2ik", sorted)
-	// Wyze's v4 front door also checks lowercase `authorization`; the
-	// HMAC-signed `access_token` header alone isn't enough.
-	headers["authorization"] = c.auth.AccessToken
-
-	url := c.NewWyzeURL + "/v4/camera/get_streams"
-	resp, err := c.postRaw(url, headers, sorted)
+			"nonce": time.Now().UnixMilli(),
+		}
+		sorted := sortDict(payload)
+		headers := c.signPayloadHeaders("9319141212m2ik", sorted)
+		// Wyze's v4 front door also checks lowercase `authorization`; the
+		// HMAC-signed `access_token` header alone isn't enough.
+		headers["authorization"] = c.auth.AccessToken
+		return c.postRaw(c.NewWyzeURL+"/v4/camera/get_streams", headers, sorted)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get_streams: %w", err)
 	}

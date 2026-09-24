@@ -14,9 +14,11 @@ type KVSStreamProvider interface {
 	GetCameraStream(ctx context.Context, mac, model string) (signalingURL string, iceServers []KVSIceServer, authToken string, err error)
 }
 
-// KVSIceServer matches the shape go2rtc's kinesis client deserializes.
+// KVSIceServer matches the shape go2rtc's UnmarshalICEServers reads.
+// The JSON key is "urls" (string or array). "url" is ignored, and
+// go2rtc then gathers host candidates only.
 type KVSIceServer struct {
-	URL        string `json:"url"`
+	URL        string `json:"urls"`
 	Username   string `json:"username"`
 	Credential string `json:"credential"`
 }
@@ -32,7 +34,7 @@ func (s *Server) SetKVSProvider(p KVSStreamProvider) {
 // and go2rtc expects JSON back shaped like:
 //
 //	{"ClientId":"<phone_id>","cam":"<name>","result":"ok",
-//	 "servers":[{"url":...,"username":...,"credential":...}],
+//	 "servers":[{"urls":...,"username":...,"credential":...}],
 //	 "signalingUrl":"wss://wyze-mars-webcsrv.wyzecam.com?token=..."}
 //
 // ClientId's capital I matters — that's what go2rtc's wyzeKVS struct

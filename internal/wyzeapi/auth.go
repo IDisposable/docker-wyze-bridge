@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -36,11 +37,11 @@ const (
 
 // Endpoint-specific sc/sv values for Wyze API.
 var scSV = map[string][2]string{
-	"default":          {"9f275790cab94a72bd206c8876429f3c", "e1fe392906d54888a9b99b88de4162d7"},
-	"run_action":       {"01dd431d098546f9baf5233724fa2ee2", "2c0edc06d4c5465b8c55af207144f0d9"},
-	"get_device_Info":  {"01dd431d098546f9baf5233724fa2ee2", "0bc2c3bedf6c4be688754c9ad42bbf2e"},
-	"get_event_list":   {"9f275790cab94a72bd206c8876429f3c", "782ced6909a44d92a1f70d582bbe88be"},
-	"set_device_Info":  {"01dd431d098546f9baf5233724fa2ee2", "e8e1db44128f4e31a2047a8f5f80b2bd"},
+	"default":         {"9f275790cab94a72bd206c8876429f3c", "e1fe392906d54888a9b99b88de4162d7"},
+	"run_action":      {"01dd431d098546f9baf5233724fa2ee2", "2c0edc06d4c5465b8c55af207144f0d9"},
+	"get_device_Info": {"01dd431d098546f9baf5233724fa2ee2", "0bc2c3bedf6c4be688754c9ad42bbf2e"},
+	"get_event_list":  {"9f275790cab94a72bd206c8876429f3c", "782ced6909a44d92a1f70d582bbe88be"},
+	"set_device_Info": {"01dd431d098546f9baf5233724fa2ee2", "e8e1db44128f4e31a2047a8f5f80b2bd"},
 }
 
 // Known app_id → secret mappings.
@@ -87,6 +88,7 @@ type Client struct {
 	httpClient    *http.Client
 	creds         Credentials
 	auth          *AuthState
+	reloginMu     sync.Mutex // serializes login, refresh, and forced re-login
 	bridgeVer     string
 	metrics       *apiMetrics
 	onAuthFailure func(error) // optional; fires when EnsureAuth exhausts retries
@@ -202,8 +204,8 @@ func (c *Client) completeMFA(auth *AuthState, mfaDetails map[string]interface{})
 	}
 
 	headers := map[string]string{
-		"X-API-Key": wyzeAppAPIKey,
-		"phone-id":  auth.PhoneID,
+		"X-API-Key":  wyzeAppAPIKey,
+		"phone-id":   auth.PhoneID,
 		"user-agent": "wyze_ios_" + appVersion,
 	}
 
@@ -267,6 +269,12 @@ func (c *Client) NeedsRefresh() bool {
 // EnsureAuth ensures we have a valid token, refreshing if needed.
 // Fires the auth observer on failure / recovery.
 func (c *Client) EnsureAuth() error {
+	c.reloginMu.Lock()
+	defer c.reloginMu.Unlock()
+	return c.ensureAuthLocked()
+}
+
+func (c *Client) ensureAuthLocked() error {
 	if c.auth == nil {
 		c.log.Debug().Msg("no auth state, initiating login")
 		if _, err := c.Login(); err != nil {
@@ -292,6 +300,30 @@ func (c *Client) EnsureAuth() error {
 	return nil
 }
 
+// forceRelogin drops a token Wyze has rejected and logs in again.
+// staleToken is the access token that just failed. If another caller
+// already replaced it, this returns nil and the caller retries.
+func (c *Client) forceRelogin(staleToken string) error {
+	c.reloginMu.Lock()
+	defer c.reloginMu.Unlock()
+	if c.auth != nil && c.auth.AccessToken != "" && c.auth.AccessToken != staleToken {
+		return nil
+	}
+	phoneID := ""
+	if c.auth != nil {
+		phoneID = c.auth.PhoneID
+	}
+	// Keep the phone id so the next login stays the same device.
+	c.auth = &AuthState{PhoneID: phoneID}
+	if _, err := c.Login(); err != nil {
+		c.auth = &AuthState{PhoneID: phoneID, ExpiresAt: time.Now().Add(-time.Hour)}
+		c.notifyAuthFailure(fmt.Errorf("re-login after expired access token: %w", err))
+		return err
+	}
+	c.notifyAuthRecover()
+	return nil
+}
+
 func (c *Client) notifyAuthFailure(err error) {
 	if c.onAuthFailure != nil {
 		c.onAuthFailure(err)
@@ -306,11 +338,9 @@ func (c *Client) notifyAuthRecover() {
 
 // GetUserInfo retrieves the authenticated user's profile.
 func (c *Client) GetUserInfo() (*WyzeAccount, error) {
-	if err := c.EnsureAuth(); err != nil {
-		return nil, err
-	}
-
-	resp, err := c.postJSON(c.WyzeURL+"/user/get_user_info", c.defaultHeaders(), c.authenticatedPayload("default"))
+	resp, err := c.withFreshAuth(func() (map[string]interface{}, error) {
+		return c.postJSON(c.WyzeURL+"/user/get_user_info", c.defaultHeaders(), c.authenticatedPayload("default"))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get_user_info: %w", err)
 	}
