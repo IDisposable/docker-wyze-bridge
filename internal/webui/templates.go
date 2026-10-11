@@ -134,6 +134,9 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"HLSURL":    fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
 		"Go2RTCURL": fmt.Sprintf("%s/ws?src=%s", basePath, name),
 		"BridgeIP":  bridgeIP,
+		// PTZ controls render for TUTK pan cams; WebRTC-path pans
+		// (Pan v4, Pan Duo) don't share the TUTK control channel.
+		"PTZ": snap.Info.IsPanCam() && !snap.Info.IsWebRTCStreamer(),
 	}
 
 	tmpl, err := template.New("camera").Parse(cameraHTML)
@@ -225,6 +228,20 @@ const cameraHTML = `<!DOCTYPE html>
             <video-rtc src="{{.Go2RTCURL}}"></video-rtc>
         </div>
         <div class="camera-meta">
+            {{if .PTZ}}
+            <div class="ptz" data-cam="{{.Name}}">
+                <h3>Pan / Tilt <small class="ptz-pos" aria-live="polite"></small></h3>
+                <div class="ptz-pad">
+                    <button type="button" class="ptz-btn ptz-up" data-dir="up" title="Tilt up (hold)" aria-label="Tilt up">&#9650;</button>
+                    <button type="button" class="ptz-btn ptz-left" data-dir="left" title="Pan left (hold)" aria-label="Pan left">&#9664;</button>
+                    <button type="button" class="ptz-btn ptz-home" data-ptz-home title="Recalibrate and return home (~20s)" aria-label="Home">&#8962;</button>
+                    <button type="button" class="ptz-btn ptz-right" data-dir="right" title="Pan right (hold)" aria-label="Pan right">&#9654;</button>
+                    <button type="button" class="ptz-btn ptz-down" data-dir="down" title="Tilt down (hold)" aria-label="Tilt down">&#9660;</button>
+                </div>
+                <label class="ptz-speed">Speed <input type="range" min="1" max="9" value="5"></label>
+                <p class="ptz-hint">Tap to step 15&deg;; hold to move continuously. Arrow keys work too.</p>
+            </div>
+            {{end}}
             <table>
                 <tr><td>Model</td><td>{{.ModelName}} ({{.Model}})</td></tr>
                 <tr><td>State</td><td><span class="state-badge {{.State}}">{{.State}}</span></td></tr>

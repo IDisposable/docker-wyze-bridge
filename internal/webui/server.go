@@ -18,6 +18,7 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzectl"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -47,6 +48,9 @@ type Server struct {
 	cfg       *config.Config
 	camMgr    *camera.Manager
 	go2rtcAPI atomic.Pointer[go2rtcmgr.APIClient]
+	// ptz sends pan/tilt commands to go2rtc's /api/wyze/* control
+	// endpoints. Built alongside go2rtcAPI so it shares URL + auth.
+	ptz atomic.Pointer[wyzectl.Client]
 	sseHub    *SSEHub
 	auth      *AuthMiddleware
 	srv       *http.Server
@@ -162,6 +166,13 @@ func NewServer(opts Options) *Server {
 // next request via s.go2rtc().
 func (s *Server) SetGo2RTCAPI(api *go2rtcmgr.APIClient) {
 	s.go2rtcAPI.Store(api)
+	if api == nil {
+		s.ptz.Store(nil)
+		return
+	}
+	ctl := wyzectl.NewClient(api.BaseURL(), s.log.With().Str("c", "wyzectl").Logger())
+	ctl.SetBasicAuth(api.BasicAuthCreds())
+	s.ptz.Store(ctl)
 }
 
 // go2rtc returns the currently-attached API client, or nil if not

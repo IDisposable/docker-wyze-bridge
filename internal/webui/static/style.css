@@ -254,3 +254,32 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
     0%, 100% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0.5); }
     50%      { box-shadow: 0 0 0 4px rgba(192, 57, 43, 0.0); }
 }
+
+/* ── Pan / tilt d-pad ─────────────────────────────────────────── */
+.ptz { margin-bottom: 1rem; }
+.ptz h3 { margin: 0 0 .5rem; }
+.ptz-pos { font-weight: normal; opacity: .7; margin-left: .5rem; }
+.ptz-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 3.25rem);
+    grid-template-rows: repeat(3, 3.25rem);
+    gap: .35rem;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+}
+.ptz-btn {
+    font-size: 1.25rem;
+    padding: 0;
+    border-radius: .5rem;
+    cursor: pointer;
+    touch-action: none;
+}
+.ptz-btn.active { filter: brightness(1.4); transform: scale(.96); }
+.ptz-up    { grid-column: 2; grid-row: 1; }
+.ptz-left  { grid-column: 1; grid-row: 2; }
+.ptz-home  { grid-column: 2; grid-row: 2; }
+.ptz-right { grid-column: 3; grid-row: 2; }
+.ptz-down  { grid-column: 2; grid-row: 3; }
+.ptz-speed { display: block; margin-top: .5rem; font-size: .9rem; }
+.ptz-hint { font-size: .8rem; opacity: .6; margin: .25rem 0 0; }
