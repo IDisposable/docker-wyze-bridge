@@ -137,6 +137,8 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		// PTZ controls render for TUTK pan cams; WebRTC-path pans
 		// (Pan v4, Pan Duo) don't share the TUTK control channel.
 		"PTZ": snap.Info.IsPanCam() && !snap.Info.IsWebRTCStreamer(),
+		// Voice messages ride the TUTK backchannel.
+		"Speak": !snap.Info.IsWebRTCStreamer(),
 	}
 
 	tmpl, err := template.New("camera").Parse(cameraHTML)
@@ -240,6 +242,15 @@ const cameraHTML = `<!DOCTYPE html>
                 </div>
                 <label class="ptz-speed">Speed <input type="range" min="1" max="9" value="5"></label>
                 <p class="ptz-hint">Tap to step 15&deg;; hold to move continuously. Arrow keys work too.</p>
+            </div>
+            {{end}}
+            {{if .Speak}}
+            <div class="speak" data-cam="{{.Name}}">
+                <h3>Voice message <small class="speak-status" aria-live="polite"></small></h3>
+                <div class="speak-row">
+                    <button type="button" class="speak-rec" title="Record, then press again to send">&#127908; Record</button>
+                    <label class="speak-upload" title="Send an audio file (max 60s)">&#128193; Send file<input type="file" accept="audio/*" hidden></label>
+                </div>
             </div>
             {{end}}
             <table>

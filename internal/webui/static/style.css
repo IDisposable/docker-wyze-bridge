@@ -283,3 +283,11 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
 .ptz-down  { grid-column: 2; grid-row: 3; }
 .ptz-speed { display: block; margin-top: .5rem; font-size: .9rem; }
 .ptz-hint { font-size: .8rem; opacity: .6; margin: .25rem 0 0; }
+
+/* ── Voice message ────────────────────────────────────────────── */
+.speak { margin-bottom: 1rem; }
+.speak h3 { margin: 0 0 .5rem; }
+.speak-status { font-weight: normal; opacity: .7; margin-left: .5rem; }
+.speak-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+.speak-upload { display: inline-flex; align-items: center; cursor: pointer; padding: .4rem .8rem; border-radius: .4rem; border: 1px solid currentColor; }
+.speak-rec.on { filter: brightness(1.4); }

@@ -180,6 +180,9 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 	case action == "ptz":
 		s.handlePTZ(w, r, cam)
 
+	case action == "speak":
+		s.handleSpeak(w, r, cam)
+
 	default:
 		writeJSONError(w, http.StatusNotFound, "not found")
 	}
