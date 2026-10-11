@@ -166,6 +166,7 @@ const indexHTML = `<!DOCTYPE html>
     <header>
         <h1>Wyze Bridge <span class="version">v{{.Version}}</span></h1>
         <nav class="header-nav">
+            <a href="{{.BasePath}}/alerts" title="Motion and sound alerts">Alerts</a>
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
         </nav>
         <button type="button" id="discover-btn" class="discover-btn" title="Re-poll Wyze API for added/removed cameras">↻ Rediscover</button>
@@ -222,6 +223,7 @@ const cameraHTML = `<!DOCTYPE html>
         <a href="{{.BasePath}}/" class="back">&larr; All Cameras</a>
         <h1>{{.Nickname}} <span class="version">v{{.Version}}</span></h1>
         <nav class="header-nav">
+            <a href="{{.BasePath}}/alerts" title="Motion and sound alerts">Alerts</a>
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
         </nav>
     </header>
@@ -261,6 +263,7 @@ const cameraHTML = `<!DOCTYPE html>
                 <tr><td>IP</td><td>{{.IP}}</td></tr>
                 <tr><td>MAC</td><td>{{.MAC}}</td></tr>
                 <tr><td>Firmware</td><td>{{.FWVersion}}</td></tr>
+                <tr><td>Alerts</td><td><a href="{{.BasePath}}/alerts?camera={{.Name}}">View motion/sound alerts</a></td></tr>
             </table>
             <div class="stream-urls">
                 <h3>Stream URLs <small>(click to copy)</small></h3>
