@@ -27,6 +27,9 @@ func TestLakeOutputsAndQuality(t *testing.T) {
 	if !strings.HasPrefix(streams["front_lake"].Producers[0].URL, "webrtc:ws://127.0.0.1:") {
 		t.Fatal("transport did not use integrated signaling")
 	}
+	if !strings.HasSuffix(streams["front_lake"].Producers[0].URL, "#format=wyze-lake") {
+		t.Fatal("transport did not request its dedicated receive window")
+	}
 	if streams["front_4k"].Producers[0].URL != "ffmpeg:front_lake#video=copy#input=wyze_lake_receive" {
 		t.Fatal("native output bypassed packet ordering")
 	}

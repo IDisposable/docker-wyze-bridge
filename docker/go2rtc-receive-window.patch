@@ -1,23 +1,107 @@
+diff --git a/internal/webrtc/client.go b/internal/webrtc/client.go
+index 5fbf217..d9e0171 100644
+--- a/internal/webrtc/client.go
++++ b/internal/webrtc/client.go
+@@ -47,7 +47,7 @@ func streamsHandler(rawURL string) (core.Producer, error) {
+ 			} else if format == "switchbot" {
+ 				return switchbotClient(rawURL, query)
+ 			} else {
+-				return go2rtcClient(rawURL)
++				return go2rtcClient(rawURL, format == "wyze-lake")
+ 			}
+ 
+ 		case "http", "https":
+@@ -68,7 +68,7 @@ func streamsHandler(rawURL string) (core.Producer, error) {
+ 
+ // go2rtcClient can connect only to go2rtc server
+ // ex: ws://localhost:1984/api/ws?src=camera1
+-func go2rtcClient(url string) (core.Producer, error) {
++func go2rtcClient(url string, lake bool) (core.Producer, error) {
+ 	// 1. Connect to signalign server
+ 	conn, _, err := Dial(url)
+ 	if err != nil {
+@@ -79,7 +79,12 @@ func go2rtcClient(url string) (core.Producer, error) {
+ 	defer conn.Close()
+ 
+ 	// 2. Create PeerConnection
+-	pc, err := PeerConnection(true)
++	var pc *pion.PeerConnection
++	if lake {
++		pc, err = LakePeerConnection()
++	} else {
++		pc, err = PeerConnection(true)
++	}
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/internal/webrtc/webrtc.go b/internal/webrtc/webrtc.go
+index 2a5b4ad..b998dd5 100644
+--- a/internal/webrtc/webrtc.go
++++ b/internal/webrtc/webrtc.go
+@@ -87,6 +87,14 @@ func Init() {
+ 		SDPSemantics: pion.SDPSemanticsUnifiedPlanWithFallback,
+ 	}
+ 
++	LakePeerConnection = func() (*pion.PeerConnection, error) {
++		api, err := webrtc.NewReceiveAPI(4096)
++		if err != nil {
++			return nil, err
++		}
++		return api.NewPeerConnection(pionConf)
++	}
++
+ 	PeerConnection = func(active bool) (*pion.PeerConnection, error) {
+ 		// active - client, passive - server
+ 		if active {
+@@ -114,6 +122,8 @@ var log zerolog.Logger
+ 
+ var PeerConnection func(active bool) (*pion.PeerConnection, error)
+ 
++var LakePeerConnection func() (*pion.PeerConnection, error)
++
+ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
+ 	var stream *streams.Stream
+ 	var mode core.Mode
 diff --git a/pkg/webrtc/api.go b/pkg/webrtc/api.go
-index 5551d65..b5ac686 100644
+index 5551d65..12d7f58 100644
 --- a/pkg/webrtc/api.go
 +++ b/pkg/webrtc/api.go
-@@ -108,6 +108,9 @@ func NewServerAPI(network, address string, filters *Filters) (*webrtc.API, error
+@@ -92,7 +92,17 @@ func (f *Filters) IPFilter(ip net.IP) bool {
+ 	return f == nil || f.IPs == nil || core.Contains(f.IPs, ip.String())
+ }
+ 
++// NewReceiveAPI preserves the normal client API while allowing a bounded
++// replay window for transports that recover delayed video packets.
++func NewReceiveAPI(window uint) (*webrtc.API, error) {
++	return newServerAPI("", "", nil, window)
++}
++
+ func NewServerAPI(network, address string, filters *Filters) (*webrtc.API, error) {
++	return newServerAPI(network, address, filters, 0)
++}
++
++func newServerAPI(network, address string, filters *Filters, window uint) (*webrtc.API, error) {
+ 	// for debug logs add to env: `PION_LOG_DEBUG=all`
+ 	m := &webrtc.MediaEngine{}
+ 	//if err := m.RegisterDefaultCodecs(); err != nil {
+@@ -108,6 +118,11 @@ func NewServerAPI(network, address string, filters *Filters) (*webrtc.API, error
  	}
  
  	s := webrtc.SettingEngine{}
-+	// Keep delayed authenticated video packets available for RTP ordering.
-+	// Replay protection stays enabled; duplicates are still rejected.
-+	s.SetSRTPReplayProtectionWindow(4096)
++	if window > 0 {
++		// Keep delayed authenticated video available for RTP ordering.
++		// Replay protection stays enabled; duplicates are still rejected.
++		s.SetSRTPReplayProtectionWindow(window)
++	}
  
  	// fix https://github.com/pion/webrtc/pull/2407
  	s.SetDTLSInsecureSkipHelloVerify(true)
 diff --git a/pkg/webrtc/receive_window_test.go b/pkg/webrtc/receive_window_test.go
 new file mode 100644
-index 0000000..b5bac3f
+index 0000000..ea0036c
 --- /dev/null
 +++ b/pkg/webrtc/receive_window_test.go
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,113 @@
 +package webrtc
 +
 +import (
@@ -29,7 +113,21 @@ index 0000000..b5bac3f
 +)
 +
 +func TestReceiveDelayedAuthenticatedPacket(t *testing.T) {
-+	api, err := NewAPI()
++	for _, tc := range []struct {
++		name     string
++		factory  func() (*pion.API, error)
++		expected []uint16
++	}{
++		{"default", NewAPI, []uint16{1, 100}},
++		{"delayed-video", func() (*pion.API, error) { return NewReceiveAPI(4096) }, []uint16{1, 100, 2}},
++	} {
++		t.Run(tc.name, func(t *testing.T) { testReceiveWindow(t, tc.factory, tc.expected) })
++	}
++}
++
++func testReceiveWindow(t *testing.T, factory func() (*pion.API, error), expected []uint16) {
++	t.Helper()
++	api, err := factory()
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -101,7 +199,7 @@ index 0000000..b5bac3f
 +			t.Fatal(err)
 +		}
 +	}
-+	for _, want := range []uint16{1, 100, 2} {
++	for _, want := range expected {
 +		select {
 +		case seq := <-got:
 +			if seq != want {

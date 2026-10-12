@@ -17,7 +17,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 # Build the same go2rtc version and dependencies with a bounded SRTP receive
-# window. Default replay protection discards recovered 4K packets more than
+# window for Pan v4 sessions. Default replay protection discards packets more than
 # 63 positions behind, before an RTP reorder queue can repair their ordering.
 COPY --from=go2rtc-fetch /go2rtc-source.tar.gz /go2rtc-source.tar.gz
 RUN mkdir /go2rtc-src && \

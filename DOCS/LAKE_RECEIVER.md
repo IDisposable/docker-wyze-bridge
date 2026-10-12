@@ -3,8 +3,8 @@
 This implementation uses the existing Bridge container and existing go2rtc and
 FFmpeg executables. The Bridge process handles Wyze authentication and Agora
 WebRTC gateway signaling. go2rtc receives standard WebRTC/SRTP. The existing go2rtc 1.9.14 source is
-built with a bounded 4096-packet SRTP receive window; replay protection remains
-enabled. FFmpeg copies the HEVC video through a bounded RTP reorder queue
+built with a dedicated 4096-packet SRTP receive window for this path; replay
+protection remains enabled and other transports keep their default windows. FFmpeg copies the HEVC video through a bounded RTP reorder queue
 before publishing native RTSP and deriving the H264 preview.
 
 There is no Agora SDK, Python receiver, MediaMTX service, second container or

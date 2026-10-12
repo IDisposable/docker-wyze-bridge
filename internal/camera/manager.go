@@ -327,7 +327,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		}
 		_ = go2rtc.DeleteStream(ctx, cam.Name())
 		m.removeLakeOutputs(ctx, cam.Name())
-		raw := fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s", m.cfg.BridgePort, cam.Name())
+		raw := fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s#format=wyze-lake", m.cfg.BridgePort, cam.Name())
 		if err := go2rtc.AddStream(ctx, cam.Name()+"_lake", raw); err != nil {
 			cam.IncrementError()
 			m.log.Warn().Str("cam", cam.Name()).Msg("Lake transport registration failed")
