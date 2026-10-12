@@ -100,13 +100,27 @@ func TestGatewayJoinAndCancellation(t *testing.T) {
 					_ = c.WriteJSON(success)
 				} else {
 					_ = c.WriteJSON(success)
+					// Cold cameras need ownership before advertising video.
+					var control message
+					if c.ReadJSON(&control) != nil || control.Type != "data_stream" {
+						return
+					}
+					payload, _ := base64.StdEncoding.DecodeString(str(control.Body["payload"]))
+					if !strings.Contains(string(payload), "sight-safe::check-user") {
+						return
+					}
 					_ = c.WriteJSON(stream)
 				}
-				var sub message
-				if c.ReadJSON(&sub) != nil {
-					return
+				for {
+					var sub message
+					if c.ReadJSON(&sub) != nil {
+						return
+					}
+					if sub.Type == "subscribe" {
+						subscriptions <- sub
+						break
+					}
 				}
-				subscriptions <- sub
 				_ = c.WriteJSON(message{Type: "on_token_privilege_will_expire", Body: object{}})
 				for {
 					var m message

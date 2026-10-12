@@ -290,6 +290,13 @@ func openEdges(ctx context.Context, initial *wyzeapi.LakeSession, o *offer, qual
 			}
 			if msg.Result == "success" && len(obj(msg.Body["ortc"])) > 0 {
 				ortc = obj(msg.Body["ortc"])
+				// A camera that has stopped publishing may wait for its viewer
+				// ownership command before advertising a video stream. Send it
+				// after joining, rather than waiting for video first.
+				if s.controls(false) != nil {
+					lastReason = "initial camera control failed"
+					break
+				}
 			}
 			if msg.Type == "on_add_video_stream" && msg.Body["video"] == true && num(msg.Body["ssrcId"]) != 0 {
 				stream = msg.Body
