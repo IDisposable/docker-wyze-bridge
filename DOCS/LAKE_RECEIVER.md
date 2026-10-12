@@ -2,12 +2,19 @@
 
 This implementation uses the existing Bridge container and existing go2rtc and
 FFmpeg executables. The Bridge process handles Wyze authentication and Agora
-WebRTC gateway signaling. go2rtc receives standard WebRTC/SRTP and publishes
-RTSP. FFmpeg produces the H264 preview from that same native source.
+WebRTC gateway signaling. go2rtc receives standard WebRTC/SRTP. The existing go2rtc 1.9.14 source is
+built with a bounded 4096-packet SRTP receive window; replay protection remains
+enabled. FFmpeg copies the HEVC video through a bounded RTP reorder queue
+before publishing native RTSP and deriving the H264 preview.
 
 There is no Agora SDK, Python receiver, MediaMTX service, second container or
 additional Go module or OS package. The existing gorilla/websocket module is
 reused for signaling; encryption and HTTP use the Go standard library.
+
+The normal Dockerfile builds both executables in one image. Bridge's `go.mod`
+and `go.sum` are unchanged, and go2rtc retains the same upstream dependency
+versions. No companion image is needed. External go2rtc mode is not supported
+for this receive path because it lacks the required window and templates.
 
 ## Camera outputs
 
@@ -30,7 +37,11 @@ by this initial receive path. Other camera models retain their existing routing.
 
 ## Session lifecycle and recovery
 
-Both outputs share one native go2rtc producer and one camera gateway session.
+Both outputs share one internal `<camera>_lake` transport and one camera
+gateway session. The `_4k` output copies HEVC through FFmpeg to restore RTP
+ordering; it does not decode, scale or re-encode that native video. The reorder
+queue is bounded to 4096 packets with a one-second maximum demuxing delay.
+The internal transport is also removed on stop, reconnect and rename.
 The session starts when a consumer requests video. Its short local websocket
 exchanges SDP with go2rtc; the Agora websocket remains alive after go2rtc closes
 that initial signaling connection. Stopping the camera closes both outputs and
@@ -70,12 +81,19 @@ A local receive test captured 1200 native HEVC frames: 445 initial 640x360
 frames followed by 755 decoded 3840x2160 frames. It also captured 1000 H264
 1920x1080 preview frames and completed two accelerated token renewals.
 
-The integrated NAS test reached 4K but produced damaged frames and visible gray
-flashes. Its native recording failed strict decoding. The preview passed H264
-decoding but encoded the damaged picture, so that is not a playback pass. The
-previous working receiver was restored. This change is not ready for submission
-until native frame integrity, playback, recording and recovery pass on the NAS.
-No completed 24-hour soak is claimed.
+The first integrated NAS tests produced damaged frames and gray flashes. A
+private RTP trace found late packets capped at 63 positions behind; the default
+SRTP replay window is 64. Increasing the window to 4096 recovered every sequence
+number in the next trace, including packets 277 positions behind. Replay
+protection still rejects duplicates.
+
+With that receive window and the FFmpeg reorder queue, a 45-second NAS test
+recorded native 3840x2160 HEVC and 1920x1080 H264. Both passed strict decoding
+without errors, and sampled preview frames showed no damaged bands. This was a
+bounded diagnostic build; final normal-image playback, recording, cold startup,
+restart recovery and a longer stability run are still being verified. The
+previous working receiver was restored between tests. No completed 24-hour soak
+is claimed.
 
 Offline checks:
 

@@ -308,17 +308,34 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 
 	streamURL, protocol := m.streamSourceFor(cam)
 	if protocol == "lake" {
-		if m.GetCamera(cam.Name()+"_4k") != nil {
+		if m.cfg.Go2RTCURL != "" {
 			cam.IncrementError()
-			m.log.Warn().Str("cam", cam.Name()).Msg("Lake 4K stream name collides with a camera name")
+			m.log.Warn().Str("cam", cam.Name()).Msg("Pan v4 streaming requires the embedded go2rtc receive window and templates")
 			return
 		}
-		if m.lakeReset != nil {
-			m.lakeReset(cam.Name())
+		for _, suffix := range []string{"_lake", "_4k"} {
+			alias := cam.Name() + suffix
+			collision := m.GetCamera(alias) != nil
+			for _, extra := range go2rtcmgr.ParseExtraStreams(m.cfg.Go2RTCExtraStreams) {
+				collision = collision || extra.Name == alias
+			}
+			if collision {
+				cam.IncrementError()
+				m.log.Warn().Str("cam", cam.Name()).Msg("Lake output name conflicts with an existing stream")
+				return
+			}
 		}
-		_ = go2rtc.DeleteStream(ctx, cam.Name()+"_4k")
-		native := fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s", m.cfg.BridgePort, cam.Name())
+		_ = go2rtc.DeleteStream(ctx, cam.Name())
+		m.removeLakeOutputs(ctx, cam.Name())
+		raw := fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s", m.cfg.BridgePort, cam.Name())
+		if err := go2rtc.AddStream(ctx, cam.Name()+"_lake", raw); err != nil {
+			cam.IncrementError()
+			m.log.Warn().Str("cam", cam.Name()).Msg("Lake transport registration failed")
+			return
+		}
+		native := "ffmpeg:" + cam.Name() + "_lake#video=copy#input=wyze_lake_receive"
 		if err := go2rtc.AddStream(ctx, cam.Name()+"_4k", native); err != nil {
+			m.removeLakeOutputs(ctx, cam.Name())
 			cam.IncrementError()
 			m.log.Warn().Str("cam", cam.Name()).Msg("Lake native stream registration failed")
 			return
@@ -349,6 +366,9 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	}
 
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
+		if protocol == "lake" {
+			m.removeLakeOutputs(ctx, cam.Name())
+		}
 		backoff := cam.IncrementError()
 		errors := cam.GetErrorCount()
 		m.log.Error().Err(err).
@@ -432,10 +452,13 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 		_, protocol := m.streamSourceFor(cam)
 		healthy := ok && info != nil && len(info.Producers) > 0
 		if protocol == "lake" {
-			if native := streams[cam.Name()+"_4k"]; native != nil && len(native.Consumers) == 0 && info != nil && len(info.Consumers) == 0 && m.lakeIdleReset != nil {
+			native := streams[cam.Name()+"_4k"]
+			raw := streams[cam.Name()+"_lake"]
+			if native != nil && len(native.Consumers) == 0 && info != nil && len(info.Consumers) == 0 && m.lakeIdleReset != nil {
 				m.lakeIdleReset(cam.Name())
 			}
-			healthy = ok && info != nil && m.lakeStreamHealthy(cam.Name(), streams[cam.Name()+"_4k"], time.Now())
+			now := time.Now()
+			healthy = ok && info != nil && m.lakeStreamHealthy(cam.Name()+"/transport", raw, now) && m.lakeStreamHealthy(cam.Name()+"/native", native, now)
 			if healthy && len(info.Consumers) > 0 {
 				healthy = m.lakeStreamHealthy(cam.Name()+"/preview", info, time.Now())
 			}
@@ -530,6 +553,9 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 			Msg("camera rename detected, dropping orphan entry")
 		if go2rtc := m.go2rtcClient(); go2rtc != nil {
 			_ = go2rtc.DeleteStream(ctx, oldName)
+		}
+		if info.Model == "HL_PAN4" {
+			m.removeLakeOutputs(ctx, oldName)
 		}
 		delete(m.cameras, oldName)
 	}
@@ -627,14 +653,23 @@ func (m *Manager) StopStream(ctx context.Context, name string) {
 	}
 	if go2rtc := m.go2rtcClient(); go2rtc != nil {
 		_ = go2rtc.DeleteStream(ctx, name)
-		if cam.GetInfo().Model == "HL_PAN4" {
-			_ = go2rtc.DeleteStream(ctx, name+"_4k")
-			if m.lakeReset != nil {
-				m.lakeReset(name)
-			}
-		}
+	}
+	if cam.GetInfo().Model == "HL_PAN4" {
+		m.removeLakeOutputs(ctx, name)
 	}
 	m.changeState(cam, StateOffline)
+}
+
+// removeLakeOutputs closes the shared session and its dependent registrations.
+// It does not acquire m.mu, so discovery can also call it while reaping a rename.
+func (m *Manager) removeLakeOutputs(ctx context.Context, name string) {
+	if m.lakeReset != nil {
+		m.lakeReset(name)
+	}
+	if api := m.go2rtcClient(); api != nil {
+		_ = api.DeleteStream(ctx, name+"_4k")
+		_ = api.DeleteStream(ctx, name+"_lake")
+	}
 }
 
 func (m *Manager) changeState(cam *Camera, newState State) {

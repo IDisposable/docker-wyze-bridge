@@ -66,6 +66,35 @@ func TestConfigBuilder_NoWBIP(t *testing.T) {
 	}
 }
 
+func TestExtraFFmpegSettingsRemainValid(t *testing.T) {
+	b := NewConfigBuilder("warn", "", "")
+	b.AppendRawYAML("# Operator pipeline\nffmpeg:\n  bin: /custom/ffmpeg\n  h264: -c:v custom_encoder\npublish:\n  other: rtsp://example.test/record\n")
+	path := filepath.Join(t.TempDir(), "go2rtc.yaml")
+	if err := b.WriteConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		FFmpeg  map[string]string `yaml:"ffmpeg"`
+		Publish map[string]string `yaml:"publish"`
+	}
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal("generated duplicate or invalid configuration:", err)
+	}
+	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.Publish["other"] != "rtsp://example.test/record" {
+		t.Fatal("operator settings changed")
+	}
+	if parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
+		t.Fatal("receive templates were lost")
+	}
+	if !strings.Contains(string(raw), "# Operator pipeline") {
+		t.Fatal("operator comment was lost")
+	}
+}
+
 func TestConfigBuilder_WriteConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "go2rtc.yaml")

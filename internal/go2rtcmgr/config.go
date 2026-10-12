@@ -3,6 +3,7 @@ package go2rtcmgr
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -280,7 +281,13 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 		},
 		// Named templates keep raw arguments out of dynamically registered
 		// URLs: go2rtc intentionally rejects sources containing spaces.
-		FFmpeg: map[string]string{"wyze_lake_preview": "-threads 2"},
+		FFmpeg: map[string]string{
+			"wyze_lake_preview": "-threads 2",
+			// WebRTC can deliver recovered RTP packets out of order even
+			// though the local RTSP hop uses TCP. Copy the native video
+			// through a bounded reorder queue before exposing either output.
+			"wyze_lake_receive": "-rtsp_transport tcp -reorder_queue_size 4096 -max_delay 1000000 -timeout 15000000 -i {input}",
+		},
 		// Streams is nil when empty so YAML omits the key entirely.
 		// go2rtc parses an empty flow-style `streams: {}` unreliably.
 	}
@@ -349,6 +356,52 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 // WriteConfig writes the go2rtc YAML config file.
 func (b *ConfigBuilder) WriteConfig(path string) error {
 	cfg := b.Build()
+	extraYAML := b.extraYAML
+	// Adding our named templates must not create a second ffmpeg root when
+	// an operator already supplied custom FFmpeg settings. go2rtc rejects
+	// duplicate YAML keys. Merge only the missing templates into that block.
+	if strings.TrimSpace(extraYAML) != "" {
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(extraYAML), &doc); err != nil {
+			return fmt.Errorf("parse extra go2rtc config: %w", err)
+		}
+		if len(doc.Content) == 1 && doc.Content[0].Kind == yaml.MappingNode {
+			root := doc.Content[0]
+			for i := 0; i+1 < len(root.Content); i += 2 {
+				if root.Content[i].Value != "ffmpeg" {
+					continue
+				}
+				block := root.Content[i+1]
+				if block.Kind != yaml.MappingNode {
+					return fmt.Errorf("extra go2rtc ffmpeg config must be a mapping")
+				}
+				keys := make([]string, 0, len(cfg.FFmpeg))
+				for key := range cfg.FFmpeg {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					value := cfg.FFmpeg[key]
+					present := false
+					for j := 0; j+1 < len(block.Content); j += 2 {
+						present = present || block.Content[j].Value == key
+					}
+					if !present {
+						block.Content = append(block.Content,
+							&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+							&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+					}
+				}
+				merged, err := yaml.Marshal(&doc)
+				if err != nil {
+					return fmt.Errorf("merge extra FFmpeg config: %w", err)
+				}
+				extraYAML = string(merged)
+				cfg.FFmpeg = nil
+				break
+			}
+		}
+	}
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -377,14 +430,14 @@ func (b *ConfigBuilder) WriteConfig(path string) error {
 	// Operator's GO2RTC_EXTRA_YAML escape hatch. Emitted after a
 	// visible marker so anyone reading the file understands what's
 	// managed vs. what came in verbatim.
-	if strings.TrimSpace(b.extraYAML) != "" {
+	if strings.TrimSpace(extraYAML) != "" {
 		data = append(data, []byte(
 			"\n# --- managed by wyze-bridge; anything above is regenerated ---\n"+
-				"# GO2RTC_EXTRA_YAML (verbatim operator input):\n")...)
-		if !strings.HasSuffix(b.extraYAML, "\n") {
-			b.extraYAML += "\n"
+				"# GO2RTC_EXTRA_YAML (operator input with missing receive templates merged):\n")...)
+		if !strings.HasSuffix(extraYAML, "\n") {
+			extraYAML += "\n"
 		}
-		data = append(data, []byte(b.extraYAML)...)
+		data = append(data, []byte(extraYAML)...)
 	}
 
 	return os.WriteFile(path, data, 0644)

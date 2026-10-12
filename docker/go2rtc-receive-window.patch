@@ -1,0 +1,119 @@
+diff --git a/pkg/webrtc/api.go b/pkg/webrtc/api.go
+index 5551d65..b5ac686 100644
+--- a/pkg/webrtc/api.go
++++ b/pkg/webrtc/api.go
+@@ -108,6 +108,9 @@ func NewServerAPI(network, address string, filters *Filters) (*webrtc.API, error
+ 	}
+ 
+ 	s := webrtc.SettingEngine{}
++	// Keep delayed authenticated video packets available for RTP ordering.
++	// Replay protection stays enabled; duplicates are still rejected.
++	s.SetSRTPReplayProtectionWindow(4096)
+ 
+ 	// fix https://github.com/pion/webrtc/pull/2407
+ 	s.SetDTLSInsecureSkipHelloVerify(true)
+diff --git a/pkg/webrtc/receive_window_test.go b/pkg/webrtc/receive_window_test.go
+new file mode 100644
+index 0000000..b5bac3f
+--- /dev/null
++++ b/pkg/webrtc/receive_window_test.go
+@@ -0,0 +1,99 @@
++package webrtc
++
++import (
++	"github.com/pion/rtp"
++	pion "github.com/pion/webrtc/v4"
++	"sync"
++	"testing"
++	"time"
++)
++
++func TestReceiveDelayedAuthenticatedPacket(t *testing.T) {
++	api, err := NewAPI()
++	if err != nil {
++		t.Fatal(err)
++	}
++	sender, err := api.NewPeerConnection(pion.Configuration{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer sender.Close()
++	receiver, err := api.NewPeerConnection(pion.Configuration{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer receiver.Close()
++	got := make(chan uint16, 4)
++	receiver.OnTrack(func(track *pion.TrackRemote, _ *pion.RTPReceiver) {
++		for {
++			p, _, e := track.ReadRTP()
++			if e != nil {
++				return
++			}
++			got <- p.SequenceNumber
++		}
++	})
++	connected := make(chan struct{})
++	var once sync.Once
++	sender.OnConnectionStateChange(func(s pion.PeerConnectionState) {
++		if s == pion.PeerConnectionStateConnected {
++			once.Do(func() { close(connected) })
++		}
++	})
++	track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{MimeType: pion.MimeTypeH265}, "video", "late-packet-test")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err = sender.AddTrack(track); err != nil {
++		t.Fatal(err)
++	}
++	offer, err := sender.CreateOffer(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	done := pion.GatheringCompletePromise(sender)
++	if err = sender.SetLocalDescription(offer); err != nil {
++		t.Fatal(err)
++	}
++	<-done
++	if err = receiver.SetRemoteDescription(*sender.LocalDescription()); err != nil {
++		t.Fatal(err)
++	}
++	answer, err := receiver.CreateAnswer(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	done = pion.GatheringCompletePromise(receiver)
++	if err = receiver.SetLocalDescription(answer); err != nil {
++		t.Fatal(err)
++	}
++	<-done
++	if err = sender.SetRemoteDescription(*receiver.LocalDescription()); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case <-connected:
++	case <-time.After(10 * time.Second):
++		t.Fatal("local peers did not connect")
++	}
++	for _, seq := range []uint16{1, 100, 2, 1} {
++		if err = track.WriteRTP(&rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: seq, Timestamp: 90000}, Payload: []byte{2, 1, 7}}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	for _, want := range []uint16{1, 100, 2} {
++		select {
++		case seq := <-got:
++			if seq != want {
++				t.Fatalf("got sequence %d, want %d", seq, want)
++			}
++		case <-time.After(2 * time.Second):
++			t.Fatalf("valid delayed sequence %d was lost", want)
++		}
++	}
++	select {
++	case seq := <-got:
++		t.Fatalf("replay accepted: sequence %d", seq)
++	case <-time.After(100 * time.Millisecond):
++	}
++}

@@ -1,14 +1,10 @@
-# ── Stage 1: Fetch go2rtc binary + video-rtc.js ─────────────────────────────
+# ── Stage 1: Fetch the existing go2rtc source + video-rtc.js ────────────────
 FROM alpine:3.21 AS go2rtc-fetch
 ARG GO2RTC_VERSION=1.9.14
-ARG TARGETARCH
 RUN apk add --no-cache curl ca-certificates && \
-    ARCH=${TARGETARCH}; \
-    if [ "$ARCH" = "arm" ]; then ARCH="arm"; fi; \
     curl -fsSL \
-      "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_${ARCH}" \
-      -o /go2rtc && \
-    chmod +x /go2rtc && \
+      "https://github.com/AlexxIT/go2rtc/archive/refs/tags/v${GO2RTC_VERSION}.tar.gz" \
+      -o /go2rtc-source.tar.gz && \
     curl -fsSL \
       "https://github.com/AlexxIT/go2rtc/raw/v${GO2RTC_VERSION}/www/video-rtc.js" \
       -o /video-rtc.js
@@ -20,6 +16,16 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# Build the same go2rtc version and dependencies with a bounded SRTP receive
+# window. Default replay protection discards recovered 4K packets more than
+# 63 positions behind, before an RTP reorder queue can repair their ordering.
+COPY --from=go2rtc-fetch /go2rtc-source.tar.gz /go2rtc-source.tar.gz
+RUN mkdir /go2rtc-src && \
+    tar -xzf /go2rtc-source.tar.gz -C /go2rtc-src --strip-components=1 && \
+    cd /go2rtc-src && \
+    git apply /src/docker/go2rtc-receive-window.patch && \
+    CGO_ENABLED=0 go test pkg/webrtc/api.go pkg/webrtc/receive_window_test.go -run TestReceiveDelayedAuthenticatedPacket -count=1 && \
+    CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w" -trimpath -o /go2rtc .
 # Replace placeholder video-rtc.js with real one before embedding
 COPY --from=go2rtc-fetch /video-rtc.js ./internal/webui/static/video-rtc.js
 ARG VERSION=dev
@@ -52,7 +58,7 @@ RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
 
 COPY --from=builder      /wyze-bridge   /usr/local/bin/wyze-bridge
 COPY --from=builder      /gwell-proxy   /usr/local/bin/gwell-proxy
-COPY --from=go2rtc-fetch /go2rtc        /usr/local/bin/go2rtc
+COPY --from=builder      /go2rtc        /usr/local/bin/go2rtc
 
 EXPOSE 5080
 EXPOSE 1984
