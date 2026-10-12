@@ -109,6 +109,14 @@ func TestGatewayJoinAndCancellation(t *testing.T) {
 					if !strings.Contains(string(payload), "sight-safe::check-user") {
 						return
 					}
+					_ = c.WriteJSON(message{Type: "on_user_online", Body: object{"uid": 777}})
+					if c.ReadJSON(&control) != nil || control.Type != "data_stream" {
+						return
+					}
+					payload, _ = base64.StdEncoding.DecodeString(str(control.Body["payload"]))
+					if !strings.Contains(string(payload), `"camera::resolution":"2k"`) {
+						return
+					}
 					_ = c.WriteJSON(stream)
 				}
 				for {

@@ -298,6 +298,14 @@ func openEdges(ctx context.Context, initial *wyzeapi.LakeSession, o *offer, qual
 					break
 				}
 			}
+			if msg.Type == "on_user_online" && num(msg.Body["uid"]) > 0 && num(msg.Body["uid"]) != initial.UID {
+				// The first control may precede the camera's arrival. Request
+				// ownership and quality again once its publisher is online.
+				if s.controls(true) != nil {
+					lastReason = "camera activation failed"
+					break
+				}
+			}
 			if msg.Type == "on_add_video_stream" && msg.Body["video"] == true && num(msg.Body["ssrcId"]) != 0 {
 				stream = msg.Body
 				if s.subscribe(stream) != nil {
@@ -345,6 +353,12 @@ func (s *Session) run(ctx context.Context) {
 				s.notify("gateway_lost", num(m.Body["code"]))
 				readErr <- fmt.Errorf("gateway disconnected")
 				return
+			}
+			if m.Type == "on_user_online" && num(m.Body["uid"]) > 0 && num(m.Body["uid"]) != s.initial.UID {
+				if s.controls(true) != nil {
+					readErr <- fmt.Errorf("camera activation failed")
+					return
+				}
 			}
 			if m.Type == "on_add_video_stream" && m.Body["video"] == true {
 				if s.subscribe(m.Body) != nil {
