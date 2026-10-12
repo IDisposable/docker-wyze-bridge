@@ -45,20 +45,19 @@ RUN CGO_ENABLED=0 GOOS=linux \
 
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.21
-# ffmpeg is used by two things in this image:
+# ffmpeg is used by three things in this image:
 #   1. go2rtc's /api/frame.jpeg snapshot endpoint (JPEG frame extraction)
 #   2. the optional gwell-proxy sidecar, which spawns an ffmpeg subprocess
 #      per GW_* camera to RTSP-PUSH H.264 into go2rtc's RTSP server.
-# Alpine's ffmpeg package adds ~40 MB, bringing the total image to ~60–65 MB
-# (still well under the 200+ MB Python bridge). If you have no GW_* cameras
-# AND don't need JPEG snapshots, you could omit ffmpeg and everything else
-# (RTSP/HLS/WebRTC playback) keeps working.
+#   3. the Pan v4 native RTP ordering stage and H264 preview.
+# Keep ffmpeg installed for Pan v4 even when snapshots and Gwell are unused.
 RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
     mkdir -p /config /media/snapshots /media/recordings
 
 COPY --from=builder      /wyze-bridge   /usr/local/bin/wyze-bridge
 COPY --from=builder      /gwell-proxy   /usr/local/bin/gwell-proxy
 COPY --from=builder      /go2rtc        /usr/local/bin/go2rtc
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/wyze-bridge/
 
 EXPOSE 5080
 EXPOSE 1984
