@@ -66,12 +66,16 @@ and receiver for rollback; do not delete their parameters or mounted data.
 
 ## Validation status
 
-The Go receive path recorded 1200 native 3840x2160 HEVC frames and 1000 H264
-1920x1080 preview frames using the existing go2rtc/FFmpeg binaries. Live token
-renewal also succeeded under a deliberately shortened test timer. The complete
-container deployment and recovery are undergoing separate validation. Camera
-quality changes can reset timing during initial startup; a settled recording is
-checked separately. This document does not claim a completed 24-hour soak.
+A local receive test captured 1200 native HEVC frames: 445 initial 640x360
+frames followed by 755 decoded 3840x2160 frames. It also captured 1000 H264
+1920x1080 preview frames and completed two accelerated token renewals.
+
+The integrated NAS test reached 4K but produced damaged frames and visible gray
+flashes. Its native recording failed strict decoding. The preview passed H264
+decoding but encoded the damaged picture, so that is not a playback pass. The
+previous working receiver was restored. This change is not ready for submission
+until native frame integrity, playback, recording and recovery pass on the NAS.
+No completed 24-hour soak is claimed.
 
 Offline checks:
 
