@@ -26,14 +26,17 @@ type StateChangeFunc func(cam *Camera, oldState, newState State)
 // that needs go2rtc before it's attached is a no-op that logs a warning
 // rather than panicking on a nil pointer.
 type Manager struct {
-	log      zerolog.Logger
-	cfg      *config.Config
-	api      *wyzeapi.Client
-	go2rtc   atomic.Pointer[go2rtcmgr.APIClient]
-	filter   *Filter
-	cameras  map[string]*Camera // keyed by normalized name
-	mu       sync.RWMutex
-	onChange StateChangeFunc
+	log           zerolog.Logger
+	cfg           *config.Config
+	api           *wyzeapi.Client
+	go2rtc        atomic.Pointer[go2rtcmgr.APIClient]
+	filter        *Filter
+	cameras       map[string]*Camera // keyed by normalized name
+	mu            sync.RWMutex
+	onChange      StateChangeFunc
+	lakeReset     func(string)
+	lakeIdleReset func(string)
+	lakeHealth    map[string]lakeHealthState
 	// onChronicError fires once when a camera's error count first
 	// crosses chronicErrorThreshold; onChronicRecover fires when that
 	// same camera reaches StateStreaming again.
@@ -48,6 +51,11 @@ type Manager struct {
 // chronicErrorThreshold is the consecutive-error count at which a
 // camera is considered "stuck" — beyond go2rtc's transient blip into
 // a sustained problem worth surfacing to operators.
+type lakeHealthState struct {
+	bytes    int64
+	lastData time.Time
+}
+
 const chronicErrorThreshold = 10
 
 // NewManager creates a new camera manager. The go2rtcAPI may be nil
@@ -72,11 +80,40 @@ func NewManager(
 		},
 		cameras:         make(map[string]*Camera),
 		chronicReported: make(map[string]bool),
+		lakeHealth:      make(map[string]lakeHealthState),
 	}
 	if go2rtcAPI != nil {
 		m.go2rtc.Store(go2rtcAPI)
 	}
 	return m
+}
+
+// SetLakeReset attaches the integrated gateway session cleanup before discovery.
+func (m *Manager) SetLakeReset(reset func(string)) { m.lakeReset = reset }
+
+func (m *Manager) SetLakeIdleReset(reset func(string)) { m.lakeIdleReset = reset }
+
+func (m *Manager) lakeStreamHealthy(name string, native *go2rtcmgr.StreamInfo, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if native == nil {
+		delete(m.lakeHealth, name)
+		return false
+	}
+	if len(native.Consumers) == 0 {
+		delete(m.lakeHealth, name)
+		return true
+	}
+	var bytes int64
+	for _, p := range native.Producers {
+		bytes += p.BytesRecv
+	}
+	status, exists := m.lakeHealth[name]
+	if !exists || bytes != status.bytes {
+		m.lakeHealth[name] = lakeHealthState{bytes: bytes, lastData: now}
+		return true
+	}
+	return now.Sub(status.lastData) < 60*time.Second
 }
 
 // SetGo2RTCAPI attaches (or replaces) the go2rtc API client. Called by
@@ -270,6 +307,23 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	}
 
 	streamURL, protocol := m.streamSourceFor(cam)
+	if protocol == "lake" {
+		if m.GetCamera(cam.Name()+"_4k") != nil {
+			cam.IncrementError()
+			m.log.Warn().Str("cam", cam.Name()).Msg("Lake 4K stream name collides with a camera name")
+			return
+		}
+		if m.lakeReset != nil {
+			m.lakeReset(cam.Name())
+		}
+		_ = go2rtc.DeleteStream(ctx, cam.Name()+"_4k")
+		native := fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s", m.cfg.BridgePort, cam.Name())
+		if err := go2rtc.AddStream(ctx, cam.Name()+"_4k", native); err != nil {
+			cam.IncrementError()
+			m.log.Warn().Str("cam", cam.Name()).Msg("Lake native stream registration failed")
+			return
+		}
+	}
 	snap := cam.Snapshot()
 
 	m.log.Info().
@@ -321,6 +375,12 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
 	info := cam.GetInfo()
 	switch {
+	case info.Model == "HL_PAN4":
+		width, height := "1920", "1080"
+		if cam.Snapshot().Quality == "sd" {
+			width, height = "640", "360"
+		}
+		return "ffmpeg:" + cam.Name() + "_4k#video=h264#width=" + width + "#height=" + height + "#raw=wyze_lake_preview", "lake"
 	case cam.ForceWebRTC() || info.IsWebRTCStreamer():
 		return fmt.Sprintf("webrtc:http://127.0.0.1:%d/internal/wyze/webrtc/%s#format=wyze", m.cfg.BridgePort, cam.Name()), "webrtc"
 	case info.IsGwell():
@@ -369,7 +429,18 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 		}
 
 		info, ok := streams[cam.Name()]
-		if !ok || len(info.Producers) == 0 {
+		_, protocol := m.streamSourceFor(cam)
+		healthy := ok && info != nil && len(info.Producers) > 0
+		if protocol == "lake" {
+			if native := streams[cam.Name()+"_4k"]; native != nil && len(native.Consumers) == 0 && info != nil && len(info.Consumers) == 0 && m.lakeIdleReset != nil {
+				m.lakeIdleReset(cam.Name())
+			}
+			healthy = ok && info != nil && m.lakeStreamHealthy(cam.Name(), streams[cam.Name()+"_4k"], time.Now())
+			if healthy && len(info.Consumers) > 0 {
+				healthy = m.lakeStreamHealthy(cam.Name()+"/preview", info, time.Now())
+			}
+		}
+		if !healthy {
 			// Route through StateError with backoff so reconnectErrored's
 			// 10s ticker picks it up. Marking StateOffline used to leave
 			// the camera stuck until the next Discover refresh — reconnect
@@ -514,6 +585,10 @@ func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
 	}
 	// Remove and re-add in go2rtc with new URL
 	_ = go2rtc.DeleteStream(ctx, name)
+	if cam.GetInfo().Model == "HL_PAN4" {
+		source, _ := m.streamSourceFor(cam)
+		return go2rtc.AddStream(ctx, name, source)
+	}
 	return go2rtc.AddStream(ctx, name, cam.StreamURL())
 }
 
@@ -552,6 +627,12 @@ func (m *Manager) StopStream(ctx context.Context, name string) {
 	}
 	if go2rtc := m.go2rtcClient(); go2rtc != nil {
 		_ = go2rtc.DeleteStream(ctx, name)
+		if cam.GetInfo().Model == "HL_PAN4" {
+			_ = go2rtc.DeleteStream(ctx, name+"_4k")
+			if m.lakeReset != nil {
+				m.lakeReset(name)
+			}
+		}
 	}
 	m.changeState(cam, StateOffline)
 }

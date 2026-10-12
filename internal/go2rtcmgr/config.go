@@ -14,6 +14,7 @@ type Go2RTCConfig struct {
 	API     APIConfig              `yaml:"api"`
 	RTSP    RTSPConfig             `yaml:"rtsp"`
 	WebRTC  WebRTCConfig           `yaml:"webrtc"`
+	FFmpeg  map[string]string      `yaml:"ffmpeg,omitempty"`
 	Streams map[string]interface{} `yaml:"streams,omitempty"`
 	Record  *RecordGlobalConfig    `yaml:"record,omitempty"`
 }
@@ -277,6 +278,9 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 		WebRTC: WebRTCConfig{
 			Listen: fmt.Sprintf(":%d", b.webrtcPort),
 		},
+		// Named templates keep raw arguments out of dynamically registered
+		// URLs: go2rtc intentionally rejects sources containing spaces.
+		FFmpeg: map[string]string{"wyze_lake_preview": "-threads 2"},
 		// Streams is nil when empty so YAML omits the key entirely.
 		// go2rtc parses an empty flow-style `streams: {}` unreliably.
 	}

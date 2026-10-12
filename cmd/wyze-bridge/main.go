@@ -168,6 +168,7 @@ func main() {
 		Issues:    issueReg,
 		Mars:      apiClient,
 		KVS:       kvsAdapter{api: apiClient},
+		Lake:      apiClient,
 		AuthPhoneID: func() string {
 			if a := apiClient.Auth(); a != nil {
 				return a.PhoneID
@@ -175,6 +176,9 @@ func main() {
 			return ""
 		},
 	})
+
+	camMgr.SetLakeReset(webServer.CloseLakeCamera)
+	camMgr.SetLakeIdleReset(webServer.CloseIdleLakeCamera)
 
 	// Start the WebUI HTTP listener ASAP. Handlers that need go2rtc
 	// return 503 "bridge still starting" until we inject the API below.

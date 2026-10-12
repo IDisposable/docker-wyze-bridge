@@ -1,18 +1,24 @@
 # Docker Wyze Bridge
 
+Pan v4 cameras using Wyze's Lake/Agora transport use an integrated
+receiver in the existing Bridge container. See
+[Pan v4 Lake setup](DOCS/LAKE_RECEIVER.md).
+
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/idisposable/docker-wyze-bridge?logo=github)](https://github.com/idisposable/docker-wyze-bridge/releases/latest)
 [![GHCR Package](https://img.shields.io/badge/ghcr-package-blue?logo=github)](https://ghcr.io/idisposable/docker-wyze-bridge)
 [![Docker](https://github.com/IDisposable/docker-wyze-bridge/actions/workflows/docker-image.yml/badge.svg)](https://github.com/IDisposable/docker-wyze-bridge/actions/workflows/docker-image.yml)
 [![Home Assistant Add-on](https://img.shields.io/badge/home_assistant-add--on-blue.svg?logo=homeassistant&logoColor=white)](./docs/user_guide/install_ha.md)
 
-Local WebRTC / RTSP / HLS bridge for Wyze cameras. No modifications, no
-special firmware, no cloud dependency for streaming (TUTK + OG cameras
-stay entirely on-LAN; doorbell-lineage cameras use Wyze's own WebRTC
-signaling but the media still flows directly to you).
+Local WebRTC / RTSP / HLS bridge for Wyze cameras, without camera modifications
+or special firmware. The connection path depends on the model and firmware:
+TUTK and Gwell P2P provide local media paths, while Kinesis/WebRTC and the
+integrated Lake receiver use Wyze cloud services for session provisioning.
 
-Built in **pure Go** on top of [go2rtc](https://github.com/AlexxIT/go2rtc).
-No Python, no binary SDKs, no C code beyond the `ffmpeg` used for
-snapshot extraction and MP4 recording. Docker image ~65 MB.
+The main Bridge is built in **pure Go** on top of [go2rtc](https://github.com/AlexxIT/go2rtc).
+Its image has no Python or binary camera SDKs, and uses `ffmpeg` for snapshot
+extraction and MP4 recording. Pan v4 reception reuses those existing tools,
+the existing websocket module and Go standard-library HTTP/crypto. No additional
+runtime, SDK, library or second container is required.
 
 ![Supports amd64](https://img.shields.io/badge/amd64-yes-success.svg)
 ![Supports arm64v8](https://img.shields.io/badge/arm64v8-yes-success.svg)
@@ -103,7 +109,7 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam Pan V2 | `HL_PAN2` | TUTK | Should work |
 | Wyze Cam Pan V3 | `HL_PAN3` | TUTK | Mostly working |
 | Wyze Cam Pan Pro (2K) | `HL_PANP` | TUTK | Should work |
-| Wyze Cam Pan v4 | `HL_PAN4` | WebRTC | Expected (cloud sends no TUTK uid) |
+| Wyze Cam Pan v4 | `HL_PAN4` | Integrated Lake receiver | [Lake setup](DOCS/LAKE_RECEIVER.md): native HEVC output and an H264 preview from one shared session |
 | Wyze Cam Outdoor | `WVOD1` | TUTK | Should work |
 | Wyze Cam Outdoor V2 | `HL_WCO2` | TUTK | Should work |
 | Wyze Cam Doorbell V1 | `WYZEDB3` | TUTK | Needs support in go2rtc |

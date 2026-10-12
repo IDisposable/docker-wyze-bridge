@@ -124,6 +124,9 @@ func TestAPIClient_DeleteStream(t *testing.T) {
 	var gotMethod string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
+		if r.URL.Query().Get("src") != "test_cam" {
+			t.Errorf("go2rtc deletion requires src, got %s", r.URL.RawQuery)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()

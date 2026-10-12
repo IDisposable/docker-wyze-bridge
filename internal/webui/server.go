@@ -18,6 +18,7 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
+	"github.com/IDisposable/docker-wyze-bridge/internal/lake"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -59,6 +60,8 @@ type Server struct {
 	onDiscoverReq DiscoverRequester
 	mars          MarsTokenMinter
 	kvs           KVSStreamProvider
+	lake          LakeSessionProvider
+	lakeBroker    *lake.Broker
 	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup
 	// paths (bring-up before every subsystem wires in) stay legal.
@@ -117,15 +120,16 @@ func (s *Server) Events() *EventLog {
 // callbacks) stay as Set* methods because they're constructed after
 // the server is already listening.
 type Options struct {
-	Config      *config.Config       // required
-	CameraMgr   *camera.Manager      // required
-	Version     string               // required
-	Log         zerolog.Logger       // required
-	RootCtx     context.Context      // optional; defaults to context.Background
-	Issues      *issues.Registry     // optional; nil-safe
-	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
-	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
-	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
+	Config      *config.Config      // required
+	CameraMgr   *camera.Manager     // required
+	Version     string              // required
+	Log         zerolog.Logger      // required
+	RootCtx     context.Context     // optional; defaults to context.Background
+	Issues      *issues.Registry    // optional; nil-safe
+	Mars        MarsTokenMinter     // optional; nil → CameraToken endpoint returns 503
+	KVS         KVSStreamProvider   // optional; nil → KVS shim returns 503
+	Lake        LakeSessionProvider // optional Lake transport
+	AuthPhoneID func() string       // optional; nil → empty ClientId in KVS payload
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics
@@ -143,10 +147,18 @@ func NewServer(opts Options) *Server {
 		issues:      opts.Issues,
 		mars:        opts.Mars,
 		kvs:         opts.KVS,
+		lake:        opts.Lake,
 		authPhoneID: opts.AuthPhoneID,
 	}
 	if s.rootCtx == nil {
 		s.rootCtx = context.Background()
+	}
+	if s.lake != nil {
+		s.lakeBroker = lake.NewBroker(s.rootCtx, s.lake)
+		s.lakeBroker.OnEvent = func(name string, event lake.Event) {
+			s.log.Info().Str("cam", name).Str("event", event.Kind).Int("code", event.Code).Msg("Lake session")
+		}
+		s.lakeBroker.OnError = func(name string, err error) { s.log.Warn().Str("cam", name).Err(err).Msg("Lake signaling failed") }
 	}
 	s.auth = NewAuthMiddleware(
 		opts.Config.BridgeAuth,
@@ -215,6 +227,9 @@ func (s *Server) Start() error {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.sseHub.Close()
+	if s.lakeBroker != nil {
+		s.lakeBroker.Close()
+	}
 	return s.srv.Shutdown(ctx)
 }
 
@@ -335,4 +350,5 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// dial Wyze's KVS signaling server. Loopback-only — the response
 	// carries short-lived Wyze-scoped TURN credentials.
 	mux.HandleFunc("/internal/wyze/webrtc/", requireLoopback(s.handleShimKVSSignaling))
+	mux.HandleFunc("/internal/wyze/lake-stream/", requireLoopback(s.handleShimLakeStream))
 }

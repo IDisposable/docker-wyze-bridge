@@ -30,8 +30,9 @@ type StreamInfo struct {
 
 // ProducerInfo describes a stream producer (source).
 type ProducerInfo struct {
-	URL    string        `json:"url,omitempty"`
-	Medias []interface{} `json:"medias,omitempty"`
+	BytesRecv int64         `json:"bytes_recv,omitempty"`
+	URL       string        `json:"url,omitempty"`
+	Medias    []interface{} `json:"medias,omitempty"`
 }
 
 // ConsumerInfo describes a stream consumer.
@@ -151,7 +152,7 @@ func (c *APIClient) AddStream(ctx context.Context, name, streamURL string) error
 
 // DeleteStream removes a stream from go2rtc.
 func (c *APIClient) DeleteStream(ctx context.Context, name string) error {
-	u := fmt.Sprintf("%s/api/streams?name=%s", c.baseURL, url.QueryEscape(name))
+	u := fmt.Sprintf("%s/api/streams?src=%s", c.baseURL, url.QueryEscape(name))
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", u, nil)
 	if err != nil {
