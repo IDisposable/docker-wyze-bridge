@@ -96,6 +96,35 @@ func TestAPIClient_ListStreams(t *testing.T) {
 	}
 }
 
+func TestAPIClient_ListStreamsProducerIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":{"producers":[{"id":18428,"bytes_recv":1024}]},"pending":{"producers":[{}]},"legacy":{"producers":[{"bytes_recv":512}]}}`))
+	}))
+	defer server.Close()
+
+	streams, err := NewAPIClient(server.URL, zerolog.Nop()).ListStreams(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A producer replacement can have a larger byte count than its predecessor.
+	// Preserve the engine's identity so health checks can still detect that change.
+	encoded, err := json.Marshal(streams["active"].Producers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var active map[string]interface{}
+	if err := json.Unmarshal(encoded, &active); err != nil {
+		t.Fatal(err)
+	}
+	if active["id"] != float64(18428) {
+		t.Fatalf("producer identity lost: %s", encoded)
+	}
+	if len(streams["pending"].Producers) != 1 || streams["legacy"].Producers[0].BytesRecv != 512 {
+		t.Fatal("pending or legacy producer metadata no longer parses")
+	}
+}
+
 func TestAPIClient_AddStream(t *testing.T) {
 	var gotName, gotSrc string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

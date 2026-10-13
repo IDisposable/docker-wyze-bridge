@@ -30,6 +30,7 @@ type StreamInfo struct {
 
 // ProducerInfo describes a stream producer (source).
 type ProducerInfo struct {
+	ID        int64         `json:"id,omitempty"`
 	BytesRecv int64         `json:"bytes_recv,omitempty"`
 	URL       string        `json:"url,omitempty"`
 	Medias    []interface{} `json:"medias,omitempty"`
