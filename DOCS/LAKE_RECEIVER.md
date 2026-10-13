@@ -23,7 +23,7 @@ and owned-stream teardown.
 ```mermaid
 flowchart LR
     API[Wyze API] -->|Provision and renew|Bridge
-    Gateway[Agora gateway] <-->|Signaling and camera controls|Bridge
+    Gateway[Agora gateway] <-->|Signaling and ownership/resolution controls|Bridge
     Gateway -->|HEVC over WebRTC/SRTP|Receive
     subgraph Container[One Wyze Bridge container]
         Bridge[Bridge process]
@@ -103,25 +103,29 @@ enabled. Existing stream-access authentication settings still apply.
 ## Validation status
 
 One Cam Pan v4 (`HL_PAN4`, firmware `4.70.6.4312`) was tested on an amd64
-Synology NAS. An ordinary integrated image recorded more than 61 minutes of
-native 3840x2160 HEVC (36,967 frames) and 1920x1080 H264 (74,162 frames).
-Both complete files passed strict decoding with zero errors. Nine sampled
+Synology NAS. The final ordinary integrated image recorded 65 minutes of
+native HEVC and H264 preview. All 38,979 recorded native frames decoded at
+3840x2160 and all 38,993 preview frames decoded at 1920x1080, with zero decoder
+errors or warnings. Nine sampled
 frames from each output, spread across the full recording, showed no gray bands
-or damaged images. The preview resampled for pacing during that run; the native
-video averaged approximately 10fps in low light.
+or damaged images. Both outputs averaged approximately 10fps in low light.
+The preview had no decoded-frame timing gaps. Native video retains camera
+timing and had occasional jitter, including one 0.706-second gap.
 
 A renewal request was sent at 40 minutes, and video continued beyond the
 original requested one-hour token lifetime without a producer replacement.
-That long run preceded the final lifecycle and configuration fixes. The final
-image includes fresh-session startup grace, custom-YAML compatibility, late-offer
-cancellation and explicit media teardown. On that final ordinary image,
-one-minute native/preview recordings passed full-file strict decoding with zero
+The final image includes fresh-session startup grace, custom-YAML compatibility,
+late-offer cancellation and explicit media teardown. Separate one-minute
+native/preview recordings passed full-file strict decoding with zero
 errors both after installation and after a Front-only reconnect. Nine sampled
 frames from each output and phase were clean. The reconnect restored byte flow
 in about 12 seconds, without replacing the other cameras' producers. Only one
 preview encoder and one native-copy worker remained after reconnect.
 Credentials, ports, mounted data and Scrypted settings/pairings were preserved.
-Only one Wyze container was running; the previous receiver was stopped.
+Only one Wyze container was running. A 48-second steady workload sample used
+about 23% of the four-core NAS's CPU capacity, dominated by the H264 preview;
+native copying used less than 1% of one core. This is a scene-specific sample,
+not a universal hardware estimate.
 
 The receive-window change was checked with real local Pion peers: delayed
 authenticated packets are accepted by the expanded window, duplicates are
