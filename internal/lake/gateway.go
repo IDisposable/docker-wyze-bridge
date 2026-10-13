@@ -477,6 +477,15 @@ func (s *Session) run(ctx context.Context) {
 	}
 	renew := time.NewTicker(renewAfter)
 	defer renew.Stop()
+	renewalDone := make(chan bool, 1)
+	renewalPending := false
+	startRenewal := func() {
+		if renewalPending || ctx.Err() != nil {
+			return
+		}
+		renewalPending = true
+		go func() { renewalDone <- s.renew(ctx) }()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -494,11 +503,12 @@ func (s *Session) run(ctx context.Context) {
 				return
 			}
 		case <-renew.C:
-			if !s.renew(ctx) {
-				return
-			}
+			startRenewal()
 		case <-renewNeeded:
-			if !s.renew(ctx) {
+			startRenewal()
+		case renewed := <-renewalDone:
+			renewalPending = false
+			if !renewed {
 				return
 			}
 
