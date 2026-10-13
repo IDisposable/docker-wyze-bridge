@@ -193,3 +193,20 @@ func newLakeTestManager(t *testing.T, failedNames ...string) (*Manager, *go2rtcm
 	api := go2rtcmgr.NewAPIClient(srv.URL, zerolog.Nop())
 	return NewManager(&config.Config{BridgePort: 5080}, nil, api, zerolog.Nop()), api
 }
+
+func TestLakeReconnectStartsFreshHealthGrace(t *testing.T) {
+	m, _ := newLakeTestManager(t)
+	cam := NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+	m.cameras["front"] = cam
+	now := time.Now()
+	for _, stage := range []string{"transport", "native", "preview"} {
+		m.lakeHealth["front/"+stage] = lakeHealthState{bytes: 0, lastData: now.Add(-2 * time.Minute)}
+	}
+	m.connectCamera(context.Background(), cam)
+	waiting := &go2rtcmgr.StreamInfo{Consumers: []go2rtcmgr.ConsumerInfo{{}}}
+	for _, stage := range []string{"transport", "native", "preview"} {
+		if !m.lakeStreamHealthy("front/"+stage, waiting, now) {
+			t.Errorf("new %s session inherited the previous stalled timer", stage)
+		}
+	}
+}

@@ -325,6 +325,14 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 				return
 			}
 		}
+		// A fresh negotiation gets its own startup grace. In particular, a
+		// previously stalled zero-byte session must not immediately fail
+		// the replacement before it receives its first video packet.
+		m.mu.Lock()
+		for _, stage := range []string{"transport", "native", "preview"} {
+			delete(m.lakeHealth, cam.Name()+"/"+stage)
+		}
+		m.mu.Unlock()
 		_ = go2rtc.DeleteStream(ctx, cam.Name())
 		m.removeLakeOutputs(ctx, cam.Name())
 		raw := fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s#format=wyze-lake", m.cfg.BridgePort, cam.Name())
