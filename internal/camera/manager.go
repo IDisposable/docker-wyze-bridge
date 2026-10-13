@@ -651,11 +651,14 @@ func (m *Manager) StopStream(ctx context.Context, name string) {
 	if cam == nil {
 		return
 	}
+	if cam.GetInfo().Model == "HL_PAN4" {
+		// Reject delayed local offers before tearing down registrations;
+		// deleting a producer may itself wait for an in-flight negotiation.
+		m.changeState(cam, StateOffline)
+		m.removeLakeOutputs(ctx, name)
+	}
 	if go2rtc := m.go2rtcClient(); go2rtc != nil {
 		_ = go2rtc.DeleteStream(ctx, name)
-	}
-	if cam.GetInfo().Model == "HL_PAN4" {
-		m.removeLakeOutputs(ctx, name)
 	}
 	m.changeState(cam, StateOffline)
 }

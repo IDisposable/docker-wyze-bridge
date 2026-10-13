@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/lake"
 	"net/http"
 	"strings"
@@ -17,7 +18,7 @@ func (s *Server) handleShimLakeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cam := s.camMgr.GetCamera(name)
-	if cam == nil || cam.GetInfo().Model != "HL_PAN4" {
+	if cam == nil || cam.GetInfo().Model != "HL_PAN4" || cam.GetState() == camera.StateOffline {
 		http.NotFound(w, r)
 		return
 	}

@@ -54,6 +54,9 @@ func TestLakeOutputsAndQuality(t *testing.T) {
 	stopped := false
 	m.SetLakeReset(func(name string) {
 		if name == "front" {
+			if cam.GetState() != StateOffline {
+				t.Error("stop accepted new offers while closing the session")
+			}
 			stopped = true
 		}
 	})

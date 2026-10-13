@@ -28,12 +28,13 @@ type Broker struct {
 	sessions map[string]*Session
 	locks    map[string]*sync.Mutex
 	pending  map[string]*cameraOperation
+	epochs   map[string]uint64
 	cancel   context.CancelFunc
 }
 
 func NewBroker(ctx context.Context, p Provider) *Broker {
 	ctx, cancel := context.WithCancel(ctx)
-	b := &Broker{ctx: ctx, cancel: cancel, provider: p, sessions: map[string]*Session{}, locks: map[string]*sync.Mutex{}, pending: map[string]*cameraOperation{}}
+	b := &Broker{ctx: ctx, cancel: cancel, provider: p, sessions: map[string]*Session{}, locks: map[string]*sync.Mutex{}, pending: map[string]*cameraOperation{}, epochs: map[string]uint64{}}
 	if ctx.Done() != nil {
 		go func() { <-ctx.Done(); b.Close() }()
 	}
@@ -56,6 +57,7 @@ func (b *Broker) Close() {
 }
 func (b *Broker) CloseCamera(name string) {
 	b.mu.Lock()
+	b.epochs[name]++
 	s := b.sessions[name]
 	operation := b.pending[name]
 	delete(b.pending, name)
@@ -79,6 +81,7 @@ func (b *Broker) CloseIdleCamera(name string) {
 		b.mu.Unlock()
 		return
 	}
+	b.epochs[name]++
 	operation := b.pending[name]
 	delete(b.pending, name)
 	delete(b.sessions, name)
@@ -141,6 +144,8 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 		return
 	}
 	b.mu.Lock()
+	b.epochs[name]++
+	epoch := b.epochs[name]
 	lock := b.locks[name]
 	if lock == nil {
 		lock = &sync.Mutex{}
@@ -154,13 +159,30 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 			lock.Unlock()
 		}
 	}()
-	b.CloseCamera(name)
 	cameraCtx, cameraCancel := context.WithCancel(b.ctx)
 	operation := &cameraOperation{cancel: cameraCancel}
 	adopted := false
 	b.mu.Lock()
+	// A stop or a newer offer may arrive while this request waits for the
+	// previous negotiation. Adopt ownership atomically with the check so
+	// a queued request cannot recreate a stopped camera session.
+	if b.epochs[name] != epoch || cameraCtx.Err() != nil {
+		b.mu.Unlock()
+		cameraCancel()
+		fail()
+		return
+	}
+	previous := b.sessions[name]
+	previousOperation := b.pending[name]
+	delete(b.sessions, name)
 	b.pending[name] = operation
 	b.mu.Unlock()
+	if previousOperation != nil {
+		previousOperation.cancel()
+	}
+	if previous != nil {
+		previous.Close()
+	}
 	defer func() {
 		if !adopted {
 			cameraCancel()

@@ -34,6 +34,23 @@ func injectGwellCam(srv *Server, mac, name, lanIP string) {
 	srv.camMgr.InjectCamera(name, cam)
 }
 
+func TestLakeShimRejectsStoppedCamera(t *testing.T) {
+	srv, _ := testServer(t)
+	cam := camera.NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+	srv.camMgr.InjectCamera("front", cam)
+	w := httptest.NewRecorder()
+	srv.handleShimLakeStream(w, newShimReq("GET", "/internal/wyze/lake-stream/front"))
+	if w.Code != http.StatusNotFound {
+		t.Fatal("stopped camera accepted a delayed signaling request")
+	}
+	cam.SetState(camera.StateConnecting)
+	w = httptest.NewRecorder()
+	srv.handleShimLakeStream(w, newShimReq("GET", "/internal/wyze/lake-stream/front"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatal("connecting camera was incorrectly rejected as stopped")
+	}
+}
+
 func TestShim_CameraList_EmptyWhenNoGwell(t *testing.T) {
 	srv, _ := testServer(t)
 	// Inject a TUTK camera — should NOT appear in the list.

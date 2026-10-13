@@ -78,3 +78,60 @@ func TestBrokerCancelsPendingCamera(t *testing.T) {
 		})
 	}
 }
+
+func TestBrokerStopCancelsQueuedCamera(t *testing.T) {
+	provider := &blockedProvider{make(chan struct{}, 2), make(chan struct{}, 2)}
+	b := NewBroker(context.Background(), provider)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.ServeCamera(w, r, "front", "test", "HL_PAN4", "2k")
+	}))
+	defer func() { b.Close(); server.Close() }()
+	clients := make([]*websocket.Conn, 2)
+	for i := range clients {
+		c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients[i] = c
+		defer c.Close()
+		if err = c.WriteJSON(object{"type": "webrtc/offer", "value": testSDP}); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			select {
+			case <-provider.started:
+			case <-time.After(time.Second):
+				t.Fatal("first negotiation did not start")
+			}
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		b.mu.Lock()
+		accepted := b.epochs["front"] == 2
+		b.mu.Unlock()
+		if accepted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second offer did not reach the camera queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	b.CloseCamera("front")
+	for _, c := range clients {
+		c.SetReadDeadline(time.Now().Add(time.Second))
+		var reply object
+		if c.ReadJSON(&reply) != nil || str(reply["type"]) != "error" {
+			t.Fatal("stop did not finish both pending offers")
+		}
+	}
+	select {
+	case <-provider.started:
+		t.Fatal("queued offer provisioned a new session after stop")
+	default:
+	}
+	if b.Active() != 0 {
+		t.Fatal("stopped camera retained a session")
+	}
+}

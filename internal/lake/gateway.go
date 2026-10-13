@@ -338,7 +338,9 @@ func (s *Session) run(ctx context.Context) {
 			var m message
 			e := s.conn.ReadJSON(&m)
 			if e != nil {
-				s.notify("gateway_read_failed", 0)
+				if ctx.Err() == nil {
+					s.notify("gateway_read_failed", 0)
+				}
 				readErr <- e
 				return
 			}
