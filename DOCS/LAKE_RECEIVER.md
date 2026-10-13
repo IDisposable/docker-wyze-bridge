@@ -127,6 +127,14 @@ about 23% of the four-core NAS's CPU capacity, dominated by the H264 preview;
 native copying used less than 1% of one core. This is a scene-specific sample,
 not a universal hardware estimate.
 
+Check the host's UDP receive-error counters if native video has timing gaps.
+On this NAS, increasing `net.core.rmem_default` and `net.core.rmem_max` from
+212,992 bytes to 2 MiB eliminated observed socket overruns (1,930 drops in a
+one-minute sample before tuning; zero afterward). Both two-minute follow-up
+recordings passed strict decoding at their expected resolutions, with no
+decoded-frame gaps over 250 ms. This is host tuning for measured receive
+overruns, not a required Bridge configuration change for every deployment.
+
 The receive-window change was checked with real local Pion peers: delayed
 authenticated packets are accepted by the expanded window, duplicates are
 still rejected, and ordinary clients retain their default behavior. A private
