@@ -27,7 +27,9 @@ func (s *Server) handleShimLakeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := cam.GetInfo()
-	s.lakeBroker.ServeCamera(w, r, name, info.MAC, info.Model, "2k")
+	s.lakeBroker.ServeCamera(w, r, name, info.MAC, info.Model, "2k", func() bool {
+		return cam.GetState() != camera.StateOffline
+	})
 }
 
 func (s *Server) CloseLakeCamera(name string) {

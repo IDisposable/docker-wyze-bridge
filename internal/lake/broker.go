@@ -29,12 +29,13 @@ type Broker struct {
 	locks    map[string]*sync.Mutex
 	pending  map[string]*cameraOperation
 	epochs   map[string]uint64
+	stops    map[string]uint64
 	cancel   context.CancelFunc
 }
 
 func NewBroker(ctx context.Context, p Provider) *Broker {
 	ctx, cancel := context.WithCancel(ctx)
-	b := &Broker{ctx: ctx, cancel: cancel, provider: p, sessions: map[string]*Session{}, locks: map[string]*sync.Mutex{}, pending: map[string]*cameraOperation{}, epochs: map[string]uint64{}}
+	b := &Broker{ctx: ctx, cancel: cancel, provider: p, sessions: map[string]*Session{}, locks: map[string]*sync.Mutex{}, pending: map[string]*cameraOperation{}, epochs: map[string]uint64{}, stops: map[string]uint64{}}
 	if ctx.Done() != nil {
 		go func() { <-ctx.Done(); b.Close() }()
 	}
@@ -58,6 +59,7 @@ func (b *Broker) Close() {
 func (b *Broker) CloseCamera(name string) {
 	b.mu.Lock()
 	b.epochs[name]++
+	b.stops[name]++
 	s := b.sessions[name]
 	operation := b.pending[name]
 	delete(b.pending, name)
@@ -82,6 +84,7 @@ func (b *Broker) CloseIdleCamera(name string) {
 		return
 	}
 	b.epochs[name]++
+	b.stops[name]++
 	operation := b.pending[name]
 	delete(b.pending, name)
 	delete(b.sessions, name)
@@ -94,7 +97,12 @@ func (b *Broker) CloseIdleCamera(name string) {
 
 // ServeCamera speaks the existing go2rtc websocket offer/answer protocol.
 // The caller must enforce loopback-only access and validate the camera model.
-func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, model, quality string) {
+// active is rechecked under ownership; it must not acquire caller locks that
+// can call back into Broker.
+func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, model, quality string, active func() bool) {
+	b.mu.Lock()
+	stopEpoch := b.stops[name]
+	b.mu.Unlock()
 	if b.ctx.Err() != nil || b.provider == nil {
 		http.Error(w, "Lake unavailable", http.StatusServiceUnavailable)
 		return
@@ -144,6 +152,14 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 		return
 	}
 	b.mu.Lock()
+	// An already accepted socket may still be waiting for its offer when a
+	// stop arrives. A later valid offer cannot acquire a new ownership epoch
+	// in that case. Other offers may still supersede each other normally.
+	if b.stops[name] != stopEpoch {
+		b.mu.Unlock()
+		fail()
+		return
+	}
 	b.epochs[name]++
 	epoch := b.epochs[name]
 	lock := b.locks[name]
@@ -166,7 +182,7 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 	// A stop or a newer offer may arrive while this request waits for the
 	// previous negotiation. Adopt ownership atomically with the check so
 	// a queued request cannot recreate a stopped camera session.
-	if b.epochs[name] != epoch || cameraCtx.Err() != nil {
+	if b.epochs[name] != epoch || cameraCtx.Err() != nil || (active != nil && !active()) {
 		b.mu.Unlock()
 		cameraCancel()
 		fail()
