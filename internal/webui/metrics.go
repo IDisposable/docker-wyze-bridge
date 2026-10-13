@@ -13,12 +13,12 @@ import (
 // MetricsSnapshot is the full JSON payload served at /api/metrics.
 // Every field is pure data; the metrics.html page renders it.
 type MetricsSnapshot struct {
-	Bridge  BridgeSummary           `json:"bridge"`
-	Issues  []issues.Issue          `json:"issues,omitempty"`
-	Cameras []CameraMetric          `json:"cameras"`
-	WyzeAPI []wyzeapi.EndpointStats `json:"wyzeapi,omitempty"`
-	Storage *StorageSummary         `json:"storage,omitempty"`
-	Events  []Event                 `json:"events,omitempty"`
+	Bridge   BridgeSummary             `json:"bridge"`
+	Issues   []issues.Issue            `json:"issues,omitempty"`
+	Cameras  []CameraMetric            `json:"cameras"`
+	WyzeAPI  []wyzeapi.EndpointStats   `json:"wyzeapi,omitempty"`
+	Storage  *StorageSummary           `json:"storage,omitempty"`
+	Events   []Event                   `json:"events,omitempty"`
 }
 
 type BridgeSummary struct {

@@ -1,5 +1,6 @@
 // Package lake translates Agora gateway signaling for go2rtc's existing WebRTC
-// receiver. Media transport, decoding and RTSP publishing remain in go2rtc.
+// receiver. go2rtc handles media transport and RTSP publication; FFmpeg handles
+// RTP ordering and preview encoding.
 package lake
 
 import (

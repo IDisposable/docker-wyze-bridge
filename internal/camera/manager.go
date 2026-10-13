@@ -48,14 +48,14 @@ type Manager struct {
 	onProtocolFallback func(camName string, oldProtocol, newProtocol string, failStreak int)
 }
 
-// chronicErrorThreshold is the consecutive-error count at which a
-// camera is considered "stuck" — beyond go2rtc's transient blip into
-// a sustained problem worth surfacing to operators.
 type lakeHealthState struct {
 	bytes    int64
 	lastData time.Time
 }
 
+// chronicErrorThreshold is the consecutive-error count at which a
+// camera is considered "stuck" — beyond go2rtc's transient blip into
+// a sustained problem worth surfacing to operators.
 const chronicErrorThreshold = 10
 
 // NewManager creates a new camera manager. The go2rtcAPI may be nil

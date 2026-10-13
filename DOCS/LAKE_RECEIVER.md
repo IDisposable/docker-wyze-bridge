@@ -92,18 +92,6 @@ requests are rejected. Account credentials and encryption keys do not appear
 in stream URLs, SDP answers or errors. HTTPS/WSS certificate verification stays
 enabled. Existing stream-access authentication settings still apply.
 
-## Upgrading from the earlier companion prototype
-
-Back up container inspection data, images and complete mounted configuration
-before switching images. Preserve account credentials, ports and mounts. Remove
-only the obsolete `RTSP_SOURCE_<CAM>` and native-output extra-stream entries
-that point at the old companion's port 8555. Stop the old receiver before
-starting the integrated receiver, so they never compete for the same camera.
-
-Use the ordinary Bridge Dockerfile and deployment. No separate Lake service or
-additional ports are required. Preserve a stopped copy of the previous Bridge
-and receiver for rollback; do not delete their parameters or mounted data.
-
 ## Validation status
 
 One Cam Pan v4 (`HL_PAN4`, firmware `4.70.6.4312`) was tested on an amd64
@@ -145,6 +133,5 @@ docker build -f docker/Dockerfile -t wyze-bridge:pan-v4-streaming .
 ```
 
 Protocol research credits: Jezza34000/homeassistant_petkit (MIT),
-alphabin/ClaudeWyze4Sln, and mitchross's earlier Pan v4 receiver design. Reusing
-the existing go2rtc media stack is the difference from the native-SDK companion
-prototype. See THIRD_PARTY_NOTICES.md for preserved attribution.
+alphabin/ClaudeWyze4Sln, and mitchross's earlier Pan v4 receiver design.
+See THIRD_PARTY_NOTICES.md for preserved attribution.
