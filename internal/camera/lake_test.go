@@ -3,6 +3,7 @@ package camera
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
@@ -117,6 +118,34 @@ func TestLakeAliasCollision(t *testing.T) {
 	}
 }
 
+func TestLakeExtraYAMLAliasCollisionPreservesOperatorStream(t *testing.T) {
+	for _, alias := range []string{"front_4k", "front_lake"} {
+		for _, raw := range []string{
+			"streams:\n  " + alias + ": rtsp://example.test/operator-camera\n",
+			"defaults: &defaults\n  streams:\n    " + alias + ": rtsp://example.test/operator-camera\n<<: *defaults\n",
+			"defaults: &defaults\n  " + alias + ": rtsp://example.test/operator-camera\nstreams:\n  <<: *defaults\n",
+		} {
+			m, api := newLakeTestManager(t)
+			ctx := context.Background()
+			cam := NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+			m.cameras["front"] = cam
+			m.cfg.Go2RTCExtraYAML = raw
+			const source = "rtsp://example.test/operator-camera"
+			if err := api.AddStream(ctx, alias, source); err != nil {
+				t.Fatal(err)
+			}
+			m.connectCamera(ctx, cam)
+			streams, err := api.ListStreams(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(streams) != 1 || streams[alias] == nil || streams[alias].Producers[0].URL != source || cam.GetState() != StateError {
+				t.Fatalf("operator stream %s was replaced by Lake outputs", alias)
+			}
+		}
+	}
+}
+
 func TestLakeFailedRegistrationCleansUp(t *testing.T) {
 	for _, failed := range []string{"front_lake", "front_4k", "front"} {
 		m, api := newLakeTestManager(t, failed)
@@ -148,7 +177,12 @@ func TestLakeRenameClosesAliasesAndSession(t *testing.T) {
 	m.cameras["front"] = cam
 	m.connectCamera(context.Background(), cam)
 	closed := false
-	m.SetLakeReset(func(name string) { closed = name == "front" })
+	m.SetLakeReset(func(name string) {
+		closed = name == "front"
+		if cam.GetState() != StateOffline {
+			t.Error("renamed camera still accepts offers on its old name")
+		}
+	})
 	m.mu.Lock()
 	m.reapRenameOrphans(context.Background(), []wyzeapi.CameraInfo{{Name: "moved", MAC: "test", Model: "HL_PAN4"}})
 	m.mu.Unlock()
@@ -208,5 +242,88 @@ func TestLakeReconnectStartsFreshHealthGrace(t *testing.T) {
 		if !m.lakeStreamHealthy("front/"+stage, waiting, now) {
 			t.Errorf("new %s session inherited the previous stalled timer", stage)
 		}
+	}
+}
+
+func TestLakeDiscoveryRemovalClosesSessionAndOutputs(t *testing.T) {
+	for _, filtered := range []bool{false, true} {
+		t.Run(fmt.Sprintf("filtered=%t", filtered), func(t *testing.T) {
+			m, api := newLakeTestManager(t)
+			ctx := context.Background()
+			var discoveryMu sync.Mutex
+			includeFront := true
+			device := func(name, model, mac string) map[string]interface{} {
+				return map[string]interface{}{
+					"product_type": "Camera", "product_model": model, "nickname": name,
+					"mac": mac, "enr": "test", "device_params": map[string]interface{}{"ip": "192.0.2.1", "p2p_id": "test"},
+				}
+			}
+			wyze := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v2/home_page/get_object_list" {
+					http.NotFound(w, r)
+					return
+				}
+				discoveryMu.Lock()
+				defer discoveryMu.Unlock()
+				devices := []interface{}{device("Other", "HL_CAM4", "OTHER")}
+				if includeFront {
+					devices = append(devices, device("Front", "HL_PAN4", "FRONT"), device("Legacy", "WYZE_CAKP2JFUS", "LEGACY"))
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"code": "1", "data": map[string]interface{}{"device_list": devices}})
+			}))
+			t.Cleanup(wyze.Close)
+			m.api = wyzeapi.NewClient(wyzeapi.Credentials{}, "test", zerolog.Nop())
+			m.api.WyzeURL = wyze.URL
+			m.api.SetAuth(&wyzeapi.AuthState{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour)})
+			if err := m.Discover(ctx); err != nil {
+				t.Fatal(err)
+			}
+			m.ConnectAll(ctx)
+			front, other := m.GetCamera("front"), m.GetCamera("other")
+			legacy := m.GetCamera("legacy")
+			if front == nil || other == nil || legacy == nil {
+				t.Fatal("fake API did not discover all cameras")
+			}
+			closed := 0
+			m.SetLakeReset(func(name string) {
+				if name != "front" || front.GetState() != StateOffline {
+					t.Error("removed camera still accepts new offers during cleanup")
+				}
+				closed++
+			})
+			if filtered {
+				m.filter = &Filter{Names: []string{"OTHER"}}
+			} else {
+				discoveryMu.Lock()
+				includeFront = false
+				discoveryMu.Unlock()
+			}
+			if err := m.Discover(ctx); err != nil {
+				t.Fatal(err)
+			}
+			beforeReconnect, err := api.ListStreams(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.GetCamera("legacy") != legacy || legacy.GetState() != StateOffline || beforeReconnect["legacy"] == nil {
+				t.Fatal("non-Pan removal semantics changed")
+			}
+			m.ConnectAll(ctx)
+			streams, err := api.ListStreams(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"front", "front_lake", "front_4k"} {
+				if _, exists := streams[name]; exists {
+					t.Errorf("removed camera left %s registered", name)
+				}
+			}
+			if closed != 1 || front.GetState() != StateOffline {
+				t.Errorf("cleanup calls=%d, removed camera state=%s", closed, front.GetState())
+			}
+			if m.GetCamera("other") != other || other.GetState() != StateStreaming || streams["other"] == nil {
+				t.Fatal("unrelated camera was changed")
+			}
+		})
 	}
 }

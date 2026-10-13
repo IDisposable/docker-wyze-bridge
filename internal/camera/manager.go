@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
@@ -252,6 +253,15 @@ func (m *Manager) Discover(ctx context.Context) error {
 			m.changeState(cam, StateOffline)
 			m.log.Warn().Str("cam", name).Msg("camera no longer in discovery, marking offline")
 		}
+		if !seen[name] && cam.GetInfo().Model == "HL_PAN4" {
+			m.removeLakeOutputs(ctx, name)
+			if api := m.go2rtcClient(); api != nil {
+				_ = api.DeleteStream(ctx, name)
+			}
+			// ConnectAll follows discovery; an absent Pan must not reopen
+			// its cloud session simply because it is now offline.
+			delete(m.cameras, name)
+		}
 	}
 
 	return nil
@@ -313,10 +323,20 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 			m.log.Warn().Str("cam", cam.Name()).Msg("Pan v4 streaming requires the embedded go2rtc receive window and templates")
 			return
 		}
+		var extraYAML struct {
+			Streams map[string]interface{} `yaml:"streams"`
+		}
+		if err := yaml.Unmarshal([]byte(m.cfg.Go2RTCExtraYAML), &extraYAML); err != nil {
+			cam.IncrementError()
+			m.log.Warn().Str("cam", cam.Name()).Msg("Lake outputs require valid extra go2rtc configuration")
+			return
+		}
+		extraStreams := go2rtcmgr.ParseExtraStreams(m.cfg.Go2RTCExtraStreams)
 		for _, suffix := range []string{"_lake", "_4k"} {
 			alias := cam.Name() + suffix
-			collision := m.GetCamera(alias) != nil
-			for _, extra := range go2rtcmgr.ParseExtraStreams(m.cfg.Go2RTCExtraStreams) {
+			_, configured := extraYAML.Streams[alias]
+			collision := configured || m.GetCamera(alias) != nil
+			for _, extra := range extraStreams {
 				collision = collision || extra.Name == alias
 			}
 			if collision {
@@ -559,6 +579,9 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 			Str("new_name", newName).
 			Str("mac", info.MAC).
 			Msg("camera rename detected, dropping orphan entry")
+		if info.Model == "HL_PAN4" {
+			m.changeState(existing, StateOffline)
+		}
 		if go2rtc := m.go2rtcClient(); go2rtc != nil {
 			_ = go2rtc.DeleteStream(ctx, oldName)
 		}
