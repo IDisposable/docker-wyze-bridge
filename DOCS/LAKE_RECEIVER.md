@@ -135,6 +135,12 @@ recordings passed strict decoding at their expected resolutions, with no
 decoded-frame gaps over 250 ms. This is host tuning for measured receive
 overruns, not a required Bridge configuration change for every deployment.
 
+Later live observation caught an approximately four-minute gateway negotiation
+interruption. Logs reported failed gateway connections and response timeouts;
+the underlying cause is unknown. Fresh attempts recovered automatically, with
+one shared session and no duplicate media workers. The clean recording checks
+above do not establish uninterrupted long-term operation.
+
 The receive-window change was checked with real local Pion peers: delayed
 authenticated packets are accepted by the expanded window, duplicates are
 still rejected, and ordinary clients retain their default behavior. A private
