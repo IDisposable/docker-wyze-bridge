@@ -282,7 +282,9 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 		// Named templates keep raw arguments out of dynamically registered
 		// URLs: go2rtc intentionally rejects sources containing spaces.
 		FFmpeg: map[string]string{
-			"wyze_lake_preview": "-threads 2",
+			// A frame-count-only GOP grows to five seconds in low light.
+			// Keep preview keyframes about two seconds apart at any camera FPS.
+			"wyze_lake_preview": "-threads 2 -force_key_frames expr:gte(t,n_forced*2)",
 			// WebRTC can deliver recovered RTP packets out of order even
 			// though the local RTSP hop uses TCP. Copy the native video
 			// through a bounded reorder queue before exposing either output.

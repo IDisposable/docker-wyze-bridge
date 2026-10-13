@@ -37,8 +37,8 @@ func TestConfigBuilder_Build(t *testing.T) {
 	if cfg.WebRTC.Listen != ":8889" {
 		t.Errorf("WebRTC.Listen = %q, want :8889", cfg.WebRTC.Listen)
 	}
-	if cfg.FFmpeg["wyze_lake_preview"] != "-threads 2" {
-		t.Fatal("Lake preview thread-limit template missing")
+	if cfg.FFmpeg["wyze_lake_preview"] != "-threads 2 -force_key_frames expr:gte(t,n_forced*2)" {
+		t.Fatal("Lake preview thread limit or timed keyframes missing")
 	}
 	if len(cfg.WebRTC.Candidates) != 1 || cfg.WebRTC.Candidates[0] != "192.168.1.50:8889" {
 		t.Errorf("WebRTC.Candidates = %v, want [192.168.1.50:8889]", cfg.WebRTC.Candidates)
