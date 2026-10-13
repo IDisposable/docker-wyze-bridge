@@ -183,3 +183,23 @@ func TestConfigBuilder_ClearStreams(t *testing.T) {
 		t.Errorf("expected 0 streams after clear, got %d", len(cfg.Streams))
 	}
 }
+
+func TestExtraFFmpegAliasRemainsValid(t *testing.T) {
+	b := NewConfigBuilder("warn", "", "")
+	b.AppendRawYAML("defaults: &pipeline\n  bin: /custom/ffmpeg\n  h264: -c:v custom_encoder\nffmpeg: *pipeline\n")
+	path := filepath.Join(t.TempDir(), "go2rtc.yaml")
+	if err := b.WriteConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed Go2RTCConfig
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
+		t.Fatal("operator alias or receive templates were lost")
+	}
+}

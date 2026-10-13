@@ -374,6 +374,9 @@ func (b *ConfigBuilder) WriteConfig(path string) error {
 					continue
 				}
 				block := root.Content[i+1]
+				for block.Kind == yaml.AliasNode && block.Alias != nil {
+					block = block.Alias
+				}
 				if block.Kind != yaml.MappingNode {
 					return fmt.Errorf("extra go2rtc ffmpeg config must be a mapping")
 				}
