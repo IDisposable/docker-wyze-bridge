@@ -41,6 +41,9 @@ Both outputs share one internal `<camera>_lake` transport and one camera
 gateway session. The `_4k` output copies HEVC through FFmpeg to restore RTP
 ordering; it does not decode, scale or re-encode that native video. The reorder
 queue is bounded to 4096 packets with a one-second maximum demuxing delay.
+The H264 preview requests a keyframe every two seconds, including when the
+camera reduces its frame rate in low light. This keeps playback/recording starts
+responsive without imposing a different frame rate on the camera.
 The internal transport is also removed on stop, reconnect and rename.
 The session starts when a consumer requests video. Its short local websocket
 exchanges SDP with go2rtc; the Agora websocket remains alive after go2rtc closes
