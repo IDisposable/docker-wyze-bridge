@@ -16,6 +16,28 @@ and `go.sum` are unchanged, and go2rtc retains the same upstream dependency
 versions. No companion image is needed. External go2rtc mode is not supported
 for this receive path because it lacks the required window and templates.
 
+## Stream flow
+
+```mermaid
+flowchart LR
+    API[Wyze API] -->|Provision and renew|Bridge
+    Gateway[Agora gateway] <-->|Signaling and camera controls|Bridge
+    Gateway -->|HEVC over WebRTC/SRTP|Receive
+    subgraph Container[One Wyze Bridge container]
+        Bridge[Bridge process]
+        Receive[go2rtc receive]
+        Order[FFmpeg HEVC copy and RTP ordering]
+        Native[Native RTSP output]
+        Encode[FFmpeg H264 preview]
+        Preview[Preview RTSP output]
+        Receive -.->|Local offer and answer|Bridge
+        Receive --> Order --> Native --> Encode --> Preview
+    end
+```
+
+Both RTSP outputs are served by the same embedded go2rtc process. The receiver
+is started on demand by a consumer; it is not a separate container or service.
+
 ## Camera outputs
 
 A discovered `HL_PAN4` automatically gets two outputs:
@@ -29,6 +51,10 @@ The receiver requests the camera property `camera::resolution=2k`. On the tested
 Pan v4 this property delivers 3840x2160. The camera can initially send 360p while
 joining or changing quality. Verify actual decoded dimensions rather than
 assuming that a quality value or stream name proves resolution.
+
+Use the canonical camera URL or `_4k` URL, rather than the internal `_lake`
+transport, so the RTP ordering stage applies. Native frame rate follows the
+camera and its lighting conditions; the preview may resample for pacing.
 
 HomeKit/Scrypted can retain the H264 preview URL; an HEVC-capable recorder can
 use the native output. This does not add native 4K recording to Apple Home or
