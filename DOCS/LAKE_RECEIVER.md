@@ -11,10 +11,12 @@ There is no Agora SDK, Python receiver, MediaMTX service, second container or
 additional Go module or OS package. The existing gorilla/websocket module is
 reused for signaling; encryption and HTTP use the Go standard library.
 
-The normal Dockerfile builds both executables in one image. Bridge's `go.mod`
-and `go.sum` are unchanged, and go2rtc retains the same upstream dependency
-versions. No companion image is needed. External go2rtc mode is not supported
-for this receive path because it lacks the required window and templates.
+The normal Dockerfile builds Bridge and the patched go2rtc in one image.
+Bridge's `go.mod` and `go.sum` are unchanged, and go2rtc retains the same
+upstream dependency versions. No companion image is needed. External go2rtc
+mode is not supported
+for this receive path because it lacks the required receive window, templates
+and owned-stream teardown.
 
 ## Stream flow
 
@@ -70,11 +72,17 @@ queue is bounded to 4096 packets with a one-second maximum demuxing delay.
 The H264 preview requests a keyframe every two seconds, including when the
 camera reduces its frame rate in low light. This keeps playback/recording starts
 responsive without imposing a different frame rate on the camera.
-The internal transport is also removed on stop, reconnect and rename.
+The internal transport is also removed on stop, reconnect, removal and rename.
 The session starts when a consumer requests video. Its short local websocket
 exchanges SDP with go2rtc; the Agora websocket remains alive after go2rtc closes
-that initial signaling connection. Stopping the camera closes both outputs and
-the camera's gateway session. Shutdown cancels all owned sessions.
+that initial signaling connection. Stopping the camera closes its gateway
+session before tearing down preview,
+native and internal transport streams. An opt-in go2rtc teardown closes their
+retained and pending clients, preventing hidden encoders after reconnect. Exact
+original-source checks protect operator streams, and ordinary stream deletion
+keeps its existing behavior. Late offers cannot reopen a stopped camera.
+Failed registration also cleans up partially stored outputs. Shutdown cancels
+all owned sessions.
 
 The receiver periodically sends camera ownership and quality controls. Tokens
 renew in the existing channel. A failed renewal, lost gateway or stalled video
@@ -104,10 +112,14 @@ video averaged approximately 10fps in low light.
 
 A renewal request was sent at 40 minutes, and video continued beyond the
 original requested one-hour token lifetime without a producer replacement.
-The signaling/media code used in that run is unchanged in the final image.
-The final image also includes fresh-session health-grace and custom-YAML
-compatibility fixes. It passed one-minute native/preview recording and strict
-decoding checks both after installation and after a container restart.
+That long run preceded the final lifecycle and configuration fixes. The final
+image includes fresh-session startup grace, custom-YAML compatibility, late-offer
+cancellation and explicit media teardown. On that final ordinary image,
+one-minute native/preview recordings passed full-file strict decoding with zero
+errors both after installation and after a Front-only reconnect. Nine sampled
+frames from each output and phase were clean. The reconnect restored byte flow
+in about 12 seconds, without replacing the other cameras' producers. Only one
+preview encoder and one native-copy worker remained after reconnect.
 Credentials, ports, mounted data and Scrypted settings/pairings were preserved.
 Only one Wyze container was running; the previous receiver was stopped.
 
@@ -118,10 +130,11 @@ real-camera trace recovered delayed packets 277 positions behind with the
 expanded window. An offline reordered-RTP check produced the same encoded
 HEVC after buffering as the ordered input.
 
-Full Go race tests, vet, ordinary amd64 image build and Linux arm64/armv7
-cross-compilation pass. Runtime package versions and both projects' Go module
-files are unchanged. ARM hardware, multiple simultaneous Pan v4 cameras,
-hosted CI and a 24-hour run have not been verified. A new Apple Home recorded
+The full Bridge race suite and vet pass, alongside targeted real-engine
+receive-window, replay and teardown tests. The ordinary amd64 image builds,
+and Bridge plus the patched engine cross-compile for Linux arm64/armv7.
+Runtime package versions and both projects' Go module files are unchanged.
+ARM hardware, multiple simultaneous Pan v4 cameras, hosted CI and a 24-hour run have not been verified. A new Apple Home recorded
 clip on the final image still needs a user playback check.
 
 Offline checks:
