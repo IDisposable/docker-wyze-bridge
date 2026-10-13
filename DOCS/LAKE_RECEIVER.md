@@ -106,24 +106,35 @@ and receiver for rollback; do not delete their parameters or mounted data.
 
 ## Validation status
 
-A local receive test captured 1200 native HEVC frames: 445 initial 640x360
-frames followed by 755 decoded 3840x2160 frames. It also captured 1000 H264
-1920x1080 preview frames and completed two accelerated renewal requests.
-The longer ordinary-image run separately checks playback beyond the original
-token lifetime.
+One Cam Pan v4 (`HL_PAN4`, firmware `4.70.6.4312`) was tested on an amd64
+Synology NAS. An ordinary integrated image recorded more than 61 minutes of
+native 3840x2160 HEVC (36,967 frames) and 1920x1080 H264 (74,162 frames).
+Both complete files passed strict decoding with zero errors. Nine sampled
+frames from each output, spread across the full recording, showed no gray bands
+or damaged images. The preview resampled for pacing during that run; the native
+video averaged approximately 10fps in low light.
 
-The first integrated NAS tests produced damaged frames and gray flashes. A
-private RTP trace found late packets capped at 63 positions behind; the default
-SRTP replay window is 64. Increasing the window to 4096 recovered every sequence
-number in the next trace, including packets 277 positions behind. Replay
-protection still rejects duplicates.
+A renewal request was sent at 40 minutes, and video continued beyond the
+original requested one-hour token lifetime without a producer replacement.
+The signaling/media code used in that run is unchanged in the final image.
+The final image also includes fresh-session health-grace and custom-YAML
+compatibility fixes. It passed one-minute native/preview recording and strict
+decoding checks both after installation and after a container restart.
+Credentials, ports, mounted data and Scrypted settings/pairings were preserved.
+Only one Wyze container was running; the previous receiver was stopped.
 
-With that receive window and the FFmpeg reorder queue, a 45-second NAS test
-recorded native 3840x2160 HEVC and 1920x1080 H264. Both passed strict decoding
-without errors, and sampled preview frames showed no damaged bands. This was a
-bounded diagnostic build. The ordinary NAS image subsequently passed one-minute native/preview capture checks before and after a container restart, with clean sampled frames. A longer capture then exposed repeated gateway reconnections and an early recording end. Continuous stability and final Home recording validation remain unresolved. The
-previous working receiver was restored between tests. No completed 24-hour soak
-is claimed.
+The receive-window change was checked with real local Pion peers: delayed
+authenticated packets are accepted by the expanded window, duplicates are
+still rejected, and ordinary clients retain their default behavior. A private
+real-camera trace recovered delayed packets 277 positions behind with the
+expanded window. An offline reordered-RTP check produced the same encoded
+HEVC after buffering as the ordered input.
+
+Full Go race tests, vet, ordinary amd64 image build and Linux arm64/armv7
+cross-compilation pass. Runtime package versions and both projects' Go module
+files are unchanged. ARM hardware, multiple simultaneous Pan v4 cameras,
+hosted CI and a 24-hour run have not been verified. A new Apple Home recorded
+clip on the final image still needs a user playback check.
 
 Offline checks:
 
