@@ -202,4 +202,69 @@ func TestExtraFFmpegAliasRemainsValid(t *testing.T) {
 	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
 		t.Fatal("operator alias or receive templates were lost")
 	}
+	var operator struct {
+		Defaults map[string]string `yaml:"defaults"`
+	}
+	if err := yaml.Unmarshal(raw, &operator); err != nil {
+		t.Fatal(err)
+	}
+	if _, added := operator.Defaults["wyze_lake_receive"]; added {
+		t.Fatal("shared operator anchor was modified")
+	}
+}
+
+func TestExtraFFmpegMergeOverridesRemainValid(t *testing.T) {
+	for _, tc := range []struct {
+		name, extraYAML string
+		want            map[string]string
+	}{
+		{
+			name:      "null defaults",
+			extraYAML: "ffmpeg: null\n",
+		},
+		{
+			name:      "empty defaults",
+			extraYAML: "ffmpeg:\n",
+		},
+		{
+			name:      "inherited root",
+			extraYAML: "defaults: &defaults\n  ffmpeg:\n    bin: /custom/ffmpeg\n<<: *defaults\n",
+			want:      map[string]string{"bin": "/custom/ffmpeg"},
+		},
+		{
+			name:      "inherited template",
+			extraYAML: "defaults: &defaults\n  bin: /custom/ffmpeg\n  wyze_lake_preview: -custom-preview\nffmpeg:\n  <<: *defaults\n",
+			want:      map[string]string{"bin": "/custom/ffmpeg", "wyze_lake_preview": "-custom-preview"},
+		},
+		{
+			name:      "merge sequence and direct override",
+			extraYAML: "first: &first\n  bin: /first/ffmpeg\n  wyze_lake_preview: -first-preview\nsecond: &second\n  bin: /second/ffmpeg\n  wyze_lake_preview: -second-preview\nffmpeg:\n  <<: [*first, *second]\n  bin: /direct/ffmpeg\n",
+			want:      map[string]string{"bin": "/direct/ffmpeg", "wyze_lake_preview": "-first-preview"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewConfigBuilder("warn", "", "")
+			b.AppendRawYAML(tc.extraYAML)
+			path := filepath.Join(t.TempDir(), "go2rtc.yaml")
+			if err := b.WriteConfig(path); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parsed Go2RTCConfig
+			if err := yaml.Unmarshal(raw, &parsed); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range tc.want {
+				if got := parsed.FFmpeg[key]; got != want {
+					t.Errorf("operator %s = %q, want %q", key, got, want)
+				}
+			}
+			if parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
+				t.Fatal("missing receive templates")
+			}
+		})
+	}
 }

@@ -369,13 +369,45 @@ func (b *ConfigBuilder) WriteConfig(path string) error {
 		}
 		if len(doc.Content) == 1 && doc.Content[0].Kind == yaml.MappingNode {
 			root := doc.Content[0]
+			// Decode the effective values so YAML merge keys and their
+			// precedence are respected when checking operator overrides.
+			var operator struct {
+				FFmpeg map[string]string `yaml:"ffmpeg"`
+			}
+			if err := doc.Decode(&operator); err != nil {
+				return fmt.Errorf("parse extra FFmpeg config: %w", err)
+			}
+			var block *yaml.Node
 			for i := 0; i+1 < len(root.Content); i += 2 {
-				if root.Content[i].Value != "ffmpeg" {
-					continue
+				if root.Content[i].Value == "ffmpeg" {
+					block = root.Content[i+1]
+					break
 				}
-				block := root.Content[i+1]
-				for block.Kind == yaml.AliasNode && block.Alias != nil {
-					block = block.Alias
+			}
+			if block == nil && operator.FFmpeg != nil {
+				// An inherited root block needs a local override with the
+				// same values; leave its source anchor and other aliases alone.
+				block = &yaml.Node{}
+				if err := block.Encode(operator.FFmpeg); err != nil {
+					return fmt.Errorf("encode inherited FFmpeg config: %w", err)
+				}
+				root.Content = append(root.Content,
+					&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "ffmpeg"}, block)
+			}
+			if block != nil {
+				if block.Kind == yaml.AliasNode {
+					// Do not insert templates into an anchor shared with
+					// unrelated operator configuration.
+					var local yaml.Node
+					if err := local.Encode(operator.FFmpeg); err != nil {
+						return fmt.Errorf("encode aliased FFmpeg config: %w", err)
+					}
+					local.HeadComment, local.LineComment, local.FootComment = block.HeadComment, block.LineComment, block.FootComment
+					*block = local
+				}
+				if block.Kind == yaml.ScalarNode && block.Tag == "!!null" {
+					// An empty operator block keeps go2rtc's defaults.
+					block.Kind, block.Tag, block.Value = yaml.MappingNode, "!!map", ""
 				}
 				if block.Kind != yaml.MappingNode {
 					return fmt.Errorf("extra go2rtc ffmpeg config must be a mapping")
@@ -387,10 +419,7 @@ func (b *ConfigBuilder) WriteConfig(path string) error {
 				sort.Strings(keys)
 				for _, key := range keys {
 					value := cfg.FFmpeg[key]
-					present := false
-					for j := 0; j+1 < len(block.Content); j += 2 {
-						present = present || block.Content[j].Value == key
-					}
+					_, present := operator.FFmpeg[key]
 					if !present {
 						block.Content = append(block.Content,
 							&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
@@ -403,7 +432,6 @@ func (b *ConfigBuilder) WriteConfig(path string) error {
 				}
 				extraYAML = string(merged)
 				cfg.FFmpeg = nil
-				break
 			}
 		}
 	}
