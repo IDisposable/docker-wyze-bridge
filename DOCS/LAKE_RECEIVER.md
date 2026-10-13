@@ -82,7 +82,9 @@ and receiver for rollback; do not delete their parameters or mounted data.
 
 A local receive test captured 1200 native HEVC frames: 445 initial 640x360
 frames followed by 755 decoded 3840x2160 frames. It also captured 1000 H264
-1920x1080 preview frames and completed two accelerated token renewals.
+1920x1080 preview frames and completed two accelerated renewal requests.
+The longer ordinary-image run separately checks playback beyond the original
+token lifetime.
 
 The first integrated NAS tests produced damaged frames and gray flashes. A
 private RTP trace found late packets capped at 63 positions behind; the default
