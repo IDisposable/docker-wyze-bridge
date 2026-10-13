@@ -356,6 +356,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		}
 		raw := m.lakeTransportSource(cam.Name())
 		if err := go2rtc.AddStream(ctx, cam.Name()+"_lake", raw); err != nil {
+			m.removeLakeOutputs(ctx, cam.Name())
 			cam.IncrementError()
 			m.log.Warn().Str("cam", cam.Name()).Msg("Lake transport registration failed")
 			return

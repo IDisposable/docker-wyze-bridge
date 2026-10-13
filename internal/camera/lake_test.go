@@ -157,14 +157,16 @@ func TestLakeExtraYAMLAliasCollisionPreservesOperatorStream(t *testing.T) {
 }
 
 func TestLakeFailedRegistrationCleansUp(t *testing.T) {
-	for _, failed := range []string{"front_lake", "front_4k", "front"} {
-		m, api := newLakeTestManager(t, failed)
-		cam := NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
-		m.cameras["front"] = cam
-		m.connectCamera(context.Background(), cam)
-		streams, _ := api.ListStreams(context.Background())
-		if len(streams) != 0 || cam.GetState() != StateError {
-			t.Fatalf("failed registration left partial outputs: %s", failed)
+	for _, afterStore := range []bool{false, true} {
+		for _, failed := range []string{"front_lake", "front_4k", "front"} {
+			m, api := newLakeTestManager(t, lakeRegistrationFailure{failed, afterStore})
+			cam := NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+			m.cameras["front"] = cam
+			m.connectCamera(context.Background(), cam)
+			streams, _ := api.ListStreams(context.Background())
+			if len(streams) != 0 || cam.GetState() != StateError {
+				t.Fatalf("failed registration left partial outputs: %s, stored=%t", failed, afterStore)
+			}
 		}
 	}
 }
@@ -464,7 +466,12 @@ func TestLakeExternalEngineOperationsPreserveOperatorStreams(t *testing.T) {
 	}
 }
 
-func newLakeTestManager(t *testing.T, failedNames ...string) (*Manager, *go2rtcmgr.APIClient) {
+type lakeRegistrationFailure struct {
+	name       string
+	afterStore bool
+}
+
+func newLakeTestManager(t *testing.T, failures ...lakeRegistrationFailure) (*Manager, *go2rtcmgr.APIClient) {
 	t.Helper()
 	var mu sync.Mutex
 	streams := map[string]string{}
@@ -474,8 +481,12 @@ func newLakeTestManager(t *testing.T, failedNames ...string) (*Manager, *go2rtcm
 		name := r.URL.Query().Get("name")
 		switch r.Method {
 		case "PUT":
-			for _, failed := range failedNames {
-				if name == failed {
+			for _, failed := range failures {
+				if name == failed.name {
+					if failed.afterStore {
+						// PUT stores the stream before persisting its configuration.
+						streams[name] = r.URL.Query().Get("src")
+					}
 					http.Error(w, "injected registration failure", http.StatusServiceUnavailable)
 					return
 				}
