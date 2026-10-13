@@ -261,6 +261,7 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 					b.OnEvent(name, event)
 				}
 			case <-session.Done():
+				b.drainSessionEvents(name, session)
 				goto finished
 			}
 		}
@@ -290,3 +291,18 @@ func (b *Broker) release(name string, session *Session, operation *cameraOperati
 }
 
 func (b *Broker) Active() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.sessions) }
+
+// Drain already-published diagnostics before release. Late notifications after
+// an external Close remain best effort; teardown never waits for their arrival.
+func (b *Broker) drainSessionEvents(name string, session *Session) {
+	for i := 0; i < cap(session.Events()); i++ {
+		select {
+		case event := <-session.Events():
+			if b.OnEvent != nil {
+				b.OnEvent(name, event)
+			}
+		default:
+			return
+		}
+	}
+}
