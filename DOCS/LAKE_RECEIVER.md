@@ -90,8 +90,7 @@ protection still rejects duplicates.
 With that receive window and the FFmpeg reorder queue, a 45-second NAS test
 recorded native 3840x2160 HEVC and 1920x1080 H264. Both passed strict decoding
 without errors, and sampled preview frames showed no damaged bands. This was a
-bounded diagnostic build; final normal-image playback, recording, cold startup,
-restart recovery and a longer stability run are still being verified. The
+bounded diagnostic build. The ordinary NAS image subsequently passed one-minute native/preview capture checks before and after a container restart, with clean sampled frames. A longer capture then exposed repeated gateway reconnections and an early recording end. Continuous stability and final Home recording validation remain unresolved. The
 previous working receiver was restored between tests. No completed 24-hour soak
 is claimed.
 
