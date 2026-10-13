@@ -282,6 +282,8 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 		// Named templates keep raw arguments out of dynamically registered
 		// URLs: go2rtc intentionally rejects sources containing spaces.
 		FFmpeg: map[string]string{
+			// Enable bounded HEVC frame decoding without discarding probe packets.
+			"wyze_lake_preview_input": "-rtsp_transport tcp -threads:v 2 -timeout 15000000 -i {input}",
 			// Avoid filling RTP timestamp gaps with repeated stale frames. Keep
 			// source timestamp precision and two-second keyframes in low light.
 			"wyze_lake_preview": "-threads 2 -fps_mode:v vfr -enc_time_base:v demux -force_key_frames expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+2))",

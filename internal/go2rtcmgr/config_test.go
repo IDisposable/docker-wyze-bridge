@@ -40,6 +40,15 @@ func TestConfigBuilder_Build(t *testing.T) {
 	if cfg.FFmpeg["wyze_lake_preview"] != "-threads 2 -fps_mode:v vfr -enc_time_base:v demux -force_key_frames expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+2))" {
 		t.Fatal("Lake preview source timing, thread limit or timed keyframes missing")
 	}
+	if cfg.FFmpeg["wyze_lake_preview_input"] != "-rtsp_transport tcp -threads:v 2 -timeout 15000000 -i {input}" {
+		t.Fatal("Lake preview decoder thread limit or input timeout missing")
+	}
+	if cfg.FFmpeg["wyze_lake_receive"] != "-rtsp_transport tcp -reorder_queue_size 4096 -max_delay 1000000 -timeout 15000000 -i {input}" {
+		t.Fatal("native packet ordering settings changed")
+	}
+	if _, changed := cfg.FFmpeg["rtsp"]; changed {
+		t.Fatal("Lake decoder settings changed the global RTSP template")
+	}
 	if len(cfg.WebRTC.Candidates) != 1 || cfg.WebRTC.Candidates[0] != "192.168.1.50:8889" {
 		t.Errorf("WebRTC.Candidates = %v, want [192.168.1.50:8889]", cfg.WebRTC.Candidates)
 	}
@@ -68,7 +77,7 @@ func TestConfigBuilder_NoWBIP(t *testing.T) {
 
 func TestExtraFFmpegSettingsRemainValid(t *testing.T) {
 	b := NewConfigBuilder("warn", "", "")
-	b.AppendRawYAML("# Operator pipeline\nffmpeg:\n  bin: /custom/ffmpeg\n  h264: -c:v custom_encoder\npublish:\n  other: rtsp://example.test/record\n")
+	b.AppendRawYAML("# Operator pipeline\nffmpeg:\n  bin: /custom/ffmpeg\n  h264: -c:v custom_encoder\n  wyze_lake_preview_input: -custom-input\npublish:\n  other: rtsp://example.test/record\n")
 	path := filepath.Join(t.TempDir(), "go2rtc.yaml")
 	if err := b.WriteConfig(path); err != nil {
 		t.Fatal(err)
@@ -86,6 +95,9 @@ func TestExtraFFmpegSettingsRemainValid(t *testing.T) {
 	}
 	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.Publish["other"] != "rtsp://example.test/record" {
 		t.Fatal("operator settings changed")
+	}
+	if parsed.FFmpeg["wyze_lake_preview_input"] != "-custom-input" {
+		t.Fatal("operator preview input override changed")
 	}
 	if parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
 		t.Fatal("receive templates were lost")
@@ -199,7 +211,7 @@ func TestExtraFFmpegAliasRemainsValid(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
+	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" || parsed.FFmpeg["wyze_lake_preview_input"] == "" {
 		t.Fatal("operator alias or receive templates were lost")
 	}
 	var operator struct {
@@ -262,7 +274,7 @@ func TestExtraFFmpegMergeOverridesRemainValid(t *testing.T) {
 					t.Errorf("operator %s = %q, want %q", key, got, want)
 				}
 			}
-			if parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
+			if parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" || parsed.FFmpeg["wyze_lake_preview_input"] == "" {
 				t.Fatal("missing receive templates")
 			}
 		})

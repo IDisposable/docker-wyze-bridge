@@ -38,6 +38,9 @@ func TestLakeOutputsAndQuality(t *testing.T) {
 	if !strings.Contains(streams["front"].Producers[0].URL, "ffmpeg:front_4k#video=h264#width=1920#height=1080") {
 		t.Fatal("preview did not consume the native output")
 	}
+	if !strings.HasSuffix(streams["front"].Producers[0].URL, "#input=wyze_lake_preview_input#raw=wyze_lake_preview") {
+		t.Fatal("preview inherited global decoder flags or lost its output settings")
+	}
 	native := streams["front_4k"].Producers[0].URL
 	raw := streams["front_lake"].Producers[0].URL
 	if e := m.SetQuality(context.Background(), "front", "sd"); e != nil {
@@ -52,6 +55,9 @@ func TestLakeOutputsAndQuality(t *testing.T) {
 	}
 	if !strings.Contains(streams["front"].Producers[0].URL, "#width=640#height=360") {
 		t.Fatal("SD preview routing was lost")
+	}
+	if !strings.HasSuffix(streams["front"].Producers[0].URL, "#input=wyze_lake_preview_input#raw=wyze_lake_preview") {
+		t.Fatal("SD preview lost its decoder or output settings")
 	}
 	stopped := false
 	m.SetLakeReset(func(name string) {

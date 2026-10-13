@@ -454,7 +454,7 @@ func lakePreviewSource(name, quality string) string {
 	if quality == "sd" {
 		width, height = "640", "360"
 	}
-	return "ffmpeg:" + name + "_4k#video=h264#width=" + width + "#height=" + height + "#raw=wyze_lake_preview"
+	return "ffmpeg:" + name + "_4k#video=h264#width=" + width + "#height=" + height + "#input=wyze_lake_preview_input#raw=wyze_lake_preview"
 }
 
 func lakeNativeSource(name string) string {
