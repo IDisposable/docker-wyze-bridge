@@ -73,6 +73,16 @@ func TestLakeOutputsAndQuality(t *testing.T) {
 		t.Fatal("gateway session was not closed")
 	}
 }
+
+func TestLakeQualityBeforeEngineAttachment(t *testing.T) {
+	m, _ := newLakeTestManager(t)
+	m.SetGo2RTCAPI(nil)
+	cam := NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+	m.cameras["front"] = cam
+	if err := m.SetQuality(context.Background(), "front", "sd"); err != nil || cam.Snapshot().Quality != "sd" {
+		t.Fatal("desired preview quality was lost before engine attachment")
+	}
+}
 func TestLakeNativeStallAndIdle(t *testing.T) {
 	m, _ := newLakeTestManager(t)
 	now := time.Now()
@@ -192,6 +202,268 @@ func TestLakeRenameClosesAliasesAndSession(t *testing.T) {
 	}
 }
 
+func TestLakeOwnedTeardownStopsOutputsAfterGateway(t *testing.T) {
+	for _, pan := range []bool{false, true} {
+		for _, operation := range []string{"stop", "restart", "reconnect", "rename", "quality"} {
+			t.Run(fmt.Sprintf("pan=%t/%s", pan, operation), func(t *testing.T) {
+				var mu sync.Mutex
+				var events []string
+				record := func(event string) {
+					mu.Lock()
+					defer mu.Unlock()
+					events = append(events, event)
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodDelete {
+						want := ""
+						if pan {
+							want = "1"
+						}
+						if r.URL.Query().Get("stop") != want {
+							t.Errorf("stop = %q, want %q", r.URL.Query().Get("stop"), want)
+						}
+						record("remove:" + r.URL.Query().Get("src"))
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer server.Close()
+				api := go2rtcmgr.NewAPIClient(server.URL, zerolog.Nop())
+				m := NewManager(&config.Config{BridgePort: 5080}, nil, api, zerolog.Nop())
+				model := "HL_CAM4"
+				if pan {
+					model = "HL_PAN4"
+				}
+				cam := NewCamera(wyzeapi.CameraInfo{Name: "front", MAC: "test", Model: model}, "hd", false, false)
+				cam.SetState(StateStreaming)
+				m.cameras["front"] = cam
+				m.SetLakeReset(func(name string) { record("gateway:" + name) })
+				ctx := context.Background()
+				switch operation {
+				case "stop":
+					m.StopStream(ctx, "front")
+				case "restart":
+					m.RestartStream(ctx, "front")
+				case "reconnect":
+					m.connectCamera(ctx, cam)
+				case "rename":
+					m.mu.Lock()
+					m.reapRenameOrphans(ctx, []wyzeapi.CameraInfo{{Name: "moved", MAC: "test", Model: model}})
+					m.mu.Unlock()
+				case "quality":
+					if err := m.SetQuality(ctx, "front", "sd"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := "remove:front"
+				if !pan && operation == "restart" {
+					want = "remove:front,remove:front"
+				}
+				if pan && operation != "quality" {
+					want = "gateway:front,remove:front,remove:front_4k,remove:front_lake"
+				}
+				mu.Lock()
+				got := strings.Join(events, ",")
+				mu.Unlock()
+				if got != want {
+					t.Errorf("teardown = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestLakeCleanupFailureDoesNotStartReplacement(t *testing.T) {
+	for _, operation := range []string{"reconnect", "quality"} {
+		for _, failed := range []string{"front", "front_4k", "front_lake"} {
+			if operation == "quality" && failed != "front" {
+				continue
+			}
+			t.Run(operation+"/"+failed, func(t *testing.T) {
+				var mu sync.Mutex
+				deletes, puts := 0, 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					mu.Lock()
+					defer mu.Unlock()
+					if r.Method == http.MethodDelete {
+						deletes++
+						if r.URL.Query().Get("src") == failed {
+							http.Error(w, "injected cleanup failure", http.StatusServiceUnavailable)
+							return
+						}
+					} else if r.Method == http.MethodPut {
+						puts++
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer server.Close()
+				api := go2rtcmgr.NewAPIClient(server.URL, zerolog.Nop())
+				m := NewManager(&config.Config{BridgePort: 5080}, nil, api, zerolog.Nop())
+				cam := NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+				cam.SetState(StateStreaming)
+				m.cameras["front"] = cam
+				wantDeletes := 3
+				if operation == "quality" {
+					wantDeletes = 1
+					if err := m.SetQuality(context.Background(), "front", "sd"); err == nil {
+						t.Fatal("preview cleanup failure was ignored")
+					}
+				} else {
+					m.connectCamera(context.Background(), cam)
+					if cam.GetState() != StateError {
+						t.Fatal("failed cleanup was not scheduled for retry")
+					}
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if deletes != wantDeletes || puts != 0 {
+					t.Errorf("cleanup deletes=%d, replacements=%d", deletes, puts)
+				}
+			})
+		}
+	}
+}
+
+func TestLakeCleanupPreservesOperatorSource(t *testing.T) {
+	for _, replaced := range []bool{false, true} {
+		for _, output := range []string{"front", "front_4k", "front_lake"} {
+			if !replaced && output == "front" {
+				continue // The initial collision guard reserves only derived names.
+			}
+			for _, operation := range []string{"stop", "restart", "rename", "removal", "quality"} {
+				if operation == "quality" && output != "front" {
+					continue // Quality changes replace only the canonical preview.
+				}
+				t.Run(fmt.Sprintf("replaced=%t/%s/%s", replaced, output, operation), func(t *testing.T) {
+					m, api := newLakeTestManager(t)
+					ctx := context.Background()
+					cam := NewCamera(wyzeapi.CameraInfo{Name: "front", MAC: "test", Model: "HL_PAN4"}, "hd", false, false)
+					m.cameras["front"] = cam
+					const operatorSource = "rtsp://example.test/operator-camera"
+					if replaced {
+						m.connectCamera(ctx, cam)
+					} else {
+						m.cfg.Go2RTCExtraStreams = output + "=" + operatorSource
+					}
+					if err := api.AddStream(ctx, output, operatorSource); err != nil {
+						t.Fatal(err)
+					}
+					if !replaced {
+						m.connectCamera(ctx, cam)
+						if cam.GetState() != StateError {
+							t.Fatal("initial operator collision did not prevent registration")
+						}
+					}
+					switch operation {
+					case "stop":
+						m.StopStream(ctx, "front")
+					case "restart":
+						m.RestartStream(ctx, "front")
+					case "quality":
+						if err := m.SetQuality(ctx, "front", "sd"); err == nil || cam.Snapshot().Quality != "hd" {
+							t.Fatal("preview ownership conflict changed the quality setting")
+						}
+					case "rename":
+						m.mu.Lock()
+						m.reapRenameOrphans(ctx, []wyzeapi.CameraInfo{{Name: "moved", MAC: "test", Model: "HL_PAN4"}})
+						m.mu.Unlock()
+					case "removal":
+						wyze := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							_ = json.NewEncoder(w).Encode(map[string]interface{}{"code": "1", "data": map[string]interface{}{"device_list": []interface{}{}}})
+						}))
+						defer wyze.Close()
+						m.api = wyzeapi.NewClient(wyzeapi.Credentials{}, "test", zerolog.Nop())
+						m.api.WyzeURL = wyze.URL
+						m.api.SetAuth(&wyzeapi.AuthState{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour)})
+						if err := m.Discover(ctx); err != nil {
+							t.Fatal(err)
+						}
+					}
+					streams, err := api.ListStreams(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if streams[output] == nil || streams[output].Producers[0].URL != operatorSource {
+						t.Fatal("cleanup stopped or replaced the operator stream")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestLakeExternalEngineOperationsPreserveOperatorStreams(t *testing.T) {
+	for _, operation := range []string{"connect", "stop", "rename", "removal", "quality"} {
+		t.Run(operation, func(t *testing.T) {
+			var mu sync.Mutex
+			mutations := 0
+			streams := map[string]*go2rtcmgr.StreamInfo{}
+			for _, name := range []string{"front", "front_4k", "front_lake"} {
+				streams[name] = &go2rtcmgr.StreamInfo{Producers: []go2rtcmgr.ProducerInfo{{URL: "rtsp://example.test/" + name}}}
+			}
+			engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				if r.Method == http.MethodGet {
+					_ = json.NewEncoder(w).Encode(streams)
+					return
+				}
+				mutations++
+				if r.Method == http.MethodDelete {
+					// A stock external engine ignores Bridge's opt-in guard fields.
+					delete(streams, r.URL.Query().Get("src"))
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer engine.Close()
+			api := go2rtcmgr.NewAPIClient(engine.URL, zerolog.Nop())
+			m := NewManager(&config.Config{BridgePort: 5080, Go2RTCURL: engine.URL}, nil, api, zerolog.Nop())
+			cam := NewCamera(wyzeapi.CameraInfo{Name: "front", MAC: "test", Model: "HL_PAN4"}, "hd", false, false)
+			cam.SetState(StateStreaming)
+			m.cameras["front"] = cam
+			closed := 0
+			m.SetLakeReset(func(string) { closed++ })
+			ctx := context.Background()
+			switch operation {
+			case "connect":
+				m.connectCamera(ctx, cam)
+				if cam.GetState() != StateError {
+					t.Fatal("external engine was accepted for Lake")
+				}
+			case "stop":
+				m.StopStream(ctx, "front")
+			case "rename":
+				m.mu.Lock()
+				m.reapRenameOrphans(ctx, []wyzeapi.CameraInfo{{Name: "moved", MAC: "test", Model: "HL_PAN4"}})
+				m.mu.Unlock()
+			case "removal":
+				wyze := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"code": "1", "data": map[string]interface{}{"device_list": []interface{}{}}})
+				}))
+				defer wyze.Close()
+				m.api = wyzeapi.NewClient(wyzeapi.Credentials{}, "test", zerolog.Nop())
+				m.api.WyzeURL = wyze.URL
+				m.api.SetAuth(&wyzeapi.AuthState{AccessToken: "test", ExpiresAt: time.Now().Add(time.Hour)})
+				if err := m.Discover(ctx); err != nil {
+					t.Fatal(err)
+				}
+			case "quality":
+				if err := m.SetQuality(ctx, "front", "sd"); err == nil || cam.Snapshot().Quality != "hd" {
+					t.Fatal("external quality change was not rejected before mutation")
+				}
+			}
+			wantClosed := 1
+			if operation == "connect" || operation == "quality" {
+				wantClosed = 0
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if mutations != 0 || len(streams) != 3 || closed != wantClosed {
+				t.Errorf("external mutations=%d, streams=%d, gateway closes=%d", mutations, len(streams), closed)
+			}
+		})
+	}
+}
+
 func newLakeTestManager(t *testing.T, failedNames ...string) (*Manager, *go2rtcmgr.APIClient) {
 	t.Helper()
 	var mu sync.Mutex
@@ -214,7 +486,20 @@ func newLakeTestManager(t *testing.T, failedNames ...string) (*Manager, *go2rtcm
 			}
 			streams[name] = r.URL.Query().Get("src")
 		case "DELETE":
-			delete(streams, r.URL.Query().Get("src"))
+			name := r.URL.Query().Get("src")
+			if allowed := r.URL.Query()["if_src"]; r.URL.Query().Get("stop") == "1" && len(allowed) > 0 {
+				if source, exists := streams[name]; exists {
+					matched := false
+					for _, expected := range allowed {
+						matched = matched || source == expected
+					}
+					if !matched {
+						http.Error(w, "source ownership mismatch", http.StatusConflict)
+						return
+					}
+				}
+			}
+			delete(streams, name)
 		case "GET":
 			data := map[string]*go2rtcmgr.StreamInfo{}
 			for name, url := range streams {

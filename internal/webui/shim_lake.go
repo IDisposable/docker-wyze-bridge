@@ -18,7 +18,11 @@ func (s *Server) handleShimLakeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cam := s.camMgr.GetCamera(name)
-	if cam == nil || cam.GetInfo().Model != "HL_PAN4" || cam.GetState() == camera.StateOffline {
+	active := func() bool {
+		state := cam.GetState()
+		return state == camera.StateConnecting || state == camera.StateStreaming
+	}
+	if cam == nil || cam.GetInfo().Model != "HL_PAN4" || !active() {
 		http.NotFound(w, r)
 		return
 	}
@@ -27,9 +31,7 @@ func (s *Server) handleShimLakeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := cam.GetInfo()
-	s.lakeBroker.ServeCamera(w, r, name, info.MAC, info.Model, "2k", func() bool {
-		return cam.GetState() != camera.StateOffline
-	})
+	s.lakeBroker.ServeCamera(w, r, name, info.MAC, info.Model, "2k", active)
 }
 
 func (s *Server) CloseLakeCamera(name string) {

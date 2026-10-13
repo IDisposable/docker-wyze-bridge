@@ -33,11 +33,12 @@ func TestAPIClient_BasicAuth_AttachedToEveryRequest(t *testing.T) {
 	_, _ = c.ListStreams(ctx)
 	_ = c.AddStream(ctx, "cam", "wyze://x")
 	_ = c.DeleteStream(ctx, "cam")
+	_ = c.DeleteStreamAndStop(ctx, "cam")
 	_, _ = c.GetStreamInfo(ctx, "cam")
 	_, _ = c.GetSnapshot(ctx, "cam")
 
-	if len(gotAuth) != 5 {
-		t.Fatalf("expected 5 requests, got %d", len(gotAuth))
+	if len(gotAuth) != 6 {
+		t.Fatalf("expected 6 requests, got %d", len(gotAuth))
 	}
 	// Basic YWRtaW46aHVudGVyMg== == "admin:hunter2"
 	want := "Basic YWRtaW46aHVudGVyMg=="
@@ -121,23 +122,42 @@ func TestAPIClient_AddStream(t *testing.T) {
 }
 
 func TestAPIClient_DeleteStream(t *testing.T) {
-	var gotMethod string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		if r.URL.Query().Get("src") != "test_cam" {
-			t.Errorf("go2rtc deletion requires src, got %s", r.URL.RawQuery)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	c := NewAPIClient(server.URL, zerolog.Nop())
-	err := c.DeleteStream(context.Background(), "test_cam")
-	if err != nil {
-		t.Fatalf("DeleteStream: %v", err)
-	}
-	if gotMethod != "DELETE" {
-		t.Errorf("method = %q, want DELETE", gotMethod)
+	for _, stop := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ordinary", true: "stop-owned-stream"}[stop], func(t *testing.T) {
+			allowed := []string{"ffmpeg:front_4k#video=h264#width=1920#height=1080", "rtsp://example.test/path?name=front&quality=sd"}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "DELETE" || r.URL.Query().Get("src") != "test cam&preview" {
+					t.Errorf("incorrect deletion request: %s %s", r.Method, r.URL.RawQuery)
+				}
+				want := ""
+				if stop {
+					want = "1"
+				}
+				if r.URL.Query().Get("stop") != want {
+					t.Errorf("stop = %q, want %q", r.URL.Query().Get("stop"), want)
+				}
+				got := r.URL.Query()["if_src"]
+				if stop {
+					if len(got) != 2 || got[0] != allowed[0] || got[1] != allowed[1] {
+						t.Errorf("source whitelist = %q, want %q", got, allowed)
+					}
+				} else if len(got) != 0 {
+					t.Error("ordinary deletion included a source guard")
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			c := NewAPIClient(server.URL, zerolog.Nop())
+			var err error
+			if stop {
+				err = c.DeleteStreamAndStop(context.Background(), "test cam&preview", allowed...)
+			} else {
+				err = c.DeleteStream(context.Background(), "test cam&preview")
+			}
+			if err != nil {
+				t.Fatalf("DeleteStream: %v", err)
+			}
+		})
 	}
 }
 

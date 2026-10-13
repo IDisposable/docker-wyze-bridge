@@ -255,9 +255,6 @@ func (m *Manager) Discover(ctx context.Context) error {
 		}
 		if !seen[name] && cam.GetInfo().Model == "HL_PAN4" {
 			m.removeLakeOutputs(ctx, name)
-			if api := m.go2rtcClient(); api != nil {
-				_ = api.DeleteStream(ctx, name)
-			}
 			// ConnectAll follows discovery; an absent Pan must not reopen
 			// its cloud session simply because it is now offline.
 			delete(m.cameras, name)
@@ -353,15 +350,17 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 			delete(m.lakeHealth, cam.Name()+"/"+stage)
 		}
 		m.mu.Unlock()
-		_ = go2rtc.DeleteStream(ctx, cam.Name())
-		m.removeLakeOutputs(ctx, cam.Name())
-		raw := fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s#format=wyze-lake", m.cfg.BridgePort, cam.Name())
+		if err := m.removeLakeOutputs(ctx, cam.Name()); err != nil {
+			cam.IncrementError()
+			return
+		}
+		raw := m.lakeTransportSource(cam.Name())
 		if err := go2rtc.AddStream(ctx, cam.Name()+"_lake", raw); err != nil {
 			cam.IncrementError()
 			m.log.Warn().Str("cam", cam.Name()).Msg("Lake transport registration failed")
 			return
 		}
-		native := "ffmpeg:" + cam.Name() + "_lake#video=copy#input=wyze_lake_receive"
+		native := lakeNativeSource(cam.Name())
 		if err := go2rtc.AddStream(ctx, cam.Name()+"_4k", native); err != nil {
 			m.removeLakeOutputs(ctx, cam.Name())
 			cam.IncrementError()
@@ -389,7 +388,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	// actually plays. Skipped for Gwell publish-only slots — those
 	// have an active RTSP publisher we'd disrupt (and HealthCheck
 	// already excludes Gwell, so we don't get here for them anyway).
-	if protocol != "gwell" {
+	if protocol != "gwell" && protocol != "lake" {
 		_ = go2rtc.DeleteStream(ctx, cam.Name())
 	}
 
@@ -424,11 +423,7 @@ func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
 	info := cam.GetInfo()
 	switch {
 	case info.Model == "HL_PAN4":
-		width, height := "1920", "1080"
-		if cam.Snapshot().Quality == "sd" {
-			width, height = "640", "360"
-		}
-		return "ffmpeg:" + cam.Name() + "_4k#video=h264#width=" + width + "#height=" + height + "#raw=wyze_lake_preview", "lake"
+		return lakePreviewSource(cam.Name(), cam.Snapshot().Quality), "lake"
 	case cam.ForceWebRTC() || info.IsWebRTCStreamer():
 		return fmt.Sprintf("webrtc:http://127.0.0.1:%d/internal/wyze/webrtc/%s#format=wyze", m.cfg.BridgePort, cam.Name()), "webrtc"
 	case info.IsGwell():
@@ -436,6 +431,22 @@ func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
 	default:
 		return cam.StreamURL(), "tutk"
 	}
+}
+
+func lakePreviewSource(name, quality string) string {
+	width, height := "1920", "1080"
+	if quality == "sd" {
+		width, height = "640", "360"
+	}
+	return "ffmpeg:" + name + "_4k#video=h264#width=" + width + "#height=" + height + "#raw=wyze_lake_preview"
+}
+
+func lakeNativeSource(name string) string {
+	return "ffmpeg:" + name + "_lake#video=copy#input=wyze_lake_receive"
+}
+
+func (m *Manager) lakeTransportSource(name string) string {
+	return fmt.Sprintf("webrtc:ws://127.0.0.1:%d/internal/wyze/lake-stream/%s#format=wyze-lake", m.cfg.BridgePort, name)
 }
 
 // HealthCheck polls go2rtc for stream status and reconnects dead streams.
@@ -581,12 +592,9 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 			Msg("camera rename detected, dropping orphan entry")
 		if info.Model == "HL_PAN4" {
 			m.changeState(existing, StateOffline)
-		}
-		if go2rtc := m.go2rtcClient(); go2rtc != nil {
-			_ = go2rtc.DeleteStream(ctx, oldName)
-		}
-		if info.Model == "HL_PAN4" {
 			m.removeLakeOutputs(ctx, oldName)
+		} else if go2rtc := m.go2rtcClient(); go2rtc != nil {
+			_ = go2rtc.DeleteStream(ctx, oldName)
 		}
 		delete(m.cameras, oldName)
 	}
@@ -633,19 +641,32 @@ func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
 	if cam == nil {
 		return nil
 	}
+	lake := cam.GetInfo().Model == "HL_PAN4"
+	if lake && m.cfg.Go2RTCURL != "" {
+		return fmt.Errorf("Pan v4 streaming requires the embedded go2rtc receive window and templates")
+	}
 
-	cam.SetQuality(quality)
+	if !lake {
+		cam.SetQuality(quality)
+	}
 
 	go2rtc := m.go2rtcClient()
 	if go2rtc == nil {
+		if lake {
+			cam.SetQuality(quality)
+		}
 		return nil
 	}
 	// Remove and re-add in go2rtc with new URL
-	_ = go2rtc.DeleteStream(ctx, name)
-	if cam.GetInfo().Model == "HL_PAN4" {
+	if lake {
+		if err := go2rtc.DeleteStreamAndStop(ctx, name, lakePreviewSource(name, "hd"), lakePreviewSource(name, "sd")); err != nil {
+			return err
+		}
+		cam.SetQuality(quality)
 		source, _ := m.streamSourceFor(cam)
 		return go2rtc.AddStream(ctx, name, source)
 	}
+	_ = go2rtc.DeleteStream(ctx, name)
 	return go2rtc.AddStream(ctx, name, cam.StreamURL())
 }
 
@@ -656,8 +677,10 @@ func (m *Manager) RestartStream(ctx context.Context, name string) {
 		return
 	}
 
-	if go2rtc := m.go2rtcClient(); go2rtc != nil {
-		_ = go2rtc.DeleteStream(ctx, name)
+	if cam.GetInfo().Model != "HL_PAN4" {
+		if go2rtc := m.go2rtcClient(); go2rtc != nil {
+			_ = go2rtc.DeleteStream(ctx, name)
+		}
 	}
 	m.changeState(cam, StateOffline)
 	m.connectCamera(ctx, cam)
@@ -687,23 +710,43 @@ func (m *Manager) StopStream(ctx context.Context, name string) {
 		// deleting a producer may itself wait for an in-flight negotiation.
 		m.changeState(cam, StateOffline)
 		m.removeLakeOutputs(ctx, name)
-	}
-	if go2rtc := m.go2rtcClient(); go2rtc != nil {
+	} else if go2rtc := m.go2rtcClient(); go2rtc != nil {
 		_ = go2rtc.DeleteStream(ctx, name)
 	}
 	m.changeState(cam, StateOffline)
 }
 
-// removeLakeOutputs closes the shared session and its dependent registrations.
+// removeLakeOutputs closes the shared session before stopping preview, native
+// and transport outputs, so teardown cannot leave detached encoders running.
 // It does not acquire m.mu, so discovery can also call it while reaping a rename.
-func (m *Manager) removeLakeOutputs(ctx context.Context, name string) {
+func (m *Manager) removeLakeOutputs(ctx context.Context, name string) error {
 	if m.lakeReset != nil {
 		m.lakeReset(name)
 	}
-	if api := m.go2rtcClient(); api != nil {
-		_ = api.DeleteStream(ctx, name+"_4k")
-		_ = api.DeleteStream(ctx, name+"_lake")
+	if m.cfg.Go2RTCURL != "" {
+		m.log.Warn().Str("cam", name).Msg("Pan v4 streaming requires the embedded go2rtc receive window and templates")
+		return fmt.Errorf("Pan v4 streaming requires the embedded go2rtc receive window and templates")
 	}
+	var firstErr error
+	if api := m.go2rtcClient(); api != nil {
+		outputs := []struct {
+			name    string
+			sources []string
+		}{
+			{name, []string{lakePreviewSource(name, "hd"), lakePreviewSource(name, "sd")}},
+			{name + "_4k", []string{lakeNativeSource(name)}},
+			{name + "_lake", []string{m.lakeTransportSource(name)}},
+		}
+		for _, output := range outputs {
+			if err := api.DeleteStreamAndStop(ctx, output.name, output.sources...); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if firstErr != nil {
+		m.log.Warn().Str("cam", name).Msg("Lake output cleanup failed")
+	}
+	return firstErr
 }
 
 func (m *Manager) changeState(cam *Camera, newState State) {

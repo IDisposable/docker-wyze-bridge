@@ -17,14 +17,20 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY docker/go2rtc-receive-window.patch ./docker/go2rtc-receive-window.patch
 # Build the same go2rtc version and dependencies with a bounded SRTP receive
-# window for Pan v4 sessions. Default replay protection discards packets more than
-# 63 positions behind, before an RTP reorder queue can repair their ordering.
+# window and explicit owned-stream teardown for Pan v4 sessions. Default replay
+# protection discards packets more than 63 positions behind, before reordering.
 COPY --from=go2rtc-fetch /go2rtc-source.tar.gz /go2rtc-source.tar.gz
 RUN mkdir /go2rtc-src && \
     tar -xzf /go2rtc-source.tar.gz -C /go2rtc-src --strip-components=1 && \
     cd /go2rtc-src && \
     git apply /src/docker/go2rtc-receive-window.patch && \
     CGO_ENABLED=0 go test pkg/webrtc/api.go pkg/webrtc/receive_window_test.go -run TestReceiveDelayedAuthenticatedPacket -count=1 && \
+    CGO_ENABLED=0 go test \
+      internal/streams/add_consumer.go internal/streams/api.go internal/streams/dot.go \
+      internal/streams/handlers.go internal/streams/helpers.go internal/streams/play.go \
+      internal/streams/preload.go internal/streams/producer.go internal/streams/publish.go \
+      internal/streams/stream.go internal/streams/streams.go internal/streams/delete_stop_test.go \
+      -run '^TestDelete(Stop|Default)' -count=1 && \
     CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-s -w" -trimpath -o /go2rtc .
 COPY . .
 # Replace placeholder video-rtc.js with real one before embedding
