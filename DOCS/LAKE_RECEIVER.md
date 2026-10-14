@@ -98,10 +98,12 @@ all owned sessions.
 
 The receiver keeps periodic camera ownership checks active. Periodic quality
 retries stop after 100 seconds; remote-online activation can also request quality. It
-fetches refreshed tokens and sends renewal requests in the existing channel;
-the renewal event records sending, not explicit gateway acceptance. A failed
-renewal, lost gateway or stalled video
-must recover through camera reconnection. The camera health check observes
+fetches refreshed tokens and sends renewal requests in the existing channel.
+The `token_renewal_sent` event records sending; matching gateway replies are
+logged separately as `renewal_accepted` or `renewal_rejected`. Token API,
+send or read failures close signaling; a gateway renewal rejection is logged.
+Demanded video without byte progress is retried by the existing camera health
+check, which observes
 upstream byte progress whenever either output has viewers, including when an
 internal reader disappears. A producer replacement or counter reset after
 established upstream data rebuilds the owned chain, preventing old timestamps
