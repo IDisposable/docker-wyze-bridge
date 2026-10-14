@@ -330,6 +330,11 @@ func (s *Session) controls(quality bool) error {
 	return s.send("data_stream", object{"payload": base64.StdEncoding.EncodeToString(raw), "syncWithAudio": false, "sendTs": time.Since(s.started).Milliseconds()})
 }
 
+// Continue ownership checks while limiting periodic quality retries to startup.
+func (s *Session) periodicControls(elapsed time.Duration) error {
+	return s.controls(elapsed > 20*time.Second && elapsed < 100*time.Second)
+}
+
 func Open(ctx context.Context, initial *wyzeapi.LakeSession, sdp, quality string, renew func(context.Context, int) (string, error)) (*Session, string, error) {
 	if initial == nil || initial.UID < 10000 || initial.UID > 99999 || initial.AppID == "" || initial.Channel == "" || initial.RTCToken == "" || initial.UserID == "" {
 		return nil, "", fmt.Errorf("incomplete Lake session")
@@ -517,7 +522,7 @@ func (s *Session) run(ctx context.Context) {
 				return
 			}
 		case <-control.C:
-			if s.controls(time.Since(begin) > 20*time.Second) != nil {
+			if s.periodicControls(time.Since(begin)) != nil {
 				s.notify("control_send_failed", 0)
 				return
 			}

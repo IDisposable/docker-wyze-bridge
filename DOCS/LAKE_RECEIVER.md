@@ -96,7 +96,8 @@ keeps its existing behavior. Late offers cannot reopen a stopped camera.
 Failed registration also cleans up partially stored outputs. Shutdown cancels
 all owned sessions.
 
-The receiver periodically sends camera ownership and quality controls. It
+The receiver keeps periodic camera ownership checks active. Periodic quality
+retries stop after 100 seconds; remote-online activation can also request quality. It
 fetches refreshed tokens and sends renewal requests in the existing channel;
 the renewal event records sending, not explicit gateway acceptance. A failed
 renewal, lost gateway or stalled video
