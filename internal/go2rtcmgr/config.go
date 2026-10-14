@@ -290,7 +290,7 @@ func (b *ConfigBuilder) Build() *Go2RTCConfig {
 			// WebRTC can deliver recovered RTP packets out of order even
 			// though the local RTSP hop uses TCP. Copy the native video
 			// through a bounded reorder queue before exposing either output.
-			"wyze_lake_receive": "-rtsp_transport tcp -reorder_queue_size 4096 -max_delay 1000000 -timeout 15000000 -i {input}",
+			"wyze_lake_receive": "-rtsp_transport tcp -reorder_queue_size 512 -max_delay 1000000 -timeout 15000000 -i {input}",
 		},
 		// Streams is nil when empty so YAML omits the key entirely.
 		// go2rtc parses an empty flow-style `streams: {}` unreliably.

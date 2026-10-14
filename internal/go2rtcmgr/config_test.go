@@ -43,7 +43,7 @@ func TestConfigBuilder_Build(t *testing.T) {
 	if cfg.FFmpeg["wyze_lake_preview_input"] != "-rtsp_transport tcp -threads:v 2 -timeout 15000000 -i {input}" {
 		t.Fatal("Lake preview decoder thread limit or input timeout missing")
 	}
-	if cfg.FFmpeg["wyze_lake_receive"] != "-rtsp_transport tcp -reorder_queue_size 4096 -max_delay 1000000 -timeout 15000000 -i {input}" {
+	if cfg.FFmpeg["wyze_lake_receive"] != "-rtsp_transport tcp -reorder_queue_size 512 -max_delay 1000000 -timeout 15000000 -i {input}" {
 		t.Fatal("native packet ordering settings changed")
 	}
 	if _, changed := cfg.FFmpeg["rtsp"]; changed {

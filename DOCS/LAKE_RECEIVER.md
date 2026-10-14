@@ -69,9 +69,11 @@ by this initial receive path. Other camera models retain their existing routing.
 Both outputs share one internal `<camera>_lake` transport and one camera
 gateway session. The `_4k` output copies HEVC through FFmpeg to restore RTP
 ordering; it does not decode, scale or re-encode that native video. The reorder
-queue is bounded to 4096 packets with a one-second maximum demuxing delay.
-That limit applies to packet reordering, not total playback latency; preview
-conversion still needs enough CPU capacity to keep up with the camera.
+queue is bounded to 512 packets. On TCP, `max_delay` does not enforce a
+one-second wait limit for a missing packet; the queue may instead wait until
+it fills. The smaller queue keeps this hold below the 15-second read timeout
+at the packet rate measured in the offline test. Total playback latency still
+depends on preview conversion having enough CPU capacity to keep up.
 The H264 preview requests a keyframe every two seconds, including when the
 camera reduces its frame rate in low light. This keeps playback/recording starts
 responsive without imposing a different frame rate on the camera. Forced
