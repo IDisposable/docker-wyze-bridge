@@ -343,7 +343,7 @@ func TestSessionObservesOnlyLatestMatchingRenewalReply(t *testing.T) {
 	if event := diagnosticEvent(t, s); event != (Event{Kind: "gateway_request_rejected", Code: 999}) {
 		t.Fatalf("unrelated rejection was not safely observed: %+v", event)
 	}
-	if event := diagnosticEvent(t, s); event.Kind != "user_offline" {
+	if event := diagnosticEvent(t, s); event.Kind != "user_offline_unknown" {
 		t.Fatalf("stale/nonterminal reply was treated as acceptance: %+v", event)
 	}
 	if err := peer.WriteJSON(object{"_id": second.ID, "_result": "error", "error_code": 109,
@@ -477,7 +477,7 @@ func TestSessionOtherRequestRejectionDoesNotChangeBehavior(t *testing.T) {
 	if err := peer.WriteJSON(message{Type: "on_user_offline", Body: object{}}); err != nil {
 		t.Fatal(err)
 	}
-	if event := diagnosticEvent(t, s); event.Kind != "user_offline" {
+	if event := diagnosticEvent(t, s); event.Kind != "user_offline_unknown" {
 		t.Fatalf("other rejection changed or duplicated reader processing: %+v", event)
 	}
 	select {
