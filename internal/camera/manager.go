@@ -39,6 +39,8 @@ type Manager struct {
 	lakeReset     func(string)
 	lakeIdleReset func(string)
 	lakeHealth    map[string]lakeHealthState
+
+	lakeNeedsReconnect func(string) bool
 	// onChronicError fires once when a camera's error count first
 	// crosses chronicErrorThreshold; onChronicRecover fires when that
 	// same camera reaches StateStreaming again.
@@ -96,6 +98,10 @@ func NewManager(
 func (m *Manager) SetLakeReset(reset func(string)) { m.lakeReset = reset }
 
 func (m *Manager) SetLakeIdleReset(reset func(string)) { m.lakeIdleReset = reset }
+
+func (m *Manager) SetLakeNeedsReconnect(needsReconnect func(string) bool) {
+	m.lakeNeedsReconnect = needsReconnect
+}
 
 func (m *Manager) lakeStreamHealthy(name string, native *go2rtcmgr.StreamInfo, now time.Time, required bool) bool {
 	m.mu.Lock()
@@ -517,7 +523,8 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 			// workers disappear. Downstream demand must keep both upstream
 			// liveness timers active, even while their readers are absent.
 			demanded := info != nil && len(info.Consumers) > 0 || native != nil && len(native.Consumers) > 0
-			healthy = ok && info != nil && m.lakeStreamHealthy(cam.Name()+"/transport", raw, now, demanded) && m.lakeStreamHealthy(cam.Name()+"/native", native, now, demanded)
+			publisherLost := demanded && m.lakeNeedsReconnect != nil && m.lakeNeedsReconnect(cam.Name())
+			healthy = !publisherLost && ok && info != nil && m.lakeStreamHealthy(cam.Name()+"/transport", raw, now, demanded) && m.lakeStreamHealthy(cam.Name()+"/native", native, now, demanded)
 			if healthy {
 				healthy = m.lakeStreamHealthy(cam.Name()+"/preview", info, time.Now(), false)
 			}

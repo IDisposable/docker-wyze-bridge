@@ -45,3 +45,7 @@ func (s *Server) CloseIdleLakeCamera(name string) {
 		s.lakeBroker.CloseIdleCamera(name)
 	}
 }
+
+func (s *Server) LakeNeedsReconnect(name string) bool {
+	return s.lakeBroker != nil && s.lakeBroker.NeedsReconnect(name)
+}

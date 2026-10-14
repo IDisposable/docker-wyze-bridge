@@ -37,7 +37,7 @@ func TestBrokerDrainsBufferedEventsBeforeRelease(t *testing.T) {
 					got = append(got, event)
 				}
 			}
-			b.drainSessionEvents("front", s)
+			b.drainSessionEvents("front", s, op)
 			b.release("front", s, op)
 			if len(s.events) != 0 || (callback && !reflect.DeepEqual(got, want)) {
 				t.Fatalf("buffered diagnostics lost: %v, remaining %d", got, len(s.events))
@@ -66,7 +66,7 @@ func TestBrokerDiagnosticDrainIsCapacityBounded(t *testing.T) {
 		}
 	}}
 	done := make(chan struct{})
-	go func() { b.drainSessionEvents("front", s); close(done) }()
+	go func() { b.drainSessionEvents("front", s, nil); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -83,7 +83,7 @@ func TestBrokerDiagnosticDrainDoesNotWaitForLateEvents(t *testing.T) {
 	var calls atomic.Int32
 	b := &Broker{OnEvent: func(string, Event) { calls.Add(1) }}
 	done := make(chan struct{})
-	go func() { b.drainSessionEvents("front", s); close(done) }()
+	go func() { b.drainSessionEvents("front", s, nil); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):

@@ -105,7 +105,9 @@ send or read failures close signaling; a gateway renewal rejection is logged.
 Demanded video without byte progress is retried by the existing camera health
 check, which observes
 upstream byte progress whenever either output has viewers, including when an
-internal reader disappears. A producer replacement or counter reset after
+internal reader disappears. Departure of the session's original video publisher
+also requests this retry path when either output has viewers. A producer
+replacement or counter reset after
 established upstream data rebuilds the owned chain, preventing old timestamps
 and buffered frames from surviving a new connection. Idle and cold sources
 retain startup grace. The existing STREAMING badge

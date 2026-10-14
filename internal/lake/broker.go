@@ -17,7 +17,10 @@ type Provider interface {
 	RenewLakeToken(context.Context, string, string, int) (string, error)
 }
 
-type cameraOperation struct{ cancel context.CancelFunc }
+type cameraOperation struct {
+	cancel context.CancelFunc
+	epoch  uint64
+}
 
 type Broker struct {
 	OnError  func(string, error)
@@ -31,11 +34,13 @@ type Broker struct {
 	epochs   map[string]uint64
 	stops    map[string]uint64
 	cancel   context.CancelFunc
+
+	publisherLost map[string]*cameraOperation
 }
 
 func NewBroker(ctx context.Context, p Provider) *Broker {
 	ctx, cancel := context.WithCancel(ctx)
-	b := &Broker{ctx: ctx, cancel: cancel, provider: p, sessions: map[string]*Session{}, locks: map[string]*sync.Mutex{}, pending: map[string]*cameraOperation{}, epochs: map[string]uint64{}, stops: map[string]uint64{}}
+	b := &Broker{ctx: ctx, cancel: cancel, provider: p, sessions: map[string]*Session{}, locks: map[string]*sync.Mutex{}, pending: map[string]*cameraOperation{}, epochs: map[string]uint64{}, stops: map[string]uint64{}, publisherLost: map[string]*cameraOperation{}}
 	if ctx.Done() != nil {
 		go func() { <-ctx.Done(); b.Close() }()
 	}
@@ -48,6 +53,7 @@ func (b *Broker) Close() {
 	pending := b.pending
 	b.pending = map[string]*cameraOperation{}
 	b.sessions = map[string]*Session{}
+	b.publisherLost = map[string]*cameraOperation{}
 	b.mu.Unlock()
 	for _, operation := range pending {
 		operation.cancel()
@@ -64,6 +70,7 @@ func (b *Broker) CloseCamera(name string) {
 	operation := b.pending[name]
 	delete(b.pending, name)
 	delete(b.sessions, name)
+	delete(b.publisherLost, name)
 	b.mu.Unlock()
 	if operation != nil {
 		operation.cancel()
@@ -79,7 +86,14 @@ func (b *Broker) CloseCamera(name string) {
 func (b *Broker) CloseIdleCamera(name string) {
 	b.mu.Lock()
 	s := b.sessions[name]
-	if s == nil || time.Since(s.started) < time.Minute {
+	if s == nil {
+		if b.pending[name] == nil {
+			delete(b.publisherLost, name)
+		}
+		b.mu.Unlock()
+		return
+	}
+	if time.Since(s.started) < time.Minute {
 		b.mu.Unlock()
 		return
 	}
@@ -88,6 +102,7 @@ func (b *Broker) CloseIdleCamera(name string) {
 	operation := b.pending[name]
 	delete(b.pending, name)
 	delete(b.sessions, name)
+	delete(b.publisherLost, name)
 	b.mu.Unlock()
 	if operation != nil {
 		operation.cancel()
@@ -176,7 +191,7 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 		}
 	}()
 	cameraCtx, cameraCancel := context.WithCancel(b.ctx)
-	operation := &cameraOperation{cancel: cameraCancel}
+	operation := &cameraOperation{cancel: cameraCancel, epoch: epoch}
 	adopted := false
 	b.mu.Lock()
 	// A stop or a newer offer may arrive while this request waits for the
@@ -204,6 +219,9 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 			cameraCancel()
 			b.mu.Lock()
 			if b.pending[name] == operation {
+				if b.publisherLost[name] != nil && b.epochs[name] == operation.epoch {
+					b.publisherLost[name] = operation
+				}
 				delete(b.pending, name)
 			}
 			b.mu.Unlock()
@@ -237,6 +255,7 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 	}
 	old := b.sessions[name]
 	b.sessions[name] = session
+	delete(b.publisherLost, name)
 	adopted = true
 	b.mu.Unlock()
 	if old != nil {
@@ -257,11 +276,9 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 		for {
 			select {
 			case event := <-session.Events():
-				if b.OnEvent != nil {
-					b.OnEvent(name, event)
-				}
+				b.observeSessionEvent(name, session, operation, event)
 			case <-session.Done():
-				b.drainSessionEvents(name, session)
+				b.drainSessionEvents(name, session, operation)
 				goto finished
 			}
 		}
@@ -292,15 +309,44 @@ func (b *Broker) release(name string, session *Session, operation *cameraOperati
 
 func (b *Broker) Active() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.sessions) }
 
+// NeedsReconnect reports departure of the current camera publisher. A fresh
+// negotiation gets its existing startup grace; adoption clears the old loss.
+func (b *Broker) NeedsReconnect(name string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	lost := b.publisherLost[name]
+	if lost == nil || lost.epoch != b.epochs[name] {
+		return false
+	}
+	if operation := b.pending[name]; operation != nil {
+		return operation == lost
+	}
+	return true
+}
+
+func (b *Broker) observeSessionEvent(name string, session *Session, operation *cameraOperation, event Event) {
+	if event.Kind == "user_offline_publisher" && operation != nil {
+		b.mu.Lock()
+		if b.sessions[name] == session && b.pending[name] == operation && b.epochs[name] == operation.epoch {
+			if b.publisherLost == nil {
+				b.publisherLost = make(map[string]*cameraOperation)
+			}
+			b.publisherLost[name] = operation
+		}
+		b.mu.Unlock()
+	}
+	if b.OnEvent != nil {
+		b.OnEvent(name, event)
+	}
+}
+
 // Drain already-published diagnostics before release. Late notifications after
 // an external Close remain best effort; teardown never waits for their arrival.
-func (b *Broker) drainSessionEvents(name string, session *Session) {
+func (b *Broker) drainSessionEvents(name string, session *Session, operation *cameraOperation) {
 	for i := 0; i < cap(session.Events()); i++ {
 		select {
 		case event := <-session.Events():
-			if b.OnEvent != nil {
-				b.OnEvent(name, event)
-			}
+			b.observeSessionEvent(name, session, operation, event)
 		default:
 			return
 		}
