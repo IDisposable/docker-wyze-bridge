@@ -181,7 +181,7 @@ const indexHTML = `<!DOCTYPE html>
                 </div>
                 <a href="{{$.BasePath}}/camera/{{.Name}}" class="camera-info">
                     <h3>{{.Nickname}}</h3>
-                    <p>{{.ModelName}} &middot; {{.Quality}} &middot; {{.IP}}</p>
+                    <p>{{.ModelName}} &middot; {{.Quality}} &middot; <span class="cam-ip">{{.IP}}</span></p>
                 </a>
                 <div class="camera-links">
                     <button type="button" class="copy-btn" data-url="{{.RTSPURL}}" title="Click to copy RTSP URL (paste into VLC or ffmpeg)">RTSP</button>
@@ -230,7 +230,7 @@ const cameraHTML = `<!DOCTYPE html>
                 <tr><td>State</td><td><span class="state-badge {{.State}}">{{.State}}</span></td></tr>
                 <tr><td>Quality</td><td id="quality">{{.Quality}}</td></tr>
                 <tr><td>Audio</td><td>{{.Audio}}</td></tr>
-                <tr><td>IP</td><td>{{.IP}}</td></tr>
+                <tr><td>IP</td><td class="cam-ip" data-cam="{{.Name}}">{{.IP}}</td></tr>
                 <tr><td>MAC</td><td>{{.MAC}}</td></tr>
                 <tr><td>Firmware</td><td>{{.FWVersion}}</td></tr>
             </table>

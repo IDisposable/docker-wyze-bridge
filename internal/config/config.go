@@ -66,6 +66,14 @@ type Config struct {
 	// DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md.
 	TUTKFallbackThreshold int
 
+	// LanIPResolve checks where each TUTK camera actually is on the
+	// LAN (by MAC, via ARP) before go2rtc dials it, because the Wyze
+	// cloud's idea of a camera's IP can lag a DHCP change by hours.
+	// LanIPSweep allows the last-resort subnet sweep when nothing
+	// cheaper finds a camera that moved. See internal/lanresolve.
+	LanIPResolve bool
+	LanIPSweep   bool
+
 	// Recording
 	RecordAll      bool
 	RecordPath     string
@@ -178,6 +186,12 @@ func Load() (*Config, error) {
 		Audio:                 envBool("AUDIO", true),
 		OfflineTime:           envInt("OFFLINE_TIME", 30),
 		TUTKFallbackThreshold: envInt("TUTK_FALLBACK_THRESHOLD", 5),
+
+		// LAN IP verification for TUTK cameras. Needs network_mode:
+		// host (which TUTK needs anyway); harmless elsewhere — with
+		// no usable engine the cloud IP is used as before.
+		LanIPResolve: envBool("LAN_IP_RESOLVE", true),
+		LanIPSweep:   envBool("LAN_IP_SWEEP", true),
 
 		// Recording — default under /media/recordings so bare-Docker
 		// users can mount a single host directory at /media and get
