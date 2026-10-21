@@ -2,7 +2,9 @@ package camera
 
 import (
 	"context"
+	"sync"
 
+	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/lanresolve"
 )
 
@@ -83,4 +85,69 @@ func (m *Manager) resolveLanIP(ctx context.Context, cam *Camera) bool {
 		m.onLanIPChange(cam, before, after, res.Source)
 	}
 	return true
+}
+
+// RecheckLanIPs asks, for every streaming TUTK camera, whether it still
+// answers at the address go2rtc was given. go2rtc only dials when a
+// consumer pulls the stream and never reports a failed dial back to
+// us, so without this a camera that changed address mid-run would sit
+// at "streaming" with a dead URL until the next restart. A camera that
+// answers costs one ARP round trip; one that doesn't gets the full
+// resolver ladder, and only a verified different address causes the
+// stream to be re-registered — an unreachable camera is left alone so
+// a battery camera asleep in the yard doesn't flap.
+func (m *Manager) RecheckLanIPs(ctx context.Context) {
+	r := m.lanResolver()
+	go2rtc := m.go2rtcClient()
+	if r == nil || go2rtc == nil {
+		return
+	}
+
+	m.mu.RLock()
+	var cams []*Camera
+	for _, c := range m.cameras {
+		if c.GetState() != StateStreaming {
+			continue
+		}
+		if _, protocol := m.streamSourceFor(c); protocol != "tutk" {
+			continue
+		}
+		cams = append(cams, c)
+	}
+	m.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, cam := range cams {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(c *Camera) {
+			defer wg.Done()
+			m.recheckLanIP(ctx, r, go2rtc, c)
+		}(cam)
+	}
+	wg.Wait()
+}
+
+func (m *Manager) recheckLanIP(ctx context.Context, r LANResolver, go2rtc *go2rtcmgr.APIClient, cam *Camera) {
+	info := cam.GetInfo()
+	ok, err := r.Check(ctx, info.LanIP, info.MAC)
+	if err != nil {
+		m.log.Debug().Err(err).Str("cam", cam.Name()).Str("ip", info.LanIP).Msg("lan ip recheck skipped")
+		return
+	}
+	if ok {
+		return
+	}
+	m.log.Debug().Str("cam", cam.Name()).Str("ip", info.LanIP).Msg("camera no longer answers at its address, resolving")
+	if !m.resolveLanIP(ctx, cam) {
+		return
+	}
+	m.log.Info().
+		Str("cam", cam.Name()).
+		Str("old_ip", info.LanIP).
+		Str("ip", cam.GetInfo().LanIP).
+		Msg("LAN IP changed while streaming, re-registering with go2rtc")
+	m.registerStream(ctx, go2rtc, cam)
 }
