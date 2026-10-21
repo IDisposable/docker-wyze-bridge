@@ -32,7 +32,7 @@ RUN go mod download
 COPY . .
 # Replace placeholder video-rtc.js with real one before embedding
 COPY --from=go2rtc-fetch /video-rtc.js ./internal/webui/static/video-rtc.js
-ARG VERSION=dev
+ARG VERSION=4.7.0-dev
 RUN CGO_ENABLED=0 GOOS=linux \
     go build -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /wyze-bridge ./cmd/wyze-bridge

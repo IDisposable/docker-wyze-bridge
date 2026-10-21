@@ -147,7 +147,7 @@ lag for hours, and go2rtc keeps dialing the old address: the camera
 shows `streaming` in the UI while every pull ends in
 `wyze: connect failed: discovery timeout`.
 
-**4.6+ checks the LAN itself.** Before a TUTK camera is handed to
+**4.7+ checks the LAN itself.** Before a TUTK camera is handed to
 go2rtc, and every `LAN_IP_RECHECK` (default `2m`) while it streams,
 the bridge asks the LAN which address the camera's MAC is answering
 from: first the cloud IP (one ARP round trip, a few milliseconds),
@@ -455,7 +455,7 @@ FILTER_MODELS=WYZECP1_JEF           # By model code (comma-separated)
 FILTER_MACS=AA:BB:CC:DD:EE:FF       # By MAC
 ```
 
-**Ignore list (4.6+).** Every camera card on the dashboard has a 🚫
+**Ignore list (4.7+).** Every camera card on the dashboard has a 🚫
 button. Ignoring a camera drops it from go2rtc, hides it, stops the
 reconnect attempts and LAN sweeps for it, and remembers its MAC in
 the state file so it stays gone across restarts — handy for cameras
@@ -474,7 +474,7 @@ The note goes away by itself the moment the camera verifies (or video
 flows), so a camera that was just rebooting doesn't get flagged for
 long. `/api/cameras` reports the verdict as `lan_absent`.
 
-**Camera rules (Settings page, 4.6+).** For the account-wide version of
+**Camera rules (Settings page, 4.7+).** For the account-wide version of
 the same problem, open **Settings** in the header. The **network
 scope** switch has two positions: *any address* (the default, every
 camera the cloud lists) and *local subnets only*, which skips cameras
