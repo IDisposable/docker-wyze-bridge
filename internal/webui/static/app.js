@@ -336,14 +336,43 @@
         });
     }
 
+    // Rotations are read back off the cards so one PUT carries the whole
+    // layout: order, lock and every tile's rotation.
+    function currentRotation() {
+        const rot = {};
+        document.querySelectorAll('#camera-grid .camera-card').forEach(function(card) {
+            const preview = card.querySelector('.camera-preview');
+            const deg = preview ? parseInt(preview.getAttribute('data-rot') || '0', 10) : 0;
+            if (deg) rot[card.getAttribute('data-cam')] = deg;
+        });
+        return rot;
+    }
+
     function saveLayout(locked) {
         return fetch(B + '/api/layout', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ order: currentOrder(), locked: locked })
+            body: JSON.stringify({ order: currentOrder(), locked: locked, rotation: currentRotation() })
         }).then(function(resp) {
             if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
             return resp.json();
+        });
+    }
+
+    // Rotate button (arranging mode only): quarter turn per click,
+    // applied to the preview at once and saved with the layout.
+    function wireRotateButtons() {
+        document.querySelectorAll('.rotate-btn').forEach(function(btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                const card = btn.closest('.camera-card');
+                const preview = card ? card.querySelector('.camera-preview') : null;
+                if (!preview) return;
+                const next = (parseInt(preview.getAttribute('data-rot') || '0', 10) + 90) % 360;
+                preview.setAttribute('data-rot', String(next));
+                saveLayout(false).catch(function(err) { console.error('Saving rotation failed:', err); });
+            });
         });
     }
 
@@ -501,6 +530,7 @@
         wireRestoreButtons();
         wireLockButton();
         wireDragHandles();
+        wireRotateButtons();
         wireThemeButton();
         wireSearch();
         wireDiscoverButton();

@@ -222,3 +222,25 @@ func TestStateFile_LayoutRoundTrip(t *testing.T) {
 		t.Errorf("layout = %+v", loaded.Layout)
 	}
 }
+
+func TestStateFile_LayoutRotationRoundTrip(t *testing.T) {
+	// Per-tile rotation survives a save and load, and SetLayout copies the
+	// map so later edits by the caller don't leak in. No rotations at all
+	// is stored as nil.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	rot := map[string]int{"garage": 90}
+	sf.SetLayout(Layout{Order: []string{"garage"}, Rotation: rot})
+	rot["garage"] = 270 // SetLayout must have copied the map
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Layout == nil || loaded.Layout.Rotation["garage"] != 90 {
+		t.Errorf("layout = %+v", loaded.Layout)
+	}
+	sf.SetLayout(Layout{Order: []string{"garage"}})
+	if sf.Layout.Rotation != nil {
+		t.Error("empty rotation should be stored as nil")
+	}
+}

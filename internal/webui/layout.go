@@ -57,10 +57,32 @@ func (s *Server) storeLayout(l wyzeapi.Layout) {
 	}
 }
 
-// copyLayout detaches a layout from its caller's slice. The Order is
-// never nil so an empty layout encodes as [] rather than null.
+// copyLayout detaches a layout from its caller's slice and map. The
+// Order is never nil so an empty layout encodes as [] rather than null;
+// Rotation is nil when empty so it's omitted from JSON.
 func copyLayout(l wyzeapi.Layout) wyzeapi.Layout {
-	return wyzeapi.Layout{Order: append([]string{}, l.Order...), Locked: l.Locked}
+	cp := wyzeapi.Layout{Order: append([]string{}, l.Order...), Locked: l.Locked}
+	if len(l.Rotation) > 0 {
+		cp.Rotation = make(map[string]int, len(l.Rotation))
+		for k, v := range l.Rotation {
+			cp.Rotation[k] = v
+		}
+	}
+	return cp
+}
+
+// validRotation is the set of view rotations the UI can show: quarter
+// turns only, since anything else would need the preview to be
+// cropped or letterboxed per camera.
+func validRotation(deg int) bool {
+	return deg == 0 || deg == 90 || deg == 180 || deg == 270
+}
+
+// rotationFor returns a camera's saved view rotation, 0 when unset.
+func (s *Server) rotationFor(name string) int {
+	s.layouts.mu.RLock()
+	defer s.layouts.mu.RUnlock()
+	return s.layouts.layout.Rotation[name]
 }
 
 // orderCameras applies a saved order: listed cameras first, in that
@@ -120,6 +142,21 @@ func (s *Server) handleAPILayout(w http.ResponseWriter, r *http.Request) {
 			order = append(order, name)
 		}
 		body.Order = order
+		if len(body.Rotation) > maxLayoutEntries {
+			writeJSONError(w, http.StatusBadRequest, "too many rotation entries")
+			return
+		}
+		// Rotation: quarter turns only, and 0 means "not rotated", so
+		// it's dropped rather than stored.
+		for name, deg := range body.Rotation {
+			if !validRotation(deg) {
+				writeJSONError(w, http.StatusBadRequest, "rotation must be 0, 90, 180 or 270")
+				return
+			}
+			if deg == 0 || name == "" {
+				delete(body.Rotation, name)
+			}
+		}
 		s.storeLayout(body)
 		writeJSON(w, s.Layout())
 	default:
