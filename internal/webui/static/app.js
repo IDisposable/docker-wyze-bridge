@@ -35,6 +35,7 @@
             const data = JSON.parse(e.data);
             const card = document.querySelector('[data-cam="' + data.name + '"]');
             if (card) card.remove();
+            refreshChips();
         });
 
         eventSource.addEventListener('snapshot_ready', function(e) {
@@ -61,6 +62,7 @@
             // Whether frames are actually arriving: live / idle / no video.
             const data = JSON.parse(e.data);
             updateVideoUI(data);
+            refreshChips();
         });
 
         eventSource.addEventListener('camera_ip', function(e) {
@@ -416,6 +418,50 @@
         grid.addEventListener('pointercancel', endDrag);
     }
 
+    // Light/dark toggle. The <head> applies the saved choice before
+    // first paint; this just flips and remembers it. With nothing saved
+    // the stylesheet follows the OS.
+    function wireThemeButton() {
+        const btn = document.getElementById('theme-btn');
+        if (!btn) return;
+        btn.addEventListener('click', function() {
+            const root = document.documentElement;
+            const current = root.getAttribute('data-theme') ||
+                (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            const next = current === 'light' ? 'dark' : 'light';
+            root.setAttribute('data-theme', next);
+            try { localStorage.setItem('wb-theme', next); } catch (e) { /* private mode: theme just won't persist */ }
+        });
+    }
+
+    // Filter box: hides cards whose nickname / model / IP don't contain
+    // the text. Purely client-side; nothing is sent to the server.
+    function wireSearch() {
+        const input = document.getElementById('search');
+        if (!input) return;
+        input.addEventListener('input', function() {
+            const q = input.value.trim().toLowerCase();
+            document.querySelectorAll('#camera-grid .camera-card').forEach(function(card) {
+                const hay = (card.getAttribute('data-search') || '').toLowerCase();
+                card.hidden = q !== '' && hay.indexOf(q) < 0;
+            });
+        });
+    }
+
+    // Header chips are counted from the badges on the page, so they
+    // stay right as SSE events change cards without a reload.
+    function refreshChips() {
+        const set = function(key, n) {
+            const chip = document.querySelector('.chip[data-chip="' + key + '"]');
+            if (!chip) return;
+            chip.querySelector('b').textContent = n;
+            chip.classList.toggle('zero', n === 0);
+        };
+        set('cameras', document.querySelectorAll('#camera-grid .camera-card').length);
+        set('live', document.querySelectorAll('#camera-grid .video-badge.live').length);
+        set('no_video', document.querySelectorAll('#camera-grid .video-badge.no_video').length);
+    }
+
     // Rediscover button: POST /api/discover to kick a Wyze API refresh.
     // The discovery pass is async on the server — camera state updates
     // arrive over SSE as cameras come online, so we just flash the
@@ -455,6 +501,8 @@
         wireRestoreButtons();
         wireLockButton();
         wireDragHandles();
+        wireThemeButton();
+        wireSearch();
         wireDiscoverButton();
     }
 

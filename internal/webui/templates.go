@@ -63,6 +63,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var cams []camData
+	liveCount, noVideoCount := 0, 0
 	for _, cam := range cameras {
 		name := cam.Name()
 		recording := false
@@ -70,6 +71,12 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 			recording = s.recMgr.IsRecording(name)
 		}
 		snap := cam.Snapshot()
+		switch snap.Video {
+		case camera.VideoLive:
+			liveCount++
+		case camera.VideoNoVideo:
+			noVideoCount++
+		}
 		cams = append(cams, camData{
 			Name:       name,
 			Nickname:   snap.Info.Nickname,
@@ -126,6 +133,8 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		"Cameras":  cams,
 		"Ignored":  ignored,
 		"Locked":   layout.Locked,
+		"Live":     liveCount,
+		"NoVideo":  noVideoCount,
 		"Uptime":   int(time.Since(s.startTime).Seconds()),
 		"BasePath": basePath,
 	}
@@ -249,22 +258,30 @@ const indexHTML = `<!DOCTYPE html>
     <title>Wyze Bridge</title>
     <link rel="icon" type="image/png" href="{{.BasePath}}/favicon.ico">
     <link rel="stylesheet" href="{{.BasePath}}/static/style.css">
-    <script>window.__BASE_PATH = '{{.BasePath}}';</script>
+    <script>window.__BASE_PATH = '{{.BasePath}}';try{var t=localStorage.getItem('wb-theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
     <script type="module" src="{{.BasePath}}/static/video-stream.js"></script>
 </head>
 <body>
     <header>
-        <h1>Wyze Bridge <span class="version">v{{.Version}}</span></h1>
+        <a class="brand" href="{{.BasePath}}/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="15" height="11" rx="2"/><path d="M17 10.5 22 8v8l-5-2.5z"/><circle cx="9.5" cy="12.5" r="2.5"/></svg><h1>Wyze Bridge</h1><span class="version">v{{.Version}}</span></a>
+        <div class="chips" id="chips" aria-live="polite">
+            <span class="chip" data-chip="cameras"><b>{{len .Cameras}}</b> cameras</span>
+            <span class="chip live{{if eq .Live 0}} zero{{end}}" data-chip="live"><b>{{.Live}}</b> live</span>
+            <span class="chip warn{{if eq .NoVideo 0}} zero{{end}}" data-chip="no_video"><b>{{.NoVideo}}</b> no video</span>
+            <span class="chip{{if not .Ignored}} zero{{end}}" data-chip="ignored"><b>{{len .Ignored}}</b> ignored</span>
+        </div>
+        <div class="search"><input type="search" id="search" placeholder="Filter cameras…" aria-label="Filter cameras by name, model or IP" autocomplete="off"></div>
         <nav class="header-nav">
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
+            <button type="button" id="lock-btn" class="lock-btn" data-locked="{{.Locked}}" title="{{if .Locked}}Tiles are locked; click to arrange{{else}}Drag the ⠿ handle to arrange; click to lock{{end}}">{{if .Locked}}🔒 Locked{{else}}🔓 Arrange{{end}}</button>
+            <button type="button" id="discover-btn" class="discover-btn" title="Re-poll Wyze API for added/removed cameras">↻ Rediscover</button>
+            <button type="button" id="theme-btn" class="theme-btn" title="Switch between light and dark" aria-label="Toggle light/dark theme"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg></button>
         </nav>
-        <button type="button" id="lock-btn" class="lock-btn" data-locked="{{.Locked}}" title="{{if .Locked}}Tiles are locked; click to arrange{{else}}Drag the ⠿ handle to arrange; click to lock{{end}}">{{if .Locked}}🔒 Locked{{else}}🔓 Arrange{{end}}</button>
-        <button type="button" id="discover-btn" class="discover-btn" title="Re-poll Wyze API for added/removed cameras">↻ Rediscover</button>
     </header>
     <main>
         <div class="camera-grid {{if .Locked}}locked{{else}}arranging{{end}}" id="camera-grid">
         {{range .Cameras}}
-            <div class="camera-card" data-cam="{{.Name}}" data-state="{{.State}}">
+            <div class="camera-card" data-cam="{{.Name}}" data-state="{{.State}}" data-search="{{.Nickname}} {{.ModelName}} {{.Model}} {{.IP}}">
                 <span class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
                 <div class="camera-preview">
                     {{if eq .State "streaming"}}
@@ -279,7 +296,7 @@ const indexHTML = `<!DOCTYPE html>
                 </div>
                 <a href="{{$.BasePath}}/camera/{{.Name}}" class="camera-info">
                     <h3>{{.Nickname}}</h3>
-                    <p>{{.ModelName}} &middot; {{.Quality}} &middot; <span class="cam-ip">{{.IP}}</span></p>
+                    <p>{{.ModelName}} &middot; {{.Quality}}{{if .IP}} &middot; <span class="cam-ip">{{.IP}}</span>{{end}}</p>
                 </a>
                 <div class="camera-links">
                     <button type="button" class="copy-btn" data-url="{{.RTSPURL}}" title="Click to copy RTSP URL (paste into VLC or ffmpeg)">RTSP</button>
@@ -296,8 +313,8 @@ const indexHTML = `<!DOCTYPE html>
         {{end}}
         </div>
         {{if .Ignored}}
-        <section class="ignored" id="ignored">
-            <h2>Ignored cameras <small>not connected, not shown, not retried</small></h2>
+        <details class="ignored" id="ignored">
+            <summary>Ignored cameras ({{len .Ignored}}) <small>not connected, not shown, not retried</small></summary>
             <table>
                 <tr><th>Camera</th><th>Model</th><th>MAC</th><th>Since</th><th></th></tr>
                 {{range .Ignored}}
@@ -310,7 +327,7 @@ const indexHTML = `<!DOCTYPE html>
                 </tr>
                 {{end}}
             </table>
-        </section>
+        </details>
         {{end}}
     </main>
     <script src="{{.BasePath}}/static/app.js"></script>
@@ -325,15 +342,17 @@ const cameraHTML = `<!DOCTYPE html>
     <title>{{.Nickname}} - Wyze Bridge</title>
     <link rel="icon" type="image/png" href="{{.BasePath}}/favicon.ico">
     <link rel="stylesheet" href="{{.BasePath}}/static/style.css">
-    <script>window.__BASE_PATH = '{{.BasePath}}';</script>
+    <script>window.__BASE_PATH = '{{.BasePath}}';try{var t=localStorage.getItem('wb-theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
     <script type="module" src="{{.BasePath}}/static/video-stream.js"></script>
 </head>
 <body>
     <header>
-        <a href="{{.BasePath}}/" class="back">&larr; All Cameras</a>
-        <h1>{{.Nickname}} <span class="version">v{{.Version}}</span></h1>
-        <nav class="header-nav">
+        <a href="{{.BasePath}}/" class="back">&larr; All cameras</a>
+        <h1>{{.Nickname}}</h1>
+        <span class="version">{{.ModelName}}</span>
+        <nav class="header-nav" style="margin-left:auto">
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
+            <button type="button" id="theme-btn" class="theme-btn" title="Switch between light and dark" aria-label="Toggle light/dark theme"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg></button>
         </nav>
     </header>
     <main class="camera-detail">
