@@ -300,6 +300,18 @@ func (c *Camera) lanAbsent() bool {
 	return c.lanMisses >= lanAbsentAfter && c.lanVerifiedAt.IsZero()
 }
 
+// heardWithin reports whether the camera proved it was on the LAN (an
+// ARP answer or video arriving) in the last d.
+func (c *Camera) heardWithin(d time.Duration, now time.Time) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	last := c.lanVerifiedAt
+	if c.lastVideo.After(last) {
+		last = c.lastVideo
+	}
+	return !last.IsZero() && now.Sub(last) < d
+}
+
 // LanStatus returns the resolver's history for this camera: the rung
 // that verified its address ("" if none ever has), when it last
 // verified, and the sweeps in a row that failed to hear it.

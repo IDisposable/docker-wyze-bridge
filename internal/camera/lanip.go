@@ -3,6 +3,7 @@ package camera
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/lanresolve"
@@ -48,6 +49,12 @@ func (m *Manager) lanResolver() LANResolver {
 	return m.resolver
 }
 
+// dozeWindow: a camera that answered ARP or sent video this recently
+// and has now gone quiet is taken to be dozing on Wi-Fi rather than
+// moved, so finding it again gets the cheap rungs only (its addresses,
+// the caches) and no sweep. See lanresolve.Target.NoSweep.
+const dozeWindow = 30 * time.Minute
+
 // resolveLanIP verifies where a TUTK camera is before go2rtc dials it
 // and updates the camera's effective address when the LAN disagrees
 // with the cloud. Returns true when the effective address changed.
@@ -84,6 +91,7 @@ func (m *Manager) resolveLanIP(ctx context.Context, cam *Camera) bool {
 		MAC:     info.MAC,
 		CloudIP: cloud,
 		LastIP:  resolved,
+		NoSweep: cam.heardWithin(dozeWindow, time.Now()),
 	})
 	log := m.log.With().
 		Str("cam", cam.Name()).

@@ -721,3 +721,36 @@ func TestLanAbsent_NotForACameraThatVerifiedThisRun(t *testing.T) {
 		t.Errorf("verified-then-missing camera: misses=%d absent=%v, want 3 and false", snap.LanMisses, snap.LanAbsent)
 	}
 }
+
+func TestResolveLanIP_NoSweepForACameraHeardRecently(t *testing.T) {
+	// Driveway on the NAS: a V3 streaming fine went quiet for a moment,
+	// the recheck missed it, and the sweep that followed (hundreds of
+	// ARP requests at its MAC) left it unable to answer a dial. A camera
+	// that answered or sent video within dozeWindow is resolved without
+	// a sweep; one never heard from still gets the sweep.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: false, Source: "unverified"}}
+	mgr, _ := newLanIPTestManager(t, r)
+
+	fresh := newV3("pet_cam", "192.168.4.140")
+	mgr.resolveLanIP(context.Background(), fresh)
+
+	recent := newV3("driveway_ca03", "192.168.4.184")
+	recent.mu.Lock()
+	recent.lastVideo = time.Now().Add(-5 * time.Minute)
+	recent.mu.Unlock()
+	mgr.resolveLanIP(context.Background(), recent)
+
+	old := newV3("side_yard", "192.168.4.139")
+	old.mu.Lock()
+	old.lanVerifiedAt = time.Now().Add(-2 * dozeWindow)
+	old.mu.Unlock()
+	mgr.resolveLanIP(context.Background(), old)
+
+	calls := r.resolveCalls()
+	if len(calls) != 3 {
+		t.Fatalf("resolve calls = %d", len(calls))
+	}
+	if calls[0].NoSweep || !calls[1].NoSweep || calls[2].NoSweep {
+		t.Errorf("NoSweep = %v %v %v, want false true false", calls[0].NoSweep, calls[1].NoSweep, calls[2].NoSweep)
+	}
+}
