@@ -67,11 +67,19 @@
 
         eventSource.addEventListener('camera_ip', function(e) {
             // The LAN resolver corrected a camera's address; the grid
-            // and the detail page both show it via .cam-ip.
+            // and the detail page both show it via .cam-ip, and the
+            // detail page's Network box says how it was found.
             const data = JSON.parse(e.data);
             document.querySelectorAll('[data-cam="' + data.name + '"] .cam-ip, .cam-ip[data-cam="' + data.name + '"]').forEach(function(el) {
                 el.textContent = data.ip;
             });
+            const box = document.querySelector('.network-box[data-cam="' + data.name + '"]');
+            if (box) {
+                const cloud = box.querySelector('.cam-cloud-ip');
+                if (cloud) cloud.textContent = data.cloud_ip || 'no address';
+                const status = box.querySelector('.cam-lan-status');
+                if (status && data.source_label) status.textContent = 'just now via ' + data.source_label;
+            }
         });
 
         eventSource.onerror = function() {

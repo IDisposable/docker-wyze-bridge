@@ -489,6 +489,10 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; }
 .actions button:hover { background: var(--bg-hover); border-color: var(--accent-bright); }
 .actions .snap-btn.snapped { background: var(--success); color: #fff; }
 
+/* Network box on the detail page: same table styling as the main
+   one, with room for the longer "verified ... via ..." sentence. */
+.network-box td:last-child { white-space: normal; line-height: 1.4; }
+
 /* Camera-side controls (flip, night vision, reboot): label + buttons
    per row. These go through the Wyze cloud and change the camera, not
    just this page. */

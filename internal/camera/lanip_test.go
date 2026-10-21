@@ -591,3 +591,53 @@ func TestRunDiscoveryLoop_RecheckDisabled(t *testing.T) {
 		t.Error("LAN_IP_RECHECK=0 should disable the recheck ticker")
 	}
 }
+
+func TestLanStatus_FollowsResolverAndRecheck(t *testing.T) {
+	// The detail page and /api/cameras show how the resolver did: the
+	// rung that verified the address, when, and how many sweeps missed.
+	r := &scriptedResolver{result: lanresolve.Result{IP: "192.168.4.151", Verified: true, Source: "sweep"}, checkOK: true}
+	mgr, _ := newLanIPTestManager(t, r)
+	cam := newV3("side_garage", "192.168.4.123")
+	mgr.cameras[cam.Name()] = cam
+	if src, at, misses := cam.LanStatus(); src != "" || !at.IsZero() || misses != 0 {
+		t.Fatalf("fresh camera: %q %v %d", src, at, misses)
+	}
+
+	mgr.connectCamera(context.Background(), cam)
+	src, at, misses := cam.LanStatus()
+	if src != "sweep" || at.IsZero() || misses != 0 {
+		t.Errorf("after verify: %q %v %d", src, at, misses)
+	}
+	js := cam.StatusJSON()
+	if js["lan_ip_source"] != "sweep" || js["lan_sweep_misses"] != 0 || js["lan_ip_verified_at"].(time.Time).IsZero() {
+		t.Errorf("StatusJSON: source=%v misses=%v at=%v", js["lan_ip_source"], js["lan_sweep_misses"], js["lan_ip_verified_at"])
+	}
+
+	// Recheck still answers: the timestamp moves, the rung stays.
+	time.Sleep(2 * time.Millisecond)
+	mgr.RecheckLanIPs(context.Background())
+	src2, at2, _ := cam.LanStatus()
+	if src2 != "sweep" || !at2.After(at) {
+		t.Errorf("after recheck: %q %v (was %v)", src2, at2, at)
+	}
+
+	// Gone missing: three sweeps failed. History stays so the page can
+	// say "last verified ... via sweep", misses are reported.
+	r.setResult(lanresolve.Result{Verified: false, Source: "unverified", Misses: 3}, false)
+	mgr.RestartStream(context.Background(), "side_garage")
+	src3, at3, misses3 := cam.LanStatus()
+	if src3 != "sweep" || !at3.Equal(at2) || misses3 != 3 {
+		t.Errorf("after misses: %q %v %d", src3, at3, misses3)
+	}
+	snap := cam.Snapshot()
+	if snap.LanSource != "sweep" || snap.LanMisses != 3 || !snap.LanVerifiedAt.Equal(at2) {
+		t.Errorf("snapshot: %+v", snap)
+	}
+
+	// Back again at the cloud address: misses reset.
+	r.setResult(lanresolve.Result{IP: "192.168.4.123", Verified: true, Source: "cloud"}, true)
+	mgr.RestartStream(context.Background(), "side_garage")
+	if src, _, misses := cam.LanStatus(); src != "cloud" || misses != 0 {
+		t.Errorf("after return: %q %d", src, misses)
+	}
+}

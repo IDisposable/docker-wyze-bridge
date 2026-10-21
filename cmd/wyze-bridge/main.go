@@ -120,13 +120,15 @@ func main() {
 	if len(state.Ignored) > 0 {
 		log.Info().Int("count", len(state.Ignored)).Msg("restored ignore list from state file")
 	}
+	var lanResolver *lanresolve.Resolver
 	if cfg.LanIPResolve {
 		// Verifies TUTK cameras' LAN addresses by MAC before go2rtc
 		// dials them. Built early so the engine choice (raw ARP vs
 		// neighbor cache) is in the startup log next to the rest of
 		// the configuration.
 		lanLog := log.With().Str("c", "lanresolve").Logger()
-		camMgr.SetLANResolver(lanresolve.New(lanresolve.Config{Sweep: cfg.LanIPSweep}, lanLog))
+		lanResolver = lanresolve.New(lanresolve.Config{Sweep: cfg.LanIPSweep}, lanLog)
+		camMgr.SetLANResolver(lanResolver)
 	}
 	camMgr.OnChronicError(
 		func(camName string, errorCount int) {
@@ -187,6 +189,11 @@ func main() {
 			return ""
 		},
 	})
+	if lanResolver != nil {
+		// A typed nil in the interface would read as "resolver present",
+		// so only hand it over when the resolver was actually built.
+		webServer.SetLanResolver(lanResolver)
+	}
 
 	// Dashboard tile order + lock live in the state file so every
 	// browser sees the same grid; install before the listener starts
@@ -558,9 +565,16 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 				Detail:  "verified via " + source,
 			})
 		}
+		cloudIP, _ := cam.LanIPs()
+		lanSource, verifiedAt, misses := cam.LanStatus()
 		go webServer.SSE().SendJSON("camera_ip", map[string]interface{}{
-			"name": name,
-			"ip":   newIP,
+			"name":         name,
+			"ip":           newIP,
+			"cloud_ip":     cloudIP,
+			"source":       lanSource,
+			"source_label": webui.LanSourceLabel(lanSource),
+			"verified_at":  verifiedAt,
+			"sweep_misses": misses,
 		})
 		go publishStateMQTT(mqttClient, cam)
 	})

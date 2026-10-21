@@ -67,9 +67,11 @@ func (m *Manager) resolveLanIP(ctx context.Context, cam *Camera) bool {
 		Dur("took", res.Elapsed).
 		Logger()
 	if !res.Verified {
-		log.Warn().Str("using", info.LanIP).Msg("camera not found on LAN, using last known address")
+		cam.noteLanMisses(res.Misses)
+		log.Warn().Str("using", info.LanIP).Int("sweep_misses", res.Misses).Msg("camera not found on LAN, using last known address")
 		return false
 	}
+	cam.noteLanVerified(res.Source)
 	before := info.LanIP
 	if !cam.SetLanIP(res.IP) {
 		log.Debug().Str("ip", res.IP).Msg("camera LAN IP verified")
@@ -138,6 +140,7 @@ func (m *Manager) recheckLanIP(ctx context.Context, r LANResolver, go2rtc *go2rt
 		return
 	}
 	if ok {
+		cam.noteLanVerified("")
 		return
 	}
 	m.log.Debug().Str("cam", cam.Name()).Str("ip", info.LanIP).Msg("camera no longer answers at its address, resolving")
