@@ -126,6 +126,17 @@ func main() {
 	if len(state.PinnedIPs) > 0 {
 		log.Info().Int("count", len(state.PinnedIPs)).Msg("restored pinned addresses from state file")
 	}
+	// Runtime camera rules (Settings page) apply after the env filters
+	// on every discovery; the "local subnets only" scope needs to know
+	// this host's subnets.
+	camMgr.SetLocalSubnets(lanresolve.LocalSubnets)
+	if state.Rules != nil {
+		if err := camMgr.SetRules(*state.Rules); err != nil {
+			log.Warn().Err(err).Msg("camera rules in state file are invalid; ignoring them")
+		} else {
+			log.Info().Str("scope", state.Rules.Scope).Int("names", len(state.Rules.Names)).Int("macs", len(state.Rules.MACs)).Int("models", len(state.Rules.Models)).Bool("block", state.Rules.Block).Msg("restored camera rules from state file")
+		}
+	}
 	var lanResolver *lanresolve.Resolver
 	if cfg.LanIPResolve {
 		// Verifies TUTK cameras' LAN addresses by MAC before go2rtc
@@ -504,6 +515,10 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 	})
 	camMgr.OnPinChange(func(pins map[string]string) {
 		state.SetPinnedIPs(pins)
+		persistState(state, apiClient, cfg.StateDir)
+	})
+	camMgr.OnRulesChange(func(r wyzeapi.CameraRules) {
+		state.SetRules(r)
 		persistState(state, apiClient, cfg.StateDir)
 	})
 

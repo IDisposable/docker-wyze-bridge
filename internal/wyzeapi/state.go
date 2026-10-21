@@ -28,7 +28,11 @@ type StateFile struct {
 	// cameras the resolver can't reach (another VLAN, say). A pin wins
 	// over both the cloud's address and the resolver's.
 	PinnedIPs map[string]string `json:"pinned_ips,omitempty"`
-	Updated   time.Time         `json:"updated"`
+	// Rules are the WebUI's runtime camera rules (network scope, name /
+	// MAC / model lists), applied after the env filters on every
+	// discovery. See camera.Manager.SetRules.
+	Rules   *CameraRules `json:"rules,omitempty"`
+	Updated time.Time    `json:"updated"`
 
 	writeMu sync.Mutex
 }
@@ -56,6 +60,44 @@ func (sf *StateFile) SetLayout(l Layout) {
 		}
 	}
 	sf.Layout = &cp
+	sf.writeMu.Unlock()
+}
+
+// CameraRules is what the Settings page edits. Scope "local" keeps only
+// cameras whose cloud-reported IP sits on one of the bridge's subnets
+// (or on an extra CIDR listed in Subnets); "" or "any" keeps every
+// camera. Names are nickname patterns with * as a wildcard, MACs and
+// Models exact (case-insensitive; a model may be the code or the
+// display name). With Block the listed cameras are dropped; without
+// it, and with any list non-empty, only the listed cameras are kept.
+type CameraRules struct {
+	Scope   string   `json:"scope,omitempty"`
+	Subnets []string `json:"subnets,omitempty"`
+	Names   []string `json:"names,omitempty"`
+	MACs    []string `json:"macs,omitempty"`
+	Models  []string `json:"models,omitempty"`
+	Block   bool     `json:"block"`
+}
+
+// Empty reports whether the rules do nothing at all.
+func (r CameraRules) Empty() bool {
+	return (r.Scope == "" || r.Scope == "any") && len(r.Names) == 0 && len(r.MACs) == 0 && len(r.Models) == 0
+}
+
+// SetRules replaces the rules under the same lock Save uses. Empty
+// rules clear the field from the file.
+func (sf *StateFile) SetRules(r CameraRules) {
+	sf.writeMu.Lock()
+	if r.Empty() && len(r.Subnets) == 0 {
+		sf.Rules = nil
+	} else {
+		cp := r
+		cp.Subnets = append([]string(nil), r.Subnets...)
+		cp.Names = append([]string(nil), r.Names...)
+		cp.MACs = append([]string(nil), r.MACs...)
+		cp.Models = append([]string(nil), r.Models...)
+		sf.Rules = &cp
+	}
 	sf.writeMu.Unlock()
 }
 

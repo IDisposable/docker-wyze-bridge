@@ -516,6 +516,71 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; }
 }
 .lan-hint .ignore-btn.hint:hover { background: var(--bg-hover); border-color: var(--warning); }
 
+/* Settings page: one card for the rules form, one for the excluded
+   table. Form controls follow the search box / pin input look. */
+main.settings { max-width: 960px; }
+.settings-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.25rem;
+}
+.settings-card h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+.settings-card h2 small { font-weight: normal; font-size: 0.8rem; color: var(--text-dim); }
+.settings-intro, .settings-note { font-size: 0.85rem; color: var(--text-dim); line-height: 1.45; margin: 0 0 0.75rem; }
+.settings-note code { font-family: var(--mono); color: var(--text); }
+.settings-card fieldset { border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); padding: 0.85rem 1rem 1rem; margin: 0 0 1rem; }
+.settings-card legend { padding: 0 0.4rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+.settings-card .radio { display: flex; gap: 0.6rem; align-items: flex-start; margin: 0.35rem 0; font-size: 0.9rem; cursor: pointer; }
+.settings-card .radio input { margin-top: 0.3rem; accent-color: var(--accent-bright); }
+.settings-card .radio small { display: block; color: var(--text-dim); font-size: 0.8rem; line-height: 1.4; }
+.settings-card .field { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.88rem; }
+.settings-card .field small { display: block; color: var(--text-dim); font-size: 0.78rem; margin-bottom: 0.3rem; }
+.settings-card .field code { font-family: var(--mono); }
+.settings-card textarea {
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    resize: vertical;
+}
+.settings-card textarea:focus { outline: none; border-color: var(--accent-bright); }
+.settings-card textarea::placeholder { color: var(--text-dim); }
+.settings-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 1rem; }
+.settings-actions { display: flex; align-items: center; gap: 1rem; }
+.settings-actions button.primary {
+    padding: 0.5rem 1.1rem;
+    font: inherit;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent-bright);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    cursor: pointer;
+}
+.settings-actions button.primary:hover { filter: brightness(1.1); }
+.settings-status { font-size: 0.85rem; color: var(--text-dim); }
+.settings-status.ok { color: var(--success); }
+.settings-status.failed { color: var(--error); }
+.excluded-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+.excluded-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+.excluded-table td { padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.excluded-table tr:last-child td { border-bottom: none; }
+.excluded-table code { font-family: var(--mono); font-size: 0.8rem; }
+.excluded-table tr.empty td { color: var(--text-dim); }
+.ignored.excluded summary small a { color: var(--accent-bright); }
+@media (max-width: 720px) {
+    .settings-grid { grid-template-columns: 1fr; }
+}
+
 /* Network box on the detail page: same table styling as the main
    one, with room for the longer "verified ... via ..." sentence. */
 .network-box td:last-child { white-space: normal; line-height: 1.4; }

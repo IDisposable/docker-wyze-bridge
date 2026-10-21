@@ -281,3 +281,34 @@ func TestStateFile_PinnedIPsRoundTrip(t *testing.T) {
 		t.Errorf("after clear: %v", loaded.PinnedIPs)
 	}
 }
+
+func TestStateFile_RulesRoundTrip(t *testing.T) {
+	// Camera rules survive a save and load, copied away from the caller.
+	// Rules that do nothing clear the field, but extra subnets alone are
+	// kept for when the scope goes back to local.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	names := []string{"Pet Cam*"}
+	sf.SetRules(CameraRules{Scope: "local", Subnets: []string{"192.168.4.0/22"}, Names: names, Block: true})
+	names[0] = "mutated" // SetRules must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Rules == nil || loaded.Rules.Scope != "local" || loaded.Rules.Names[0] != "Pet Cam*" || !loaded.Rules.Block || loaded.Rules.Subnets[0] != "192.168.4.0/22" {
+		t.Errorf("rules = %+v", loaded.Rules)
+	}
+	// Empty rules drop the field; extra subnets alone keep it (they're
+	// worth remembering for when scope goes back to local).
+	sf.SetRules(CameraRules{})
+	if sf.Rules != nil {
+		t.Error("empty rules should clear the field")
+	}
+	sf.SetRules(CameraRules{Subnets: []string{"10.0.0.0/8"}})
+	if sf.Rules == nil {
+		t.Error("subnets alone should be kept")
+	}
+	if !(CameraRules{}).Empty() || (CameraRules{Scope: "local"}).Empty() || (CameraRules{MACs: []string{"A"}}).Empty() || !(CameraRules{Scope: "any"}).Empty() {
+		t.Error("Empty() wrong")
+	}
+}

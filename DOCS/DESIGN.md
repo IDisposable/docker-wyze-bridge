@@ -180,6 +180,7 @@ type StateFile struct {
     Ignored   []IgnoredCamera        `json:"ignored,omitempty"`    // WebUI ignore list, by MAC (4.6)
     Layout    *Layout                `json:"layout,omitempty"`     // dashboard order / lock / rotation (4.6)
     PinnedIPs map[string]string      `json:"pinned_ips,omitempty"` // operator-pinned LAN addresses, by MAC (4.6)
+    Rules     *CameraRules           `json:"rules,omitempty"`      // Settings page camera rules (4.6)
     Updated   time.Time              `json:"updated"`
 }
 ```
@@ -366,6 +367,8 @@ type Filter struct {
 
 Filtered-out cameras are never added to go2rtc and never appear in MQTT or WebUI.
 
+**Runtime rules (Settings page, 4.6+, `rules.go`):** `Manager.SetRules` compiles a `wyzeapi.CameraRules` (scope, extra CIDRs, nickname patterns with `*`, MACs, models, block/allow) and `Discover` runs `applyRules` after the env filters and the ignore list. Scope `local` drops a camera whose cloud-reported IPv4 address sits on none of the host's subnets (`lanresolve.LocalSubnets`, injected through `SetLocalSubnets`) nor on the extra CIDRs; a camera with no address is kept. Lists then work like `Filter` (block drops matches, allow keeps only matches) with case-insensitive `*` globbing on the nickname. Dropped cameras already in the registry are removed by `dropExcludedLocked` exactly as an ignore removes them (go2rtc stream deleted, state offline, `OnCameraRemoved` with reason `excluded`) and listed by `Excluded()` with the reason, for the dashboard strip, `/api/excluded` and the Settings page; when the rules change they come back through the normal added path. Persisted as `rules` through `OnRulesChange`; `PUT /api/settings` kicks the same discovery the Rediscover button runs so a save applies at once.
+
 **Ignore list (runtime, 4.6+):** `Manager.Ignore(name)` / `Unignore(mac)` maintain a MAC-keyed set applied after the env filters on every `Discover`. Ignoring deletes the go2rtc stream, marks the camera offline (so recording, MQTT state and webhooks see a normal shutdown), removes it from the registry and fires `OnCameraRemoved`, which main.go uses to drop the dashboard card (SSE `camera_removed`), stop the recorder and retract the HA entities (`RemoveDiscovery`). The list is persisted through `OnIgnoreChange` → `StateFile.Ignored` and installed at startup with `SetIgnored` before the first discovery, so an ignored camera never gets a stream at all. Restoring removes the MAC and triggers the same async rediscovery as the Rediscover button; `OnCameraAdded` (SSE `camera_added` + `PublishDiscovery`) brings the card and entities back. Nickname/model on each entry are refreshed from discovery so the WebUI strip stays readable after a rename.
 
 #### 5.3.2a Dashboard layout (`internal/webui/layout.go`, 4.6+)
@@ -481,6 +484,7 @@ Published on startup and on camera add/remove to `{dtopic}/...`:
 ```goat
 GET  /                           Camera grid — all cameras with status + stream links
 GET  /camera/{name}              Single camera page with live player
+GET  /settings                   Camera rules page (network scope, name / MAC / model lists)
 
 GET  /api/cameras                JSON: all cameras
 GET  /api/cameras/{name}         JSON: one camera
@@ -495,6 +499,9 @@ POST /api/cameras/{name}/pin      body: {"ip":"192.168.4.151"} — pin the LAN a
 POST /api/cameras/{name}/ignore   Drop the camera + remember its MAC (persisted; see 5.3.2)
 GET  /api/ignored                JSON: the ignore list
 POST /api/ignored/{mac}/restore  Take a MAC off the ignore list + rediscover (async)
+GET  /api/settings               Runtime camera rules: {"scope":"any"|"local","subnets":[cidr...],"names":[...],"macs":[...],"models":[...],"block":bool}
+PUT  /api/settings               Replace them (POST accepted too); validated, persisted in the state file, applied by an immediate discovery
+GET  /api/excluded               Cameras the rules dropped at the last discovery, with the reason for each
 GET  /api/layout                 {"order":[names...],"locked":bool,"rotation":{name:deg}} — dashboard tile arrangement
 PUT  /api/layout                 Replace it (POST accepted too); persisted in the state file. rotation: 0/90/180/270, view only
 

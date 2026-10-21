@@ -138,6 +138,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		"Version":  s.version,
 		"Cameras":  cams,
 		"Ignored":  ignored,
+		"Excluded": excludedRows(s.camMgr.Excluded()),
 		"Locked":   layout.Locked,
 		"Live":     liveCount,
 		"NoVideo":  noVideoCount,
@@ -350,6 +351,7 @@ const indexHTML = `<!DOCTYPE html>
         <div class="search"><input type="search" id="search" placeholder="Filter cameras…" aria-label="Filter cameras by name, model or IP" autocomplete="off"></div>
         <nav class="header-nav">
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
+            <a href="{{.BasePath}}/settings" title="Camera rules: network scope, names, MACs, models">Settings</a>
             <button type="button" id="lock-btn" class="lock-btn" data-locked="{{.Locked}}" title="{{if .Locked}}Tiles are locked; click to arrange{{else}}Drag the ⠿ handle to arrange; click to lock{{end}}">{{if .Locked}}🔒 Locked{{else}}🔓 Arrange{{end}}</button>
             <button type="button" id="discover-btn" class="discover-btn" title="Re-poll Wyze API for added/removed cameras">↻ Rediscover</button>
             <button type="button" id="theme-btn" class="theme-btn" title="Switch between light and dark" aria-label="Toggle light/dark theme"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg></button>
@@ -403,6 +405,23 @@ const indexHTML = `<!DOCTYPE html>
                     <td><code>{{.MAC}}</code></td>
                     <td>{{.Since}}</td>
                     <td><button type="button" class="restore-btn" data-mac="{{.MAC}}" title="Stop ignoring and rediscover">Restore</button></td>
+                </tr>
+                {{end}}
+            </table>
+        </details>
+        {{end}}
+        {{if .Excluded}}
+        <details class="ignored excluded" id="excluded">
+            <summary>Excluded by rules ({{len .Excluded}}) <small>not connected, not shown &middot; <a href="{{.BasePath}}/settings">change the rules</a></small></summary>
+            <table>
+                <tr><th>Camera</th><th>Model</th><th>MAC</th><th>IP</th><th>Why</th></tr>
+                {{range .Excluded}}
+                <tr data-mac="{{.MAC}}">
+                    <td>{{.Nickname}}</td>
+                    <td>{{.Model}}</td>
+                    <td><code>{{.MAC}}</code></td>
+                    <td><code>{{.IP}}</code></td>
+                    <td>{{.Reason}}</td>
                 </tr>
                 {{end}}
             </table>
@@ -496,6 +515,78 @@ const cameraHTML = `<!DOCTYPE html>
                 <button type="button" class="reboot-btn danger" data-cam="{{.Name}}" data-nickname="{{.Nickname}}" title="Reboot the camera itself (takes a minute to come back)">⟲ Reboot camera</button>
             </div>
         </div>
+    </main>
+    <script src="{{.BasePath}}/static/app.js"></script>
+</body>
+</html>`
+
+const settingsHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Wyze Bridge</title>
+    <link rel="icon" type="image/png" href="{{.BasePath}}/favicon.ico">
+    <link rel="stylesheet" href="{{.BasePath}}/static/style.css">
+    <script>window.__BASE_PATH = '{{.BasePath}}';try{var t=localStorage.getItem('wb-theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+</head>
+<body>
+    <header>
+        <a href="{{.BasePath}}/" class="back">&larr; All cameras</a>
+        <h1>Settings</h1>
+        <span class="version">v{{.Version}}</span>
+        <nav class="header-nav" style="margin-left:auto">
+            <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
+            <button type="button" id="theme-btn" class="theme-btn" title="Switch between light and dark" aria-label="Toggle light/dark theme"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg></button>
+        </nav>
+    </header>
+    <main class="settings">
+        <form id="rules-form" class="settings-card" autocomplete="off">
+            <h2>Camera rules</h2>
+            <p class="settings-intro">Which of the cameras on your Wyze account this bridge should bother with. Saved in the state file and applied right away; the env filters{{if .EnvFilters}} ({{.EnvFilters}}){{end}} still run first, and the 🚫 ignore list still applies on top.</p>
+
+            <fieldset>
+                <legend>Network scope</legend>
+                <label class="radio"><input type="radio" name="scope" value="any"{{if ne .Scope "local"}} checked{{end}}> <span><b>Any address</b> <small>bridge every camera the cloud lists (today's behavior)</small></span></label>
+                <label class="radio"><input type="radio" name="scope" value="local"{{if eq .Scope "local"}} checked{{end}}> <span><b>Local subnets only</b> <small>skip cameras whose address isn't on this bridge's network, which is what another house's cameras look like. A camera the cloud has no address for is kept.</small></span></label>
+                <label class="field">Extra subnets that count as local <small>one CIDR per line, for a camera VLAN this container doesn't sit on</small>
+                    <textarea name="subnets" rows="2" placeholder="192.168.20.0/24">{{.Subnets}}</textarea></label>
+                <p class="settings-note">Detected on this host: <code>{{if .Detected}}{{.Detected}}{{else}}nothing yet{{end}}</code>{{if not .Detected}} &middot; until a subnet is known the scope excludes nothing{{end}}. If that isn't your LAN (the container is on a Docker bridge network, say) list your LAN's CIDR above; TUTK cameras need <code>network_mode: host</code> anyway.</p>
+            </fieldset>
+
+            <fieldset>
+                <legend>Cameras by name, MAC or model</legend>
+                <div class="settings-grid">
+                    <label class="field">Names <small>one per line, <code>*</code> matches anything, case doesn't matter</small>
+                        <textarea name="names" rows="4" placeholder="Pet Cam*&#10;Mom's Porch">{{.Names}}</textarea></label>
+                    <label class="field">MACs <small>one per line</small>
+                        <textarea name="macs" rows="4" placeholder="D03F2700CA04">{{.MACs}}</textarea></label>
+                    <label class="field">Models <small>code or name, one per line</small>
+                        <textarea name="models" rows="4" placeholder="WYZE_CAKP2JFUS&#10;V4">{{.Models}}</textarea></label>
+                </div>
+                <label class="radio"><input type="radio" name="block" value="true"{{if .Block}} checked{{end}}> <span><b>Block the cameras listed</b> <small>everything else is bridged</small></span></label>
+                <label class="radio"><input type="radio" name="block" value="false"{{if not .Block}} checked{{end}}> <span><b>Only bridge the cameras listed</b> <small>everything else is excluded; with empty lists nothing is excluded</small></span></label>
+            </fieldset>
+
+            <div class="settings-actions">
+                <button type="submit" class="primary" id="rules-save">Save and apply</button>
+                <span id="rules-status" class="settings-status" aria-live="polite"></span>
+            </div>
+        </form>
+
+        <section class="settings-card">
+            <h2>Excluded right now <small>by these rules, as of the last discovery</small></h2>
+            <table class="excluded-table" id="excluded-table">
+                <thead><tr><th>Camera</th><th>Model</th><th>MAC</th><th>IP</th><th>Why</th></tr></thead>
+                <tbody>
+                {{range .Excluded}}
+                <tr><td>{{.Nickname}}</td><td>{{.Model}}</td><td><code>{{.MAC}}</code></td><td><code>{{.IP}}</code></td><td>{{.Reason}}</td></tr>
+                {{else}}
+                <tr class="empty"><td colspan="5">Nothing. Every camera that passed the env filters is bridged.</td></tr>
+                {{end}}
+                </tbody>
+            </table>
+        </section>
     </main>
     <script src="{{.BasePath}}/static/app.js"></script>
 </body>

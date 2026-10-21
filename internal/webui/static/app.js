@@ -255,6 +255,90 @@
         });
     }
 
+    // Settings page: the rules form. Textareas are one entry per line;
+    // PUT /api/settings validates server-side and kicks a discovery, so
+    // the excluded table is refreshed a moment later from /api/excluded.
+    function wireRulesForm() {
+        const form = document.getElementById('rules-form');
+        if (!form) return;
+        const status = document.getElementById('rules-status');
+        const lines = function(name) {
+            return form.elements[name].value.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
+        };
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const body = {
+                scope: form.elements['scope'].value,
+                subnets: lines('subnets'),
+                names: lines('names'),
+                macs: lines('macs'),
+                models: lines('models'),
+                block: form.elements['block'].value === 'true'
+            };
+            status.textContent = 'Saving…';
+            status.className = 'settings-status';
+            fetch(B + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+                .then(function(resp) {
+                    return resp.json().then(function(data) {
+                        if (!resp.ok) throw new Error(data.error || (resp.status + ' ' + resp.statusText));
+                        return data;
+                    });
+                })
+                .then(function(data) {
+                    // Echo the normalized rules back into the form.
+                    form.elements['subnets'].value = data.subnets.join('\n');
+                    form.elements['names'].value = data.names.join('\n');
+                    form.elements['macs'].value = data.macs.join('\n');
+                    form.elements['models'].value = data.models.join('\n');
+                    status.textContent = 'Saved. Rediscovering…';
+                    status.className = 'settings-status ok';
+                    setTimeout(refreshExcluded, 2500);
+                })
+                .catch(function(err) {
+                    console.error('Save failed:', err);
+                    status.textContent = String(err.message || err);
+                    status.className = 'settings-status failed';
+                });
+        });
+    }
+
+    function refreshExcluded() {
+        const tbody = document.querySelector('#excluded-table tbody');
+        if (!tbody) return;
+        fetch(B + '/api/excluded')
+            .then(function(resp) { return resp.json(); })
+            .then(function(list) {
+                tbody.textContent = '';
+                if (!list.length) {
+                    const tr = document.createElement('tr');
+                    tr.className = 'empty';
+                    const td = document.createElement('td');
+                    td.colSpan = 5;
+                    td.textContent = 'Nothing. Every camera that passed the env filters is bridged.';
+                    tr.appendChild(td);
+                    tbody.appendChild(tr);
+                }
+                list.forEach(function(e) {
+                    const tr = document.createElement('tr');
+                    [e.nickname || e.mac, e.model, e.mac, e.ip || '', e.reason].forEach(function(v, i) {
+                        const td = document.createElement('td');
+                        if (i === 2 || i === 3) {
+                            const code = document.createElement('code');
+                            code.textContent = v;
+                            td.appendChild(code);
+                        } else {
+                            td.textContent = v;
+                        }
+                        tr.appendChild(td);
+                    });
+                    tbody.appendChild(tr);
+                });
+                const status = document.getElementById('rules-status');
+                if (status && status.textContent === 'Saved. Rediscovering…') status.textContent = 'Saved and applied.';
+            })
+            .catch(function(err) { console.error('Excluded refresh failed:', err); });
+    }
+
     // Reboot the camera itself (Wyze cloud restart), after a confirm.
     function wireRebootButtons() {
         document.querySelectorAll('.reboot-btn').forEach(function(btn) {
@@ -671,6 +755,7 @@
         wirePropertyButtons();
         wireRebootButtons();
         wirePinForms();
+        wireRulesForm();
         wireLockButton();
         wireDragHandles();
         wireRotateButtons();
