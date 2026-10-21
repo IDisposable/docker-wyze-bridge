@@ -53,6 +53,15 @@
             updateRecordingUI(data.name, data.recording);
         });
 
+        eventSource.addEventListener('camera_ip', function(e) {
+            // The LAN resolver corrected a camera's address; the grid
+            // and the detail page both show it via .cam-ip.
+            const data = JSON.parse(e.data);
+            document.querySelectorAll('[data-cam="' + data.name + '"] .cam-ip, .cam-ip[data-cam="' + data.name + '"]').forEach(function(el) {
+                el.textContent = data.ip;
+            });
+        });
+
         eventSource.onerror = function() {
             // Reconnect after a delay
             setTimeout(connectSSE, 5000);

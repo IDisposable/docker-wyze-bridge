@@ -18,6 +18,7 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
+	"github.com/IDisposable/docker-wyze-bridge/internal/lanresolve"
 	"github.com/IDisposable/docker-wyze-bridge/internal/mqtt"
 	"github.com/IDisposable/docker-wyze-bridge/internal/recording"
 	"github.com/IDisposable/docker-wyze-bridge/internal/snapshot"
@@ -112,6 +113,14 @@ func main() {
 
 	camLog := log.With().Str("c", "camera").Logger()
 	camMgr := camera.NewManager(cfg, apiClient, nil, camLog)
+	if cfg.LanIPResolve {
+		// Verifies TUTK cameras' LAN addresses by MAC before go2rtc
+		// dials them. Built early so the engine choice (raw ARP vs
+		// neighbor cache) is in the startup log next to the rest of
+		// the configuration.
+		lanLog := log.With().Str("c", "lanresolve").Logger()
+		camMgr.SetLANResolver(lanresolve.New(lanresolve.Config{Sweep: cfg.LanIPSweep}, lanLog))
+	}
 	camMgr.OnChronicError(
 		func(camName string, errorCount int) {
 			detail := "Backoff is capped at 5min; reconnects keep firing. Check logs for the underlying go2rtc / stream error."
@@ -433,6 +442,27 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 		go publishStateMQTT(mqttClient, cam)
 		go sendStateWebhook(ctx, webhookClient, name, snap, newState)
 		go persistState(state, apiClient, cfg.StateDir)
+	})
+
+	// A corrected LAN address shows up in the event log (so the
+	// /metrics page explains why go2rtc's URL stopped matching the
+	// cloud's IP), updates the dashboard in place, and refreshes the
+	// MQTT attributes that carry the IP.
+	camMgr.OnLanIPChange(func(cam *camera.Camera, oldIP, newIP, source string) {
+		name := cam.Name()
+		if evLog := webServer.Events(); evLog != nil {
+			evLog.Record(webui.Event{
+				Kind:    "lan_ip",
+				Camera:  name,
+				Message: oldIP + " → " + newIP,
+				Detail:  "verified via " + source,
+			})
+		}
+		go webServer.SSE().SendJSON("camera_ip", map[string]interface{}{
+			"name": name,
+			"ip":   newIP,
+		})
+		go publishStateMQTT(mqttClient, cam)
 	})
 }
 

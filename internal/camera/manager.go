@@ -43,6 +43,11 @@ type Manager struct {
 	// onProtocolFallback fires the first time a camera is auto-promoted
 	// from TUTK to WebRTC after crossing the fallback threshold.
 	onProtocolFallback func(camName string, oldProtocol, newProtocol string, failStreak int)
+	// resolver verifies TUTK cameras' LAN addresses before go2rtc dials
+	// them; nil disables. onLanIPChange fires when a camera's effective
+	// address changes. See lanip.go.
+	resolver      LANResolver
+	onLanIPChange func(cam *Camera, oldIP, newIP, source string)
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a
@@ -267,6 +272,14 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	if go2rtc == nil {
 		m.log.Debug().Str("cam", cam.Name()).Msg("skipping connect — go2rtc API not yet attached")
 		return
+	}
+
+	// Check where the camera actually is before go2rtc dials it. Only
+	// the TUTK path dials a LAN address: WebRTC goes through Wyze's
+	// cloud and gwell-proxy discovers its own. streamSourceFor is
+	// idempotent, so asking twice costs nothing.
+	if _, protocol := m.streamSourceFor(cam); protocol == "tutk" {
+		m.resolveLanIP(ctx, cam)
 	}
 
 	streamURL, protocol := m.streamSourceFor(cam)

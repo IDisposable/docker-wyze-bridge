@@ -1,0 +1,86 @@
+package camera
+
+import (
+	"context"
+
+	"github.com/IDisposable/docker-wyze-bridge/internal/lanresolve"
+)
+
+// LANResolver is the slice of internal/lanresolve the manager uses.
+// It's an interface so tests can script answers without a network.
+type LANResolver interface {
+	// Resolve finds the address the camera's MAC is answering from.
+	Resolve(ctx context.Context, t lanresolve.Target) lanresolve.Result
+	// Check asks whether mac still answers at ip. One probe, no sweep.
+	Check(ctx context.Context, ip, mac string) (bool, error)
+}
+
+// SetLANResolver attaches the resolver that verifies TUTK cameras' LAN
+// addresses before they're handed to go2rtc. nil (the default) keeps
+// the pre-resolver behavior: the Wyze cloud's IP is used as-is.
+func (m *Manager) SetLANResolver(r LANResolver) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resolver = r
+}
+
+// OnLanIPChange registers a callback for the effective LAN address of
+// a camera changing — either corrected away from a stale cloud IP, or
+// reverted once the cloud caught up. Fires after the camera already
+// reports the new address, so callbacks may read cam.GetInfo().
+func (m *Manager) OnLanIPChange(fn func(cam *Camera, oldIP, newIP, source string)) {
+	m.onLanIPChange = fn
+}
+
+func (m *Manager) lanResolver() LANResolver {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.resolver
+}
+
+// resolveLanIP verifies where a TUTK camera is before go2rtc dials it
+// and updates the camera's effective address when the LAN disagrees
+// with the cloud. Returns true when the effective address changed.
+//
+// An unverified result (camera unreachable, no engine) leaves the
+// camera exactly as it was: the last verified override if there is
+// one, otherwise the cloud IP — never worse than the old behavior.
+func (m *Manager) resolveLanIP(ctx context.Context, cam *Camera) bool {
+	r := m.lanResolver()
+	if r == nil {
+		return false
+	}
+	cloud, resolved := cam.LanIPs()
+	info := cam.GetInfo()
+	res := r.Resolve(ctx, lanresolve.Target{
+		Name:    cam.Name(),
+		MAC:     info.MAC,
+		CloudIP: cloud,
+		LastIP:  resolved,
+	})
+	log := m.log.With().
+		Str("cam", cam.Name()).
+		Str("cloud_ip", cloud).
+		Str("source", res.Source).
+		Dur("took", res.Elapsed).
+		Logger()
+	if !res.Verified {
+		log.Warn().Str("using", info.LanIP).Msg("camera not found on LAN, using last known address")
+		return false
+	}
+	before := info.LanIP
+	if !cam.SetLanIP(res.IP) {
+		log.Debug().Str("ip", res.IP).Msg("camera LAN IP verified")
+		return false
+	}
+	after := cam.GetInfo().LanIP
+	if after == cloud {
+		log.Info().Str("old_ip", before).Msg("Wyze cloud caught up with the camera's LAN IP")
+	} else {
+		log.Info().Str("old_ip", before).Str("ip", after).Msg("camera LAN IP differs from Wyze cloud, corrected")
+	}
+	if m.onLanIPChange != nil {
+		m.onLanIPChange(cam, before, after, res.Source)
+	}
+	return true
+}

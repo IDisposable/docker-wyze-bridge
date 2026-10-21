@@ -55,7 +55,14 @@ type Camera struct {
 	// pins this camera to the WebRTC path. Sticky for the process
 	// lifetime; a restart re-probes TUTK from scratch.
 	forceWebRTC bool
-	mu          sync.RWMutex
+	// lanIP overrides Info.LanIP once the LAN resolver has verified
+	// the camera answers at a different address than the Wyze cloud
+	// reports (the cloud lags DHCP changes by hours). Empty means the
+	// cloud IP is believed. Survives UpdateInfo so a 30-minute refresh
+	// can't put the stale address back; the resolver clears it when
+	// the cloud catches up. See internal/lanresolve.
+	lanIP string
+	mu    sync.RWMutex
 }
 
 // NewCamera creates a new Camera from discovered info with default settings.
@@ -165,11 +172,11 @@ func (c *Camera) Name() string {
 
 // StreamURL returns the go2rtc wyze:// URL for this camera. Reads
 // Info + Quality under the lock so it's consistent with concurrent
-// UpdateInfo / SetQuality.
+// UpdateInfo / SetQuality. Uses the resolved LAN IP when one is set.
 func (c *Camera) StreamURL() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.Info.StreamURL(c.Quality)
+	return c.info().StreamURL(c.Quality)
 }
 
 // UpdateInfo updates the camera info (e.g., after re-discovery with new IP).
@@ -181,11 +188,46 @@ func (c *Camera) UpdateInfo(info wyzeapi.CameraInfo) {
 
 // GetInfo returns a consistent snapshot of the Info struct. Use this
 // instead of reading c.Info directly when concurrency matters — a
-// bare c.Info read can tear against UpdateInfo's assignment.
+// bare c.Info read can tear against UpdateInfo's assignment. The
+// LanIP field reflects the resolved address when one is set, so every
+// consumer (stream URL, WebUI, MQTT, webhooks) agrees on where the
+// camera is.
 func (c *Camera) GetInfo() wyzeapi.CameraInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.Info
+	return c.info()
+}
+
+// info is GetInfo without the lock, for callers that already hold it.
+func (c *Camera) info() wyzeapi.CameraInfo {
+	info := c.Info
+	if c.lanIP != "" {
+		info.LanIP = c.lanIP
+	}
+	return info
+}
+
+// LanIPs returns the address the Wyze cloud reports and the one the
+// LAN resolver verified ("" when none, or when they agree).
+func (c *Camera) LanIPs() (cloud, resolved string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Info.LanIP, c.lanIP
+}
+
+// SetLanIP records (or with "" clears) the resolver-verified address.
+// A value equal to the cloud IP is stored as "" since there is nothing
+// to override. Returns true when the effective address — what GetInfo
+// and StreamURL report — actually changed.
+func (c *Camera) SetLanIP(ip string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	before := c.info().LanIP
+	if ip == c.Info.LanIP {
+		ip = ""
+	}
+	c.lanIP = ip
+	return c.info().LanIP != before
 }
 
 // GetQuality returns the current quality setting under RLock.
@@ -247,7 +289,7 @@ func (c *Camera) Snapshot() Snapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return Snapshot{
-		Info:        c.Info,
+		Info:        c.info(),
 		State:       c.State,
 		Quality:     c.Quality,
 		AudioOn:     c.AudioOn,
@@ -269,7 +311,8 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 		"model":        c.Info.Model,
 		"model_name":   c.Info.ModelName(),
 		"mac":          c.Info.MAC,
-		"ip":           c.Info.LanIP,
+		"ip":           c.info().LanIP,
+		"cloud_ip":     c.Info.LanIP,
 		"state":        c.State.String(),
 		"quality":      c.Quality,
 		"audio":        c.AudioOn,
