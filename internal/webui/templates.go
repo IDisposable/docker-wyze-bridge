@@ -52,6 +52,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		State       string
 		Video       string // live | idle | no_video | unknown (see camera.Video)
 		VideoTitle  string // tooltip: last error / last video time
+		Rotation    int    // view rotation in degrees from the layout
 		Quality     string
 		IP          string
 		Recording   bool
@@ -85,6 +86,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 			State:      snap.State.String(),
 			Video:      snap.Video.String(),
 			VideoTitle: videoTitle(snap),
+			Rotation:   layout.Rotation[name],
 			Quality:    snap.Quality,
 			IP:         snap.Info.LanIP,
 			Recording:  recording,
@@ -165,6 +167,7 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"State":      snap.State.String(),
 		"Video":      snap.Video.String(),
 		"VideoTitle": videoTitle(snap),
+		"Rotation":   s.rotationFor(name),
 		"LastVideo":  formatWhen(snap.LastVideo),
 		"LastError":  formatError(snap),
 		"Quality":    snap.Quality,
@@ -283,7 +286,8 @@ const indexHTML = `<!DOCTYPE html>
         {{range .Cameras}}
             <div class="camera-card" data-cam="{{.Name}}" data-state="{{.State}}" data-search="{{.Nickname}} {{.ModelName}} {{.Model}} {{.IP}}">
                 <span class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
-                <div class="camera-preview">
+                <button type="button" class="rotate-btn" data-cam="{{.Name}}" title="Rotate the picture a quarter turn (this page only)" aria-label="Rotate picture">⟳</button>
+                <div class="camera-preview" data-rot="{{.Rotation}}">
                     {{if eq .State "streaming"}}
                     <video-rtc src="{{.Go2RTCURL}}" data-poster="{{.SnapshotURL}}" muted></video-rtc>
                     {{else}}
@@ -356,7 +360,7 @@ const cameraHTML = `<!DOCTYPE html>
         </nav>
     </header>
     <main class="camera-detail">
-        <div class="player-container">
+        <div class="player-container" data-rot="{{.Rotation}}">
             <video-rtc src="{{.Go2RTCURL}}"></video-rtc>
         </div>
         <div class="camera-meta">

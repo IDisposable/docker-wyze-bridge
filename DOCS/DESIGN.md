@@ -367,7 +367,7 @@ Filtered-out cameras are never added to go2rtc and never appear in MQTT or WebUI
 
 #### 5.3.2a Dashboard layout (`internal/webui/layout.go`, 4.6+)
 
-The tile order and lock flag are server-side (`StateFile.Layout`), not a browser preference, so every device shows the same grid. `orderCameras` renders listed cameras first in saved order and the rest by name; names in the saved order that no longer exist are skipped. The dashboard drags tiles with pointer events from a ⠿ handle that only exists while the grid is in arranging mode, PUTs the full order after each drop, and the lock button PUTs `locked`. Unknown names are kept on PUT so an offline camera keeps its slot.
+The tile order and lock flag are server-side (`StateFile.Layout`), not a browser preference, so every device shows the same grid. `orderCameras` renders listed cameras first in saved order and the rest by name; names in the saved order that no longer exist are skipped. The dashboard drags tiles with pointer events from a ⠿ handle that only exists while the grid is in arranging mode, PUTs the full order after each drop, and the lock button PUTs `locked`. Unknown names are kept on PUT so an offline camera keeps its slot. The layout also carries a per-camera view `rotation` (quarter turns only; 0 is dropped) that the ⟳ button sets while arranging; it's a CSS transform on the tile and the detail player, never a change to the stream.
 
 #### 5.3.3 Per-Camera Overrides
 
@@ -489,8 +489,8 @@ POST /api/cameras/{name}/snapshot Force capture to SNAPSHOT_PATH
 POST /api/cameras/{name}/ignore   Drop the camera + remember its MAC (persisted; see 5.3.2)
 GET  /api/ignored                JSON: the ignore list
 POST /api/ignored/{mac}/restore  Take a MAC off the ignore list + rediscover (async)
-GET  /api/layout                 {"order":[names...],"locked":bool} — dashboard tile arrangement
-PUT  /api/layout                 Replace it (POST accepted too); persisted in the state file
+GET  /api/layout                 {"order":[names...],"locked":bool,"rotation":{name:deg}} — dashboard tile arrangement
+PUT  /api/layout                 Replace it (POST accepted too); persisted in the state file. rotation: 0/90/180/270, view only
 
 POST /api/discover               Re-poll Wyze API for added/removed cameras (202 + async)
 

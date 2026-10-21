@@ -174,3 +174,84 @@ func TestRenderIndex_UsesLayoutOrderAndLock(t *testing.T) {
 		t.Error("without a layout, cards should be in name order")
 	}
 }
+
+func TestHandleAPILayout_Rotation(t *testing.T) {
+	// Only quarter turns are stored (0 is dropped), the persisted map is
+	// a separate copy, bad angles change nothing, and a PUT without
+	// rotation clears it since the UI always sends the whole layout.
+	srv, _ := testServer(t)
+	var saved []wyzeapi.Layout
+	srv.OnLayoutChange(func(l wyzeapi.Layout) { saved = append(saved, l) })
+
+	// Valid quarter turns are kept; 0 is dropped (it means not rotated).
+	w := httptest.NewRecorder()
+	srv.handleAPILayout(w, httptest.NewRequest("PUT", "/api/layout", bytes.NewBufferString(`{"order":["a"],"locked":false,"rotation":{"garage":90,"porch":270,"yard":0,"":180}}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	got := srv.Layout()
+	if len(got.Rotation) != 2 || got.Rotation["garage"] != 90 || got.Rotation["porch"] != 270 {
+		t.Errorf("rotation = %v", got.Rotation)
+	}
+	if srv.rotationFor("garage") != 90 || srv.rotationFor("nope") != 0 {
+		t.Error("rotationFor should read the saved value, 0 when unset")
+	}
+	if len(saved) != 1 || saved[0].Rotation["garage"] != 90 {
+		t.Errorf("persist hook got %+v", saved)
+	}
+	// The stored map is detached from the hook's copy.
+	saved[0].Rotation["garage"] = 180
+	if srv.rotationFor("garage") != 90 {
+		t.Error("layout store aliased the persisted map")
+	}
+
+	// Anything but a quarter turn is rejected and changes nothing.
+	for _, body := range []string{`{"order":[],"rotation":{"garage":45}}`, `{"order":[],"rotation":{"garage":-90}}`, `{"order":[],"rotation":{"garage":360}}`} {
+		w := httptest.NewRecorder()
+		srv.handleAPILayout(w, httptest.NewRequest("PUT", "/api/layout", bytes.NewBufferString(body)))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", body, w.Code)
+		}
+	}
+	if srv.rotationFor("garage") != 90 {
+		t.Error("rejected body must not change the stored rotation")
+	}
+
+	// A PUT without rotation clears it (the UI always sends the full layout).
+	w = httptest.NewRecorder()
+	srv.handleAPILayout(w, httptest.NewRequest("PUT", "/api/layout", bytes.NewBufferString(`{"order":["a"],"locked":true}`)))
+	if w.Code != http.StatusOK || len(srv.Layout().Rotation) != 0 {
+		t.Errorf("rotation should be cleared: %v", srv.Layout().Rotation)
+	}
+	if !strings.Contains(w.Body.String(), `"locked":true`) || strings.Contains(w.Body.String(), `"rotation"`) {
+		t.Errorf("empty rotation should be omitted from JSON: %s", w.Body.String())
+	}
+}
+
+func TestRenderIndexAndDetail_Rotation(t *testing.T) {
+	// Each card gets a rotate button and its preview carries the saved
+	// rotation (0 when unset). The detail player carries it too.
+	srv, _ := testServer(t)
+	injectStreamingCamera(srv, "garage")
+	injectStreamingCamera(srv, "porch")
+	srv.SetLayout(wyzeapi.Layout{Rotation: map[string]int{"garage": 180}})
+
+	w := httptest.NewRecorder()
+	srv.handleIndex(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, `class="rotate-btn" data-cam="garage"`) {
+		t.Error("card lacks its rotate button")
+	}
+	if !strings.Contains(body, `data-rot="180"`) {
+		t.Error("garage preview should carry its rotation")
+	}
+	if strings.Count(body, `data-rot="0"`) != 1 {
+		t.Errorf("porch preview should carry rotation 0; count = %d", strings.Count(body, `data-rot="0"`))
+	}
+
+	w = httptest.NewRecorder()
+	srv.handleCameraPage(w, httptest.NewRequest("GET", "/camera/garage", nil))
+	if !strings.Contains(w.Body.String(), `class="player-container" data-rot="180"`) {
+		t.Error("detail player should carry the rotation")
+	}
+}

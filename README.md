@@ -186,6 +186,13 @@ handles, so a stray touch on a phone can't shuffle it. The order is
 saved in the bridge's state file, not the browser, so every device
 sees the same grid; new cameras land at the end in name order.
 
+While arranging, the ⟳ button on a tile turns its picture a quarter
+turn per click, for cameras mounted sideways or upside down. That's a
+view rotation: it applies to the tile and the detail page and is saved
+with the layout, but the stream the camera sends (RTSP, HLS, Home
+Assistant) is untouched. To flip the stream itself use the camera's
+own flip settings (see the detail page).
+
 ### What the badges mean
 
 The green `streaming` badge means go2rtc accepted the stream; it says

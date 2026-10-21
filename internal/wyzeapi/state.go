@@ -30,17 +30,27 @@ type StateFile struct {
 }
 
 // Layout is the operator's dashboard arrangement: camera names in
-// display order (cameras not listed follow, by name) and whether the
-// tiles are locked against dragging.
+// display order (cameras not listed follow, by name), whether the
+// tiles are locked against dragging, and a per-camera view rotation
+// in degrees (0, 90, 180, 270) for cameras mounted sideways or upside
+// down. Rotation only turns the picture in the WebUI; the stream the
+// camera sends is untouched.
 type Layout struct {
-	Order  []string `json:"order"`
-	Locked bool     `json:"locked"`
+	Order    []string       `json:"order"`
+	Locked   bool           `json:"locked"`
+	Rotation map[string]int `json:"rotation,omitempty"`
 }
 
 // SetLayout replaces the layout under the same lock Save uses.
 func (sf *StateFile) SetLayout(l Layout) {
 	sf.writeMu.Lock()
 	cp := Layout{Order: append([]string(nil), l.Order...), Locked: l.Locked}
+	if len(l.Rotation) > 0 {
+		cp.Rotation = make(map[string]int, len(l.Rotation))
+		for k, v := range l.Rotation {
+			cp.Rotation[k] = v
+		}
+	}
 	sf.Layout = &cp
 	sf.writeMu.Unlock()
 }

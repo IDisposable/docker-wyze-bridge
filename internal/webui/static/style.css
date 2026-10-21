@@ -344,6 +344,36 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; }
     user-select: none;
 }
 .camera-grid.arranging .camera-card { outline: 1px dashed var(--border); outline-offset: 3px; }
+
+/* Rotate button: sits just right of the handle, also only while
+   arranging, so the badges keep their corners. */
+.rotate-btn { display: none; }
+.camera-grid.arranging .rotate-btn {
+    display: block;
+    position: absolute;
+    top: 0.4rem;
+    left: calc(50% + 1.5rem);
+    z-index: 5;
+    padding: 0.1rem 0.5rem;
+    border: none;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 1rem;
+    line-height: 1.5;
+    cursor: pointer;
+}
+.camera-grid.arranging .rotate-btn:hover { background: var(--accent-bright); }
+
+/* View rotation. A quarter turn of a 16:9 picture inside a 16:9 box
+   has to shrink by 9/16 to fit, which leaves bars on the sides; a
+   half turn fits as-is. Picture only — the stream is not touched. */
+.camera-preview[data-rot="90"] video-rtc, .camera-preview[data-rot="90"] img,
+.player-container[data-rot="90"] video-rtc { transform: rotate(90deg) scale(0.5625); }
+.camera-preview[data-rot="180"] video-rtc, .camera-preview[data-rot="180"] img,
+.player-container[data-rot="180"] video-rtc { transform: rotate(180deg); }
+.camera-preview[data-rot="270"] video-rtc, .camera-preview[data-rot="270"] img,
+.player-container[data-rot="270"] video-rtc { transform: rotate(270deg) scale(0.5625); }
 .camera-card.dragging { opacity: 0.5; outline: 2px dashed var(--accent-bright); }
 
 .no-cameras {
