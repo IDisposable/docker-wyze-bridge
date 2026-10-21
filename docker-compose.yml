@@ -101,6 +101,16 @@ services:
             # lifetime. 0 disables. See MIGRATION.md → Known Issues.
             # - TUTK_FALLBACK_THRESHOLD=5
 
+            # ── LAN IP verification (4.6+) ───────────────────────
+            # The Wyze cloud's idea of a camera's IP can lag a DHCP
+            # change by hours. Before go2rtc dials a TUTK camera the
+            # bridge checks by MAC (ARP) where it really is, and
+            # re-checks streaming cameras every LAN_IP_RECHECK.
+            # Needs network_mode: host + CAP_NET_RAW (Docker default).
+            # - LAN_IP_RESOLVE=true
+            # - LAN_IP_SWEEP=true                  # last-resort ARP sweep of the subnet
+            # - LAN_IP_RECHECK=2m                  # 0 disables the periodic re-check
+
             # ── Recording (disabled by default) ──────────────────
             # RECORD_ALL=true records every camera. Per-camera
             # opt-in via RECORD_{CAM_NAME}=true above.
