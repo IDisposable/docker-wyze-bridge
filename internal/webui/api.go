@@ -3,11 +3,13 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -231,6 +233,34 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 		// rootCtx: the reconnect outlives this request.
 		go s.camMgr.RestartStream(s.rootCtx, name)
 		writeJSON(w, map[string]string{"status": "ok"})
+
+	case action == "pin" && r.Method == "POST":
+		// Pin the camera's LAN address: body {"ip":"192.168.4.151"};
+		// an empty ip unpins. Persisted by MAC; see camera.PinLanIP.
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		effective, err := s.camMgr.PinLanIP(s.rootCtx, name, body.IP)
+		switch {
+		case errors.Is(err, camera.ErrBadPinIP), errors.Is(err, camera.ErrNotLANCamera):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		case err != nil:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			msg := "address pinned to " + body.IP
+			if strings.TrimSpace(body.IP) == "" {
+				msg = "address unpinned (now " + effective + ")"
+			}
+			evLog.Record(Event{Kind: "lan_ip", Camera: name, Message: msg})
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "ip": effective, "pinned_ip": cam.PinnedIP()})
 
 	case action == "ignore" && r.Method == "POST":
 		// Drops the camera from the registry for good (persisted by

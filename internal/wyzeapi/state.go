@@ -23,8 +23,12 @@ type StateFile struct {
 	Ignored []IgnoredCamera `json:"ignored,omitempty"`
 	// Layout is the dashboard's tile order and lock, edited from the
 	// WebUI and kept here so every browser sees the same arrangement.
-	Layout  *Layout   `json:"layout,omitempty"`
-	Updated time.Time `json:"updated"`
+	Layout *Layout `json:"layout,omitempty"`
+	// PinnedIPs are operator-set LAN addresses keyed by MAC, for TUTK
+	// cameras the resolver can't reach (another VLAN, say). A pin wins
+	// over both the cloud's address and the resolver's.
+	PinnedIPs map[string]string `json:"pinned_ips,omitempty"`
+	Updated   time.Time         `json:"updated"`
 
 	writeMu sync.Mutex
 }
@@ -52,6 +56,21 @@ func (sf *StateFile) SetLayout(l Layout) {
 		}
 	}
 	sf.Layout = &cp
+	sf.writeMu.Unlock()
+}
+
+// SetPinnedIPs replaces the pinned addresses under the same lock Save
+// uses. An empty map clears the field from the file.
+func (sf *StateFile) SetPinnedIPs(pins map[string]string) {
+	sf.writeMu.Lock()
+	if len(pins) == 0 {
+		sf.PinnedIPs = nil
+	} else {
+		sf.PinnedIPs = make(map[string]string, len(pins))
+		for k, v := range pins {
+			sf.PinnedIPs[k] = v
+		}
+	}
 	sf.writeMu.Unlock()
 }
 

@@ -209,6 +209,52 @@
         });
     }
 
+    // Pin / unpin a camera's LAN address from the detail page's Network
+    // box. POST /api/cameras/{name}/pin with {"ip": "..."}; an empty ip
+    // clears the pin. The reply carries the effective address.
+    function wirePinForms() {
+        document.querySelectorAll('.pin-form').forEach(function(form) {
+            const cam = form.getAttribute('data-cam');
+            const input = form.querySelector('.pin-ip');
+            const unpin = form.querySelector('.unpin-btn');
+            const send = function(ip) {
+                form.classList.remove('failed', 'saved');
+                input.title = '';
+                return fetch(B + '/api/cameras/' + cam + '/pin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip: ip })
+                })
+                    .then(function(resp) {
+                        return resp.json().then(function(data) {
+                            if (!resp.ok) throw new Error(data.error || (resp.status + ' ' + resp.statusText));
+                            return data;
+                        });
+                    })
+                    .then(function(data) {
+                        input.value = data.pinned_ip || '';
+                        if (unpin) unpin.hidden = !data.pinned_ip;
+                        document.querySelectorAll('.cam-ip[data-cam="' + cam + '"]').forEach(function(el) { el.textContent = data.ip; });
+                        form.classList.add('saved');
+                        setTimeout(function() { form.classList.remove('saved'); }, 1500);
+                    })
+                    .catch(function(err) {
+                        console.error('Pin failed:', err);
+                        form.classList.add('failed');
+                        input.title = String(err.message || err);
+                    });
+            };
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                send(input.value.trim());
+            });
+            if (unpin) unpin.addEventListener('click', function(e) {
+                e.preventDefault();
+                send('');
+            });
+        });
+    }
+
     // Reboot the camera itself (Wyze cloud restart), after a confirm.
     function wireRebootButtons() {
         document.querySelectorAll('.reboot-btn').forEach(function(btn) {
@@ -624,6 +670,7 @@
         wireRestoreButtons();
         wirePropertyButtons();
         wireRebootButtons();
+        wirePinForms();
         wireLockButton();
         wireDragHandles();
         wireRotateButtons();
