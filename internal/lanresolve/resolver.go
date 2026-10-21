@@ -71,6 +71,13 @@ type Target struct {
 	MAC     string // as the Wyze cloud reports it; any spelling
 	CloudIP string // LAN IP from the Wyze cloud; may be empty
 	LastIP  string // last address that verified, if any; may be empty
+	// NoSweep skips the paced sweep: probes and caches only. For a
+	// camera that verified at its address a little while ago and has
+	// gone quiet, which on Wi-Fi means dozing, not moved. A sweep is
+	// hundreds of ARP requests addressed to the camera's MAC, and on a
+	// camera that's already struggling to keep its stream up that
+	// airtime is enough to finish the stream off.
+	NoSweep bool
 }
 
 // Result is the resolver's answer. IP is always set when CloudIP was —
@@ -254,7 +261,7 @@ func (r *Resolver) Resolve(ctx context.Context, t Target) Result {
 	// giving up, so when several cameras come up missing together they
 	// each get their sweep in one pass; one inside its own backoff
 	// doesn't.
-	if r.cfg.Sweep && ctx.Err() == nil {
+	if r.cfg.Sweep && !t.NoSweep && ctx.Err() == nil {
 		ifaces, err := r.ifaces()
 		if err == nil {
 			hints := []net.IP{net.ParseIP(t.CloudIP), net.ParseIP(t.LastIP)}

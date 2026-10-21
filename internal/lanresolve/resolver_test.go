@@ -685,3 +685,29 @@ func TestResolve_MissesCountOwnSweepsOnly(t *testing.T) {
 		t.Errorf("no sweeps at all: %+v", res)
 	}
 }
+
+func TestResolve_NoSweepStopsAtTheCheapRungs(t *testing.T) {
+	// A camera that was heard from a few minutes ago and has gone quiet
+	// is dozing: probe its addresses and read the caches, but don't fire
+	// a sweep's worth of ARP at it.
+	p := newFakeProber(map[string]string{"10.0.0.140": camNrm})
+	r, _ := testResolver(t, p, true)
+	tg := target("10.0.0.123", "")
+	tg.NoSweep = true
+	res := r.Resolve(context.Background(), tg)
+	if res.Verified || res.IP != "10.0.0.123" {
+		t.Errorf("res = %+v, want unverified at the cloud IP", res)
+	}
+	if p.sweepCount() != 0 {
+		t.Errorf("swept %d times with NoSweep", p.sweepCount())
+	}
+	if len(p.probes) == 0 {
+		t.Error("the cloud address should still be probed")
+	}
+
+	// Same camera without the flag sweeps and finds it.
+	res = r.Resolve(context.Background(), target("10.0.0.123", ""))
+	if !res.Verified || res.IP != "10.0.0.140" || p.sweepCount() != 1 {
+		t.Errorf("without NoSweep: %+v sweeps=%d", res, p.sweepCount())
+	}
+}
