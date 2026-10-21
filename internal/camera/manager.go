@@ -196,7 +196,7 @@ func (m *Manager) Discover(ctx context.Context) error {
 	var added []*Camera
 
 	for _, info := range filtered {
-		name := info.NormalizedName()
+		name := registryName(info)
 		seen[name] = true
 
 		if existing, ok := m.cameras[name]; ok {
@@ -484,6 +484,17 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 	}
 }
 
+// registryName is the key a discovered camera gets in m.cameras: the
+// Name discovery assigned, which wyzeapi.DisambiguateNames has already
+// made unique across the account. Infos built without one (tests,
+// older callers) fall back to the plain normalized nickname.
+func registryName(info wyzeapi.CameraInfo) string {
+	if info.Name != "" {
+		return info.Name
+	}
+	return info.NormalizedName()
+}
+
 // reapRenameOrphans removes m.cameras entries whose MAC matches a
 // just-discovered camera under a different normalized name (i.e. the
 // user renamed the camera in the Wyze app). Without this, the old
@@ -499,7 +510,7 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 		if info.MAC == "" {
 			continue
 		}
-		newByMAC[info.MAC] = info.NormalizedName()
+		newByMAC[info.MAC] = registryName(info)
 	}
 	for oldName, existing := range m.cameras {
 		info := existing.GetInfo()

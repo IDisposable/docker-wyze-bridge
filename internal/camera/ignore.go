@@ -183,7 +183,7 @@ func (m *Manager) dropIgnored(cameras []wyzeapi.CameraInfo) []wyzeapi.CameraInfo
 			entry.Nickname, entry.Model = cam.Nickname, cam.Model
 			m.ignored[mac] = entry
 		}
-		m.log.Debug().Str("cam", cam.NormalizedName()).Str("mac", mac).Msg("skipping ignored camera")
+		m.log.Debug().Str("cam", cam.Name).Str("mac", mac).Msg("skipping ignored camera")
 	}
 	return kept
 }
