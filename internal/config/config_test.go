@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -159,5 +160,25 @@ func TestLoadLanIPDefaultsAndOverrides(t *testing.T) {
 	cfg, _ = Load()
 	if !cfg.LanIPResolve {
 		t.Error("unparseable LAN_IP_RESOLVE should fall back to the default (true)")
+	}
+}
+
+func TestLoadLanIPRecheck(t *testing.T) {
+	// LAN_IP_RECHECK defaults to 2m, takes a Go duration like 30s, and 0
+	// turns the periodic recheck of streaming cameras off.
+	t.Setenv("LAN_IP_RECHECK", "")
+	cfg, _ := Load()
+	if cfg.LanIPRecheck != 2*time.Minute {
+		t.Errorf("LanIPRecheck default = %v, want 2m", cfg.LanIPRecheck)
+	}
+	t.Setenv("LAN_IP_RECHECK", "0")
+	cfg, _ = Load()
+	if cfg.LanIPRecheck != 0 {
+		t.Errorf("LAN_IP_RECHECK=0 should disable, got %v", cfg.LanIPRecheck)
+	}
+	t.Setenv("LAN_IP_RECHECK", "30s")
+	cfg, _ = Load()
+	if cfg.LanIPRecheck != 30*time.Second {
+		t.Errorf("LAN_IP_RECHECK=30s parsed as %v", cfg.LanIPRecheck)
 	}
 }

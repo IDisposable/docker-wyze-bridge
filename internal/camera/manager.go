@@ -282,6 +282,14 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		m.resolveLanIP(ctx, cam)
 	}
 
+	m.registerStream(ctx, go2rtc, cam)
+}
+
+// registerStream is the go2rtc half of connectCamera: hand the stream
+// source to go2rtc and move the camera to Streaming (or Error). Split
+// out so the LAN IP recheck can re-register a camera whose address
+// moved without re-running the resolver it just ran.
+func (m *Manager) registerStream(ctx context.Context, go2rtc *go2rtcmgr.APIClient, cam *Camera) {
 	streamURL, protocol := m.streamSourceFor(cam)
 	snap := cam.Snapshot()
 
@@ -425,6 +433,15 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 	reconnectTicker := time.NewTicker(10 * time.Second)
 	defer reconnectTicker.Stop()
 
+	// LAN IP recheck is optional (LAN_IP_RECHECK=0 disables); a nil
+	// channel never fires in the select below.
+	var recheckC <-chan time.Time
+	if m.cfg.LanIPRecheck > 0 {
+		recheckTicker := time.NewTicker(m.cfg.LanIPRecheck)
+		defer recheckTicker.Stop()
+		recheckC = recheckTicker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -438,6 +455,8 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 			m.HealthCheck(ctx)
 		case <-reconnectTicker.C:
 			m.reconnectErrored(ctx)
+		case <-recheckC:
+			m.RecheckLanIPs(ctx)
 		}
 	}
 }

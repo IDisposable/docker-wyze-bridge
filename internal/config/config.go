@@ -70,9 +70,12 @@ type Config struct {
 	// LAN (by MAC, via ARP) before go2rtc dials it, because the Wyze
 	// cloud's idea of a camera's IP can lag a DHCP change by hours.
 	// LanIPSweep allows the last-resort subnet sweep when nothing
-	// cheaper finds a camera that moved. See internal/lanresolve.
+	// cheaper finds a camera that moved. LanIPRecheck is how often
+	// streaming cameras are re-verified so a mid-run address change is
+	// caught without a restart; zero disables. See internal/lanresolve.
 	LanIPResolve bool
 	LanIPSweep   bool
+	LanIPRecheck time.Duration
 
 	// Recording
 	RecordAll      bool
@@ -192,6 +195,7 @@ func Load() (*Config, error) {
 		// no usable engine the cloud IP is used as before.
 		LanIPResolve: envBool("LAN_IP_RESOLVE", true),
 		LanIPSweep:   envBool("LAN_IP_SWEEP", true),
+		LanIPRecheck: envDuration("LAN_IP_RECHECK", 2*time.Minute),
 
 		// Recording — default under /media/recordings so bare-Docker
 		// users can mount a single host directory at /media and get

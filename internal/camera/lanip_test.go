@@ -350,3 +350,244 @@ func TestSetQuality_KeepsResolvedIP(t *testing.T) {
 		t.Errorf("after SetQuality go2rtc got %q", src)
 	}
 }
+
+// --- periodic recheck ---------------------------------------------------
+
+func (s *scriptedResolver) checkCalls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.checks...)
+}
+
+// setResult swaps the scripted answer between phases of a test.
+func (s *scriptedResolver) setResult(res lanresolve.Result, checkOK bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.result = res
+	s.checkOK = checkOK
+}
+
+// streamingV3 registers a camera through the normal connect path so it
+// sits in StateStreaming with a go2rtc entry, exactly as in production.
+func streamingV3(t *testing.T, mgr *Manager, name, ip string) *Camera {
+	t.Helper()
+	cam := newV3(name, ip)
+	mgr.cameras[name] = cam
+	mgr.connectCamera(context.Background(), cam)
+	if cam.GetState() != StateStreaming {
+		t.Fatalf("%s: state = %v after connect", name, cam.GetState())
+	}
+	return cam
+}
+
+func TestRecheckLanIPs_StillAnswering_NothingHappens(t *testing.T) {
+	// A streaming camera that still answers at its address costs one
+	// Check: no resolve, and its go2rtc stream is left as it was.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: true}
+	mgr, srcOf := newLanIPTestManager(t, r)
+	cam := streamingV3(t, mgr, "side_garage", "192.168.4.151")
+	before := srcOf("side_garage")
+	resolves := len(r.resolveCalls())
+
+	mgr.RecheckLanIPs(context.Background())
+
+	if got := r.checkCalls(); len(got) != 1 || got[0] != "192.168.4.151" {
+		t.Errorf("checks = %v, want one for the current address", got)
+	}
+	if len(r.resolveCalls()) != resolves {
+		t.Error("a camera that still answers must not be re-resolved")
+	}
+	if srcOf("side_garage") != before || cam.GetState() != StateStreaming {
+		t.Error("stream should be untouched")
+	}
+}
+
+func TestRecheckLanIPs_Moved_ReRegistersWithNewAddress(t *testing.T) {
+	// A camera that took a new lease mid-run is re-registered with go2rtc
+	// at the new address without flapping its state, and the next
+	// recheck probes the corrected address.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: true}
+	mgr, srcOf := newLanIPTestManager(t, r)
+	cam := streamingV3(t, mgr, "side_garage", "192.168.4.123")
+	if src := srcOf("side_garage"); !strings.HasPrefix(src, "wyze://192.168.4.123?") {
+		t.Fatalf("setup: go2rtc has %q", src)
+	}
+
+	var changes []string
+	mgr.OnLanIPChange(func(c *Camera, oldIP, newIP, source string) {
+		changes = append(changes, oldIP+">"+newIP+":"+source)
+	})
+	var states []State
+	mgr.OnStateChange(func(_ *Camera, _, newState State) { states = append(states, newState) })
+
+	// The camera took a new lease: it no longer answers at .123 and the
+	// resolver finds it at .151.
+	r.setResult(lanresolve.Result{IP: "192.168.4.151", Verified: true, Source: "sweep"}, false)
+	mgr.RecheckLanIPs(context.Background())
+
+	if src := srcOf("side_garage"); !strings.HasPrefix(src, "wyze://192.168.4.151?") {
+		t.Errorf("go2rtc should have been re-registered with .151, has %q", src)
+	}
+	if len(changes) != 1 || changes[0] != "192.168.4.123>192.168.4.151:sweep" {
+		t.Errorf("changes = %v", changes)
+	}
+	if cam.GetState() != StateStreaming {
+		t.Errorf("state = %v, want streaming", cam.GetState())
+	}
+	if len(states) != 0 {
+		t.Errorf("re-registration should not flap the state machine, saw %v", states)
+	}
+	// The next recheck uses the corrected address.
+	r.setResult(lanresolve.Result{Verified: true, Source: "cloud"}, true)
+	mgr.RecheckLanIPs(context.Background())
+	if got := r.checkCalls(); got[len(got)-1] != "192.168.4.151" {
+		t.Errorf("recheck after move asked about %s, want 192.168.4.151", got[len(got)-1])
+	}
+}
+
+func TestRecheckLanIPs_NotAnsweringAndNotFound_LeftAlone(t *testing.T) {
+	// Battery camera asleep, or the camera is simply off: Check fails,
+	// the resolver comes back unverified, and nothing changes — no
+	// re-registration, no state flap, no callback.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: true}
+	mgr, srcOf := newLanIPTestManager(t, r)
+	cam := streamingV3(t, mgr, "yard_cam", "192.168.4.140")
+	before := srcOf("yard_cam")
+	fired := 0
+	mgr.OnLanIPChange(func(*Camera, string, string, string) { fired++ })
+
+	r.setResult(lanresolve.Result{Verified: false, Source: "unverified"}, false)
+	mgr.RecheckLanIPs(context.Background())
+
+	if srcOf("yard_cam") != before {
+		t.Error("stream re-registered although the address is unknown")
+	}
+	if fired != 0 || cam.GetState() != StateStreaming {
+		t.Errorf("fired=%d state=%v", fired, cam.GetState())
+	}
+}
+
+func TestRecheckLanIPs_SkipsNonStreamingNonTUTKAndCheckErrors(t *testing.T) {
+	// Only streaming TUTK cameras are rechecked: errored and offline
+	// cameras and WebRTC doorbells get no Check at all.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: true}
+	mgr, _ := newLanIPTestManager(t, r)
+
+	streaming := streamingV3(t, mgr, "streaming", "10.0.0.1")
+	errored := newV3("errored", "10.0.0.2")
+	errored.SetState(StateError)
+	offline := newV3("offline", "10.0.0.3")
+	doorbell := NewCamera(wyzeapi.CameraInfo{Name: "bell", Model: "GW_DBD", MAC: "GW_DBD_80482C0D6B01"}, "hd", true, false)
+	doorbell.SetState(StateStreaming)
+	for _, c := range []*Camera{errored, offline, doorbell} {
+		mgr.cameras[c.Name()] = c
+	}
+
+	mgr.RecheckLanIPs(context.Background())
+
+	if got := r.checkCalls(); len(got) != 1 || got[0] != "10.0.0.1" {
+		t.Errorf("checks = %v, want only the streaming TUTK camera", got)
+	}
+	_ = streaming
+}
+
+func TestRecheckLanIPs_NoResolverOrGo2RTC_NoOp(t *testing.T) {
+	// The recheck needs both a resolver and go2rtc. Missing either one,
+	// it returns without panicking or probing anything.
+	mgr, _ := newLanIPTestManager(t, nil)
+	streamingV3(t, mgr, "cam", "10.0.0.1")
+	mgr.RecheckLanIPs(context.Background()) // no resolver: must not panic
+
+	r := &scriptedResolver{checkOK: true}
+	mgr.SetLANResolver(r)
+	mgr.SetGo2RTCAPI(nil)
+	mgr.RecheckLanIPs(context.Background())
+	if len(r.checkCalls()) != 0 {
+		t.Error("recheck ran without go2rtc attached")
+	}
+}
+
+// erroringResolver's Check always fails, as it would with no engine.
+type erroringResolver struct{ scriptedResolver }
+
+func (e *erroringResolver) Check(context.Context, string, string) (bool, error) {
+	return false, context.DeadlineExceeded
+}
+
+func TestRecheckLanIPs_CheckError_Skips(t *testing.T) {
+	// When Check itself fails (no ARP engine, say), the camera is skipped
+	// instead of falling through to a resolve that could move it.
+	r := &erroringResolver{scriptedResolver{result: lanresolve.Result{Verified: false, Source: "unverified"}}}
+	mgr, srcOf := newLanIPTestManager(t, r)
+	streamingV3(t, mgr, "cam", "10.0.0.1")
+	resolves := len(r.resolveCalls())
+	// From here on the resolver would move the camera if it were asked.
+	r.setResult(lanresolve.Result{IP: "10.0.0.9", Verified: true, Source: "sweep"}, false)
+
+	mgr.RecheckLanIPs(context.Background())
+
+	if len(r.resolveCalls()) != resolves {
+		t.Error("a Check error should skip the camera, not resolve it")
+	}
+	if src := srcOf("cam"); !strings.HasPrefix(src, "wyze://10.0.0.1?") {
+		t.Errorf("stream changed: %q", src)
+	}
+}
+
+func TestRecheckLanIPs_ManyCamerasInParallel(t *testing.T) {
+	// The recheck fans out one goroutine per camera. All 16 cameras must
+	// get checked, and -race catches any unsafe shared state.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: true}
+	mgr, _ := newLanIPTestManager(t, r)
+	for i := 0; i < 16; i++ {
+		streamingV3(t, mgr, "cam"+string(rune('a'+i)), "10.0.0."+string(rune('1'+i%9)))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mgr.RecheckLanIPs(ctx) // -race verifies the fan-out
+	if got := len(r.checkCalls()); got != 16 {
+		t.Errorf("checks = %d, want 16", got)
+	}
+}
+
+func TestRunDiscoveryLoop_RecheckTicks(t *testing.T) {
+	// A short LAN_IP_RECHECK makes the loop call RecheckLanIPs; the
+	// scripted resolver records the Check as proof. Discovery itself
+	// fails (no Wyze API) and that's fine — the loop keeps ticking.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: true}
+	mgr, _ := newLanIPTestManager(t, r)
+	mgr.cfg.LanIPRecheck = 20 * time.Millisecond
+	streamingV3(t, mgr, "cam", "10.0.0.1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		mgr.RunDiscoveryLoop(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(r.checkCalls()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if len(r.checkCalls()) == 0 {
+		t.Error("recheck never ran from the discovery loop")
+	}
+}
+
+func TestRunDiscoveryLoop_RecheckDisabled(t *testing.T) {
+	// LAN_IP_RECHECK=0 turns the periodic recheck off, so the discovery
+	// loop runs without ever probing a camera.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: true}
+	mgr, _ := newLanIPTestManager(t, r)
+	mgr.cfg.LanIPRecheck = 0
+	streamingV3(t, mgr, "cam", "10.0.0.1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	mgr.RunDiscoveryLoop(ctx)
+	if len(r.checkCalls()) != 0 {
+		t.Error("LAN_IP_RECHECK=0 should disable the recheck ticker")
+	}
+}
