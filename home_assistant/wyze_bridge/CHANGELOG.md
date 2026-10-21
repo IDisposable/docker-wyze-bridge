@@ -1,5 +1,92 @@
 # Changelog
 
+## 4.7.0
+
+Cameras that moved on the LAN, a WebUI that tells the truth about
+video, and a dashboard you can arrange and tune. The Wyze cloud only
+knows a camera's IP from the last time it phoned home; after a DHCP
+change the bridge kept dialing the old address while the card said
+"streaming". The bridge now checks the LAN itself.
+
+- **LAN IP resolver** (`internal/lanresolve`): before a TUTK camera
+	is handed to go2rtc, its MAC is verified over ARP at the cloud's
+	IP, the last good IP, anything the kernel's neighbor cache or an
+	earlier sweep already tied to it, and finally a paced sweep of the
+	subnet (capped at a `/22`, backed off per camera). Streaming
+	cameras are re-verified every `LAN_IP_RECHECK` (default `2m`) and
+	re-registered when they move. ARP requests go unicast to the
+	camera's MAC and seed the kernel's neighbor cache, because V3s in
+	Wi-Fi power save sleep through broadcasts (which is also why
+	go2rtc's own dials timed out on cameras that were right there).
+	Needs `CAP_NET_RAW` (Docker default) for ARP; falls back to the
+	kernel neighbor cache without it. New env vars `LAN_IP_RESOLVE`,
+	`LAN_IP_SWEEP`, `LAN_IP_RECHECK`, also in the add-on's **camera**
+	section.
+- **Network box** on the detail page: what the cloud reported, how and
+	when the bridge verified the camera (cloud address, last known,
+	neighbor cache, sweep), how many sweeps missed it, which engine is
+	running. Same fields in `/api/cameras` (`lan_ip_source`,
+	`lan_ip_verified_at`, `lan_sweep_misses`, `lan_absent`).
+- **Pinned address**: for a camera ARP can't reach, type its address
+	in the Network box and Pin it. Beats the cloud and the resolver,
+	kept by MAC in the state file. `POST /api/cameras/{name}/pin`.
+- **Honest video status**: a second badge per camera — `live` /
+	`idle` / `no video` — from go2rtc's producer byte counters, its
+	`stream=` warnings, and the error frames it sends dashboard players
+	(read off the bridge's websocket proxy). Last go2rtc error on the detail page and in
+	`/api/cameras` (`video`, `last_video`, `last_error`,
+	`last_error_at`); a TUTK `discovery timeout` triggers an immediate
+	LAN IP recheck.
+- **Dashboard players that recover**: tiles start a moment apart and
+	ask for one MSE stream each instead of WebRTC and MSE at once; a
+	player whose picture stops moving reconnects by itself, backing
+	off for a camera that keeps failing. A stream whose connection is
+	up but silent (a V3 that dropped off Wi-Fi mid-stream) is
+	restarted by the bridge, at most every two minutes, and its
+	players sent to reconnect. Tiles keep 2.5s buffered and skip past
+	the holes go2rtc leaves when it drops a frame with lost packets.
+- A camera heard from in the last 30 minutes that goes quiet is no
+	longer swept for (hundreds of ARP requests at a dozing camera were
+	knocking it off the bridge for minutes).
+- **go2rtc kept alive**: if go2rtc exits on its own the bridge logs
+	why (the crash dump used to be dropped), starts it again with a
+	backoff and puts every stream back. Calls that change go2rtc's
+	stream table now go one at a time, since go2rtc doesn't lock that
+	table when it lists or deletes from it, and removing a camera now
+	really removes its go2rtc stream (the delete used the wrong
+	parameter and did nothing).
+- **Ignore list**: 🚫 on any card drops the camera, retracts its HA
+	entities and remembers its MAC in the state file; restore from the
+	strip at the bottom of the dashboard. A card two LAN sweeps in a
+	row couldn't hear shows a "Not on this LAN?" note with the same
+	button. `GET /api/ignored`, `POST /api/cameras/{name}/ignore`,
+	`POST /api/ignored/{mac}/restore`.
+- **Settings page** with camera rules: network scope (any address, or
+	local subnets only so another house's cameras are skipped by
+	address), extra CIDRs, and name (`*` wildcard) / MAC / model lists
+	in block or allow mode. Saved in the state file, applied right
+	away, excluded cameras listed with the reason on the dashboard.
+	The `FILTER_*` env vars still run first. `GET`/`PUT /api/settings`,
+	`GET /api/excluded`.
+- **Video quality per camera** on the Settings page (and the detail
+	page's HD / SD buttons, MQTT, the API): saved in the state file and
+	winning over `QUALITY_<CAM>` / `QUALITY`, applied with one stream
+	restart. Changing quality on a doorbell no longer breaks its
+	stream.
+- **Arrange, lock and rotate tiles**: drag the ⠿ handle, rotate a
+	sideways camera's picture with ⟳ (view only), lock the grid. Saved
+	in the state file (`GET`/`PUT /api/layout`).
+- **Camera controls** on the detail page: flip horizontal/vertical,
+	night vision auto/on/off, reboot — via the Wyze cloud, mirrored to
+	the MQTT state topics so HA agrees. `POST
+	/api/cameras/{name}/property`, `POST /api/cameras/{name}/reboot`.
+- **WebUI restyle**: light/dark (follows the OS, ◐ to override),
+	header chips, filter box, 16:9 tiles. No new dependencies.
+- Cameras sharing a nickname get `_` + the last four of their MAC
+	instead of collapsing into one entry.
+- `camera_added` / `camera_removed` SSE events now actually fire, and
+	a camera dropped after a rename retracts its MQTT entities.
+
 ## 4.5.0
 
 Runtime **TUTK → WebRTC auto-fallback** for cameras Wyze crippled

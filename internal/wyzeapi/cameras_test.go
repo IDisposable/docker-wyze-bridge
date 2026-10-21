@@ -282,3 +282,114 @@ func TestFixKVSSignalingURL(t *testing.T) {
 		t.Errorf("single-encoded URL changed:\n got=%q\nwant=%q", got, single)
 	}
 }
+
+func TestDisambiguateNames(t *testing.T) {
+	// Cameras whose nicknames normalize the same all get a MAC suffix, so
+	// none keeps the bare name. The renaming has to come out the same on
+	// a second pass and in any input order, or stream names would shift.
+	cams := []CameraInfo{
+		{Nickname: "Front Porch", MAC: "D03F2700CA02"},
+		{Nickname: "Driveway", MAC: "D03F2700CA03"},
+		{Nickname: "Front Porch", MAC: "D03F2700CA01"},
+		{Nickname: "front porch", MAC: "GW_DBD_80482C0D6B01"}, // normalizes the same
+		{Nickname: "", MAC: "AABBCCDDEEFF"},                   // falls back to MAC: unique
+	}
+	for i := range cams {
+		cams[i].Name = cams[i].NormalizedName()
+	}
+	renamed := DisambiguateNames(cams)
+
+	want := map[string]string{
+		"D03F2700CA02":        "front_porch_ca02",
+		"D03F2700CA01":        "front_porch_ca01",
+		"GW_DBD_80482C0D6B01": "front_porch_6b01",
+		"D03F2700CA03":        "driveway",
+		"AABBCCDDEEFF":        "aabbccddeeff",
+	}
+	for _, c := range cams {
+		if c.Name != want[c.MAC] {
+			t.Errorf("%s: name = %q, want %q", c.MAC, c.Name, want[c.MAC])
+		}
+	}
+	if len(renamed) != 3 {
+		t.Errorf("renamed = %d entries, want 3", len(renamed))
+	}
+	// Idempotent: a second pass over already-unique names changes nothing.
+	if again := DisambiguateNames(cams); len(again) != 0 {
+		t.Errorf("second pass renamed %d", len(again))
+	}
+	// Deterministic: the same input in a different order yields the same names.
+	shuffled := []CameraInfo{cams[2], cams[0], cams[3]}
+	DisambiguateNames(shuffled)
+	for _, c := range shuffled {
+		if c.Name != want[c.MAC] {
+			t.Errorf("order-dependent: %s = %q", c.MAC, c.Name)
+		}
+	}
+}
+
+func TestMacSuffix(t *testing.T) {
+	// The suffix is the last four hex digits of the MAC in lowercase, with
+	// colons or a gateway prefix ignored. A MAC that's too short falls back
+	// to the ordinal.
+	cases := []struct {
+		mac  string
+		want string
+	}{
+		{"D03F2700CA02", "ca02"},
+		{"d0:3f:27:00:ca:02", "ca02"},
+		{"GW_DBD_80482C0D6B01", "6b01"},
+		{"AB", "7"},
+		{"", "7"},
+	}
+	for _, c := range cases {
+		if got := macSuffix(c.mac, 7); got != c.want {
+			t.Errorf("macSuffix(%q) = %q, want %q", c.mac, got, c.want)
+		}
+	}
+}
+
+func TestParsePropertyValue(t *testing.T) {
+	// Friendly values like on, off and auto map to the pvalue Wyze wants
+	// and the value to publish back on MQTT. Bad values and unknown names
+	// are refused, and every supported property has a cloud ID.
+	cases := []struct {
+		prop, raw, pvalue, publish string
+		ok                         bool
+	}{
+		{"hor_flip", "on", "1", "1", true},
+		{"hor_flip", "OFF", "2", "2", true},
+		{"ver_flip", "true", "1", "1", true},
+		{"night_vision", "auto", "3", "auto", true},
+		{"night_vision", "on", "1", "on", true},
+		{"night_vision", "off", "2", "off", true},
+		{"night_vision", "sometimes", "", "", false},
+		{"bitrate", "120", "120", "120", true},
+		{"fps", "x", "", "", false},
+		{"unknown", "on", "", "", false},
+	}
+	for _, c := range cases {
+		pv, pub, ok := ParsePropertyValue(c.prop, c.raw)
+		if pv != c.pvalue || pub != c.publish || ok != c.ok {
+			t.Errorf("ParsePropertyValue(%q, %q) = (%q, %q, %v), want (%q, %q, %v)", c.prop, c.raw, pv, pub, ok, c.pvalue, c.publish, c.ok)
+		}
+	}
+	for _, name := range []string{"hor_flip", "ver_flip", "night_vision", "irled", "status_light", "motion_detection", "motion_tagging", "bitrate", "fps"} {
+		if _, ok := CloudProperties[name]; !ok {
+			t.Errorf("CloudProperties lacks %s", name)
+		}
+	}
+}
+
+func TestSetNamedProperty_Validation(t *testing.T) {
+	// An unknown property or a bad value is rejected before anything is
+	// sent to Wyze.
+	c := NewClient(Credentials{}, "test", zerolog.Nop())
+	cam := CameraInfo{Name: "kitchen", MAC: "AABB"}
+	if _, err := c.SetNamedProperty(cam, "nope", "on"); err == nil {
+		t.Error("unknown property should fail before any network call")
+	}
+	if _, err := c.SetNamedProperty(cam, "hor_flip", "sideways"); err == nil {
+		t.Error("invalid value should fail before any network call")
+	}
+}

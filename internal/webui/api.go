@@ -3,10 +3,14 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
 // handleFavicon serves the embedded icon.png as the tab favicon.
@@ -113,15 +117,18 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		if body.Quality != "hd" && body.Quality != "sd" {
-			writeJSONError(w, http.StatusBadRequest, "quality must be 'hd' or 'sd'")
+		// "" goes back to the default (QUALITY_<CAM> / QUALITY). The
+		// choice is saved by MAC; see camera/quality.go.
+		effective, err := s.camMgr.SetQuality(reqCtx, name, body.Quality)
+		switch {
+		case errors.Is(err, camera.ErrBadQuality), errors.Is(err, camera.ErrQualityNotTUTK):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
-		}
-		if err := s.camMgr.SetQuality(reqCtx, name, body.Quality); err != nil {
+		case err != nil:
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, map[string]string{"status": "ok", "quality": body.Quality})
+		writeJSON(w, map[string]string{"status": "ok", "quality": effective, "saved": strings.ToLower(strings.TrimSpace(body.Quality))})
 
 	case action == "audio" && r.Method == "POST":
 		var body struct {
@@ -173,9 +180,151 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			"recording": s.recMgr.IsRecording(name),
 		})
 
+	case action == "property" && r.Method == "POST":
+		// Camera-side settings via the Wyze cloud: body
+		// {"property":"hor_flip","value":"on"}. Same table MQTT's
+		// set topics use (wyzeapi.CloudProperties).
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		var body struct {
+			Property string `json:"property"`
+			Value    string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if _, known := wyzeapi.CloudProperties[body.Property]; !known {
+			writeJSONError(w, http.StatusBadRequest, "unknown property")
+			return
+		}
+		if _, _, ok := wyzeapi.ParsePropertyValue(body.Property, body.Value); !ok {
+			writeJSONError(w, http.StatusBadRequest, "invalid value for "+body.Property)
+			return
+		}
+		published, err := s.cloud.SetNamedProperty(cam.GetInfo(), body.Property, body.Value)
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: body.Property + " = " + body.Value})
+		}
+		if s.onPropertySet != nil {
+			go s.onPropertySet(name, body.Property, published)
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "property": body.Property, "value": published})
+
+	case action == "reboot" && r.Method == "POST":
+		// Reboot the camera itself through the Wyze cloud (the "restart"
+		// run_action), then re-register the stream so go2rtc dials the
+		// camera fresh when it's back. Distinct from "restart", which
+		// only re-registers the stream.
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		if err := s.cloud.RunAction(cam.GetInfo(), "restart"); err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: "reboot requested"})
+		}
+		// rootCtx: the reconnect outlives this request.
+		go s.camMgr.RestartStream(s.rootCtx, name)
+		writeJSON(w, map[string]string{"status": "ok"})
+
+	case action == "pin" && r.Method == "POST":
+		// Pin the camera's LAN address: body {"ip":"192.168.4.151"};
+		// an empty ip unpins. Persisted by MAC; see camera.PinLanIP.
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		effective, err := s.camMgr.PinLanIP(s.rootCtx, name, body.IP)
+		switch {
+		case errors.Is(err, camera.ErrBadPinIP), errors.Is(err, camera.ErrNotLANCamera):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		case err != nil:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			msg := "address pinned to " + body.IP
+			if strings.TrimSpace(body.IP) == "" {
+				msg = "address unpinned (now " + effective + ")"
+			}
+			evLog.Record(Event{Kind: "lan_ip", Camera: name, Message: msg})
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "ip": effective, "pinned_ip": cam.PinnedIP()})
+
+	case action == "ignore" && r.Method == "POST":
+		// Drops the camera from the registry for good (persisted by
+		// MAC); /api/ignored/<mac>/restore brings it back.
+		entry, err := s.camMgr.Ignore(reqCtx, name)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "ignore", Camera: name, Message: "ignored (" + entry.MAC + ")"})
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "ignored": entry})
+
 	default:
 		writeJSONError(w, http.StatusNotFound, "not found")
 	}
+}
+
+// handleAPIIgnored lists the operator's ignore list.
+func (s *Server) handleAPIIgnored(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	list := s.camMgr.Ignored()
+	if list == nil {
+		list = []wyzeapi.IgnoredCamera{}
+	}
+	writeJSON(w, list)
+}
+
+// handleAPIIgnoredAction handles POST /api/ignored/{mac}/restore: takes
+// the MAC off the list and kicks a rediscovery so the camera comes
+// back without waiting for the next refresh. The discovery runs
+// asynchronously like the Rediscover button's; the camera_added SSE
+// event tells the dashboard when the card is back.
+func (s *Server) handleAPIIgnoredAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/ignored/")
+	parts := strings.SplitN(path, "/", 2)
+	mac := parts[0]
+	if mac == "" || len(parts) < 2 || parts[1] != "restore" {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	entry, err := s.camMgr.Unignore(mac)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if evLog := s.Events(); evLog != nil {
+		evLog.Record(Event{Kind: "ignore", Camera: entry.Nickname, Message: "restored (" + entry.MAC + ")"})
+	}
+	if s.onDiscoverReq != nil {
+		go s.onDiscoverReq(s.rootCtx)
+	}
+	writeJSON(w, map[string]interface{}{"status": "ok", "restored": entry})
 }
 
 // recordingController is satisfied by recording.Manager. Kept as an

@@ -47,6 +47,11 @@ export_opt 'bridge.go2rtc_url'  GO2RTC_URL
 # ── Camera defaults ─────────────────────────────────────────────────────────
 export_opt 'camera.quality' QUALITY
 export_opt 'camera.audio'   AUDIO
+# LAN IP verification for TUTK cameras (ARP by MAC); see README
+# "Cameras whose IP changed". Defaults are on / on / 2m.
+export_opt 'camera.lan_ip_resolve' LAN_IP_RESOLVE
+export_opt 'camera.lan_ip_sweep'   LAN_IP_SWEEP
+export_opt 'camera.lan_ip_recheck' LAN_IP_RECHECK
 
 # ── MQTT — auto-detect Mosquitto addon if the user didn't set a host ───────
 if bashio::services.available "mqtt"; then

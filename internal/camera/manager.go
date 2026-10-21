@@ -3,6 +3,7 @@ package camera
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -43,6 +44,37 @@ type Manager struct {
 	// onProtocolFallback fires the first time a camera is auto-promoted
 	// from TUTK to WebRTC after crossing the fallback threshold.
 	onProtocolFallback func(camName string, oldProtocol, newProtocol string, failStreak int)
+	// resolver verifies TUTK cameras' LAN addresses before go2rtc dials
+	// them; nil disables. onLanIPChange fires when a camera's effective
+	// address changes, onLanStatus after every resolve. See lanip.go.
+	resolver      LANResolver
+	onLanIPChange func(cam *Camera, oldIP, newIP, source string)
+	onLanStatus   func(cam *Camera)
+	// pins are operator-pinned addresses by MAC; see pin.go.
+	pins        map[string]string
+	onPinChange func(pins map[string]string)
+	// qualities are the operator's saved HD/SD choices by MAC; see
+	// quality.go.
+	qualities       map[string]string
+	onQualityChange func(cam *Camera, quality string, saved map[string]string)
+	// rules are the Settings page's runtime camera rules, excluded the
+	// cameras they dropped at the last Discover; see rules.go.
+	rules         *rulesState
+	onRulesChange func(wyzeapi.CameraRules)
+	localSubnets  func() ([]*net.IPNet, error)
+	excluded      []Excluded
+	// ignored is the operator's runtime ignore list keyed by MAC; see
+	// ignore.go. onAdded / onRemoved fire when a camera enters or
+	// leaves the registry so the WebUI, MQTT and recording can follow.
+	ignored        map[string]wyzeapi.IgnoredCamera
+	onIgnoreChange func(list []wyzeapi.IgnoredCamera)
+	onAdded        func(cam *Camera)
+	onRemoved      func(cam *Camera, reason string)
+	// onVideoChange / onStreamError report whether frames are really
+	// flowing and what go2rtc complained about; see video.go.
+	onVideoChange   func(cam *Camera, old, cur Video)
+	onStreamError   func(cam *Camera, msg string)
+	onStreamRestart func(cam *Camera, reason string)
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a
@@ -72,6 +104,7 @@ func NewManager(
 		},
 		cameras:         make(map[string]*Camera),
 		chronicReported: make(map[string]bool),
+		ignored:         make(map[string]wyzeapi.IgnoredCamera),
 	}
 	if go2rtcAPI != nil {
 		m.go2rtc.Store(go2rtcAPI)
@@ -168,22 +201,24 @@ func (m *Manager) Discover(ctx context.Context) error {
 		supported = append(supported, cam)
 	}
 
-	filtered := m.filter.Apply(supported)
+	filtered, dropped := m.applyRules(m.dropIgnored(m.filter.Apply(supported)))
 
 	m.log.Info().
 		Int("discovered", len(cameras)).
 		Int("supported", len(supported)).
 		Int("filtered", len(filtered)).
+		Int("excluded_by_rules", len(dropped)).
 		Msg("camera discovery complete")
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.excluded = dropped
 
 	// Track which existing cameras are still present
 	seen := make(map[string]bool)
+	var added []*Camera
 
 	for _, info := range filtered {
-		name := info.NormalizedName()
+		name := registryName(info)
 		seen[name] = true
 
 		if existing, ok := m.cameras[name]; ok {
@@ -198,22 +233,45 @@ func (m *Manager) Discover(ctx context.Context) error {
 				m.cfg.CamAudio(name),
 				m.cfg.CamRecord(name),
 			)
+			m.applyPinLocked(cam)
+			m.applyQualityLocked(cam)
 			m.cameras[name] = cam
+			added = append(added, cam)
 			m.log.Info().
 				Str("cam", name).
 				Str("model", info.ModelName()).
-				Str("ip", info.LanIP).
+				Str("ip", cam.GetInfo().LanIP).
 				Msg("new camera added")
 		}
 	}
 
-	m.reapRenameOrphans(ctx, filtered)
+	renamed := m.reapRenameOrphans(ctx, filtered)
+	excluded := m.dropExcludedLocked(ctx, dropped)
 
 	// Mark cameras not in discovery as offline
 	for name, cam := range m.cameras {
 		if !seen[name] && cam.GetState() != StateOffline {
 			m.changeState(cam, StateOffline)
 			m.log.Warn().Str("cam", name).Msg("camera no longer in discovery, marking offline")
+		}
+	}
+
+	m.mu.Unlock()
+
+	// Observers run outside the lock: they enumerate Cameras().
+	for _, cam := range renamed {
+		if m.onRemoved != nil {
+			m.onRemoved(cam, "renamed")
+		}
+	}
+	for _, cam := range excluded {
+		if m.onRemoved != nil {
+			m.onRemoved(cam, "excluded")
+		}
+	}
+	for _, cam := range added {
+		if m.onAdded != nil {
+			m.onAdded(cam)
 		}
 	}
 
@@ -269,6 +327,22 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		return
 	}
 
+	// Check where the camera actually is before go2rtc dials it. Only
+	// the TUTK path dials a LAN address: WebRTC goes through Wyze's
+	// cloud and gwell-proxy discovers its own. streamSourceFor is
+	// idempotent, so asking twice costs nothing.
+	if _, protocol := m.streamSourceFor(cam); protocol == "tutk" {
+		m.resolveLanIP(ctx, cam)
+	}
+
+	m.registerStream(ctx, go2rtc, cam)
+}
+
+// registerStream is the go2rtc half of connectCamera: hand the stream
+// source to go2rtc and move the camera to Streaming (or Error). Split
+// out so the LAN IP recheck can re-register a camera whose address
+// moved without re-running the resolver it just ran.
+func (m *Manager) registerStream(ctx context.Context, go2rtc *go2rtcmgr.APIClient, cam *Camera) {
 	streamURL, protocol := m.streamSourceFor(cam)
 	snap := cam.Snapshot()
 
@@ -283,20 +357,24 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		Bool("dtls", snap.Info.DTLS).
 		Msg("connecting camera to go2rtc")
 
-	// Drop any prior go2rtc entry first so the PUT below is a clean
-	// re-create rather than an in-place source swap. Without this,
-	// a reconnect after HealthCheck saw 0 producers can leave the
-	// old (dead) source pool attached and the fresh AddStream never
-	// actually plays. Skipped for Gwell publish-only slots — those
-	// have an active RTSP publisher we'd disrupt (and HealthCheck
-	// already excludes Gwell, so we don't get here for them anyway).
-	if protocol != "gwell" {
-		_ = go2rtc.DeleteStream(ctx, cam.Name())
-	}
-
+	// No DeleteStream first: go2rtc's PUT builds a fresh stream and
+	// swaps it into its table, so the old (dead) source pool is already
+	// gone from the name. (The delete that used to sit here never
+	// deleted anything, see DeleteStream, and go2rtc's DELETE handler
+	// writes its table without the lock its readers take.)
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
 		backoff := cam.IncrementError()
 		errors := cam.GetErrorCount()
+		if go2rtcmgr.Unreachable(err) {
+			// go2rtc is down, not the camera: no chronic report and no
+			// strike toward the WebRTC fallback. Reregister puts the
+			// stream back as soon as go2rtc is up again.
+			m.log.Warn().Err(err).
+				Str("cam", cam.Name()).
+				Dur("backoff", backoff).
+				Msg("go2rtc not reachable; stream not added")
+			return
+		}
 		m.log.Error().Err(err).
 			Str("cam", cam.Name()).
 			Str("protocol", protocol).
@@ -313,6 +391,39 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 		Str("protocol", protocol).
 		Msg("camera connected successfully")
 	m.changeState(cam, StateStreaming)
+}
+
+// Reregister adds every camera's stream to go2rtc again, all at once.
+// Streams the bridge adds at runtime live only in go2rtc's memory, so
+// after go2rtc restarts they're gone; without this each camera would
+// wait for the health poll to notice and its reconnect backoff to run
+// out. Addresses haven't changed, so the LAN resolver isn't asked.
+// Gwell slots come back from go2rtc.yaml and are left to gwell-proxy.
+func (m *Manager) Reregister(ctx context.Context) {
+	go2rtc := m.go2rtcClient()
+	if go2rtc == nil {
+		return
+	}
+	m.mu.RLock()
+	cams := make([]*Camera, 0, len(m.cameras))
+	for _, c := range m.cameras {
+		cams = append(cams, c)
+	}
+	m.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, cam := range cams {
+		if _, protocol := m.streamSourceFor(cam); protocol == "gwell" {
+			continue
+		}
+		wg.Add(1)
+		go func(c *Camera) {
+			defer wg.Done()
+			m.registerStream(ctx, go2rtc, c)
+		}(cam)
+	}
+	wg.Wait()
+	m.log.Info().Int("cameras", len(cams)).Msg("streams re-added after go2rtc restart")
 }
 
 // streamSourceFor returns the go2rtc source URL and a label for the
@@ -349,6 +460,7 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 	}
 	m.mu.RUnlock()
 
+	now := time.Now()
 	for _, cam := range cams {
 		if cam.GetState() != StateStreaming {
 			continue
@@ -391,7 +503,9 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 			// per-call (streamSourceFor is idempotent).
 			_, protocol := m.streamSourceFor(cam)
 			m.recordTUTKFailure(cam, protocol)
+			continue
 		}
+		m.observeVideo(cam, info, now)
 	}
 }
 
@@ -412,6 +526,23 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 	reconnectTicker := time.NewTicker(10 * time.Second)
 	defer reconnectTicker.Stop()
 
+	// LAN IP recheck is optional (LAN_IP_RECHECK=0 disables); a nil
+	// channel never fires in the select below. The first recheck comes
+	// early: at startup every camera is probed at once, right after the
+	// previous bridge let go of them, and a few Wi-Fi cameras miss that
+	// first probe. Twenty seconds later they answer.
+	var recheckC, firstRecheckC <-chan time.Time
+	if m.cfg.LanIPRecheck > 0 {
+		recheckTicker := time.NewTicker(m.cfg.LanIPRecheck)
+		defer recheckTicker.Stop()
+		recheckC = recheckTicker.C
+		if first := min(firstLanRecheck, m.cfg.LanIPRecheck); first < m.cfg.LanIPRecheck {
+			firstRecheck := time.NewTimer(first)
+			defer firstRecheck.Stop()
+			firstRecheckC = firstRecheck.C
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -425,8 +556,28 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 			m.HealthCheck(ctx)
 		case <-reconnectTicker.C:
 			m.reconnectErrored(ctx)
+		case <-firstRecheckC:
+			firstRecheckC = nil
+			m.RecheckLanIPs(ctx)
+		case <-recheckC:
+			m.RecheckLanIPs(ctx)
 		}
 	}
+}
+
+// firstLanRecheck is how soon after startup the first LAN IP recheck
+// runs, ahead of the regular LAN_IP_RECHECK cadence.
+const firstLanRecheck = 20 * time.Second
+
+// registryName is the key a discovered camera gets in m.cameras: the
+// Name discovery assigned, which wyzeapi.DisambiguateNames has already
+// made unique across the account. Infos built without one (tests,
+// older callers) fall back to the plain normalized nickname.
+func registryName(info wyzeapi.CameraInfo) string {
+	if info.Name != "" {
+		return info.Name
+	}
+	return info.NormalizedName()
 }
 
 // reapRenameOrphans removes m.cameras entries whose MAC matches a
@@ -434,14 +585,17 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 // user renamed the camera in the Wyze app). Without this, the old
 // entry's go2rtc stream lingers forever — Discover only ever adds
 // new entries, and the old name stays "offline" while a fresh entry
-// is created under the new name. Called under m.mu.Lock() by Discover.
-func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.CameraInfo) {
+// is created under the new name. Called under m.mu.Lock() by Discover;
+// returns the dropped cameras so Discover can notify observers once
+// the lock is released.
+func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.CameraInfo) []*Camera {
+	var removed []*Camera
 	newByMAC := make(map[string]string, len(filtered))
 	for _, info := range filtered {
 		if info.MAC == "" {
 			continue
 		}
-		newByMAC[info.MAC] = info.NormalizedName()
+		newByMAC[info.MAC] = registryName(info)
 	}
 	for oldName, existing := range m.cameras {
 		info := existing.GetInfo()
@@ -461,7 +615,9 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 			_ = go2rtc.DeleteStream(ctx, oldName)
 		}
 		delete(m.cameras, oldName)
+		removed = append(removed, existing)
 	}
+	return removed
 }
 
 // reconnectErrored tries to reconnect cameras in error state whose backoff has elapsed.
@@ -497,24 +653,6 @@ func (m *Manager) reconnectErrored(ctx context.Context) {
 		}(cam)
 	}
 	wg.Wait()
-}
-
-// SetQuality changes a camera's quality and reconnects.
-func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
-	cam := m.GetCamera(name)
-	if cam == nil {
-		return nil
-	}
-
-	cam.SetQuality(quality)
-
-	go2rtc := m.go2rtcClient()
-	if go2rtc == nil {
-		return nil
-	}
-	// Remove and re-add in go2rtc with new URL
-	_ = go2rtc.DeleteStream(ctx, name)
-	return go2rtc.AddStream(ctx, name, cam.StreamURL())
 }
 
 // RestartStream forces a camera reconnect.

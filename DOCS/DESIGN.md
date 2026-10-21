@@ -175,9 +175,13 @@ The `ENR` value is stored obfuscated in the Wyze API response. The decode logic 
 
 ```go
 type StateFile struct {
-    Auth    AuthState              `json:"auth"`
-    Cameras map[string]CameraInfo  `json:"cameras"` // keyed by MAC
-    Updated time.Time              `json:"updated"`
+    Auth      AuthState              `json:"auth"`
+    Cameras   map[string]CameraInfo  `json:"cameras"`              // keyed by MAC
+    Ignored   []IgnoredCamera        `json:"ignored,omitempty"`    // WebUI ignore list, by MAC (4.7)
+    Layout    *Layout                `json:"layout,omitempty"`     // dashboard order / lock / rotation (4.7)
+    PinnedIPs map[string]string      `json:"pinned_ips,omitempty"` // operator-pinned LAN addresses, by MAC (4.7)
+    Rules     *CameraRules           `json:"rules,omitempty"`      // Settings page camera rules (4.7)
+    Updated   time.Time              `json:"updated"`
 }
 ```
 
@@ -229,6 +233,8 @@ go2rtc stdout/stderr is captured and re-emitted through zerolog:
 - go2rtc `warn`/`error` → pass-through at same level
 
 `WaitReady` polls `GET /api/streams` until it returns 200 or times out. On startup this gives go2rtc up to 10 seconds to be ready before cameras are added.
+
+**Supervision (4.7+):** go2rtc is the whole streaming plane, so an unexpected exit (a Go panic exits with status 2) no longer leaves the bridge serving "connection refused" until someone restarts the container. The exit watcher starts it again after 2s, doubling to a 1 min ceiling while it keeps dying and starting over once a run lasts 5 min; a restarted go2rtc that doesn't answer its API within 15s is killed and goes round again. Once it answers, `OnRestart` fires and `camera.Manager.Reregister` adds every runtime stream back at once (Gwell slots return from `go2rtc.yaml`). A crash dump has no level prefix, so the `panic:` / `fatal error:` line and the next 60 lines are logged at error instead of trace, and go2rtc's output goes through plain `os.Pipe`s read to EOF so `Wait` can't cut the dump short. While go2rtc is down, `AddStream` fails with a dial error (`go2rtcmgr.Unreachable`); those don't count toward the chronic-error report or the TUTK → WebRTC fallback.
 
 #### 5.2.2 Config Generation
 
@@ -342,7 +348,13 @@ type Camera struct {
 
 **IP refresh:** On connection failure, re-query Wyze API for current device IP before next attempt. DHCP assigns can change.
 
+**LAN IP resolution (`internal/lanresolve/`, 4.7+):** The cloud's IP is a hint, not the truth — it can lag a DHCP change by hours. Before a TUTK camera's `wyze://` URL is handed to go2rtc, `Manager.resolveLanIP` asks the resolver where the camera's MAC is actually answering: (1) probe the cloud IP and the last verified IP over ARP; (2) try addresses an earlier sweep or the kernel's neighbor cache (netlink `RTM_GETNEIGH`) already associate with the MAC; (3) a paced ARP sweep of the camera's `/24`, then the rest of the local subnet (capped at a `/22`, one sweep at a time LAN-wide, per-camera backoff doubling to 1h); (4) give up and keep the address the camera already had. ARP requests for a camera are sent unicast to its MAC (probes also send a broadcast copy, so a stranger holding the address is still noticed): a Wi-Fi camera in power save can sleep through a broadcast, which is transmitted once without acknowledgement, while a unicast frame is queued and retried by the access point — and a unicast sweep costs the rest of the LAN nothing, since the switch delivers it to one port. The periodic recheck skips cameras whose video is arriving, since bytes from the address are better proof than any ARP reply, and runs for the first time 20s after startup (`firstLanRecheck`) because a few Wi-Fi cameras miss the startup probe, when every camera is asked at once right after the previous bridge let go of them; a camera only the recheck ever verified reports source `recheck`. A probe for a known MAC first sends the address a throwaway UDP datagram and then the unicast request, so the kernel has a neighbor entry for the camera's reply to land in: the kernel resolves a new address by broadcast only, which these cameras sleep through, and go2rtc's dial packets can't leave until the kernel knows the MAC — the actual mechanism behind many a `discovery timeout` on a camera that was right there. A sweep hit gets one more probe for the same reason. A camera that answered ARP or sent video within `dozeWindow` (30 min) and then goes quiet is resolved with `Target.NoSweep`: its own addresses and the caches only. On Wi-Fi that silence means dozing, not moved, and a sweep is hundreds of ARP requests addressed to the camera's MAC; aimed at a camera already struggling to keep a stream up, that airtime was enough to leave it unable to answer go2rtc's next dial. A verified address that differs from the cloud's is stored on the `Camera` as an override that `GetInfo` / `Snapshot` / `StreamURL` / `StatusJSON` all apply, so the stream URL, WebUI, MQTT and webhooks agree, and that survives the 30-minute cloud refresh. The ARP engine needs `CAP_NET_RAW` (Docker default); otherwise a neighbor-cache engine nudges the kernel with a UDP datagram and reads its cache, which trusts STALE entries and so can trail a moved camera by about a minute. Env: `LAN_IP_RESOLVE`, `LAN_IP_SWEEP`, `LAN_IP_RECHECK`. Every outcome is kept on the `Camera` (`LanStatus`: the rung that verified the address, when it last verified — resolve or recheck — and `lanresolve.Result.Misses`, the camera's own sweeps in a row that didn't hear its MAC) and surfaces in the detail page's Network box, in `/api/cameras` (`lan_ip_source`, `lan_ip_verified_at`, `lan_sweep_misses`) and in the `camera_ip` SSE payload (`cloud_ip`, `source`, `source_label`, `verified_at`, `sweep_misses`). `Snapshot.LanAbsent` (`lan_absent` in `/api/cameras`) turns true at `lanAbsentAfter` (2) consecutive misses for a camera that hasn't verified at all this run (a dozing Wi-Fi camera that verified earlier can miss sweeps without being at another house); `Manager.OnLanStatus` fires after every resolve so main.go can push a `camera_lan` SSE event (`absent`, `sweep_misses`, `source`) and the dashboard can show or hide the card's "Not on this LAN?" hint, whose button is the ordinary ignore action. An operator can also pin a TUTK camera's address (`Manager.PinLanIP`, `pin.go`; persisted as `pinned_ips` by MAC through `OnPinChange`): a pin beats both the cloud's and the resolver's address in `GetInfo`, the ladder is skipped for a pinned camera (one ARP probe just keeps the Verified line honest and never counts as absent), the periodic recheck leaves it alone, and pinning or unpinning a streaming camera re-registers its go2rtc stream and fires `OnLanIPChange` with source `pinned` / `unpinned`.
+
+**LAN IP recheck:** Every `LAN_IP_RECHECK` (default 2m) `Manager.RecheckLanIPs` probes each streaming TUTK camera at its current address (one ARP round trip). A camera that no longer answers gets the full resolver; only a *verified, different* address triggers a go2rtc re-register (`DeleteStream` + `AddStream`), so an unreachable or sleeping camera never flaps. go2rtc only dials when a consumer pulls and never reports a failed dial back, which is why this runs on a timer rather than on an error.
+
 **Health polling:** Every 30s, `GET /api/streams` from go2rtc API. Any camera expected to be streaming but showing no active producer transitions to reconnecting.
+
+**Video status (4.7+, `video.go`):** `StateStreaming` only means go2rtc accepted the stream; go2rtc dials lazily when a consumer pulls and never reports a failed dial through its API. The same 30s poll therefore also reads each producer's `remote_addr` and per-receiver byte counters and folds them into `Camera.video`: `live` (bytes arrived since the previous poll), `idle` (no consumer, not dialed — normal), `no_video` (pulled or connected but nothing new for two polls). A browser holding a `/ws` proxy socket for the stream counts as a consumer too (`Camera.AddPuller`, from `handleWSProxy`), because go2rtc only lists a consumer it could feed, so a dashboard waiting on a dead camera would otherwise read as idle; and the proxy reads go2rtc's error frames to the player (`{"type":"error","value":"mse: streams: wyze: connect failed: discovery timeout"}`, `wssniff.go`, a TeeReader on the go2rtc → browser direction that walks the WebSocket frames) and feeds them to `RecordStreamError`, since those dial failures never reach the log with a stream name. A pulled stream that isn't connected yet is left alone (go2rtc is still dialing, and retrying a failed pull is the player's job, below). A TUTK stream that is connected but whose byte counters haven't moved for two polls while someone pulls it is different: go2rtc keeps such a session open indefinitely (a V3 that drops off Wi-Fi mid-stream), and every new viewer joins the dead producer. `restartIfFrozen` puts the stream back (a PUT, which gives the name a fresh stream) at most once per `frozenRestartGap` (2 min), then `OnStreamRestart` → `Server.DropStreamSockets` closes that camera's `/ws` proxy sockets so the players reconnect to the new stream; an MSE player does that by itself, and `video-stream.js` restarts a WebRTC player (whose `onconnect` refuses while a peer connection is attached) without counting it against its backoff. On the page side, `static/video-stream.js` starts players 400ms apart (a grid opening every player at once dialed every camera twice in the same instant, and some lost the race), grid tiles carry `mode="mse"` so each opens one go2rtc consumer instead of WebRTC and MSE racing, and `buffer="2.5"`, which retargets video-rtc's MSE rate control (it sets `playbackRate` to the seconds buffered, so it sits about 1s behind live and plays up to 5x after a burst) to 2.5s ahead with the rate held between 0.8 and 1.25, because H.264 from these cameras arrives as a large keyframe every couple of seconds and a 1s buffer ran dry between them; go2rtc drops a frame it didn't get every packet of (`[DROP] ... INCOMPLETE` in its log), often a whole HD keyframe on Wi-Fi, which leaves the frames after it undecodable, so a buffered player that hasn't moved for 750ms with at least 1s buffered skips to 0.5s short of the newest data (`holeSkip`); the same players also move every seek into the newest buffered range (video-rtc's catch-up seek to `end - 5` lands just before the data its own keyframe-aligned trim left, so it waited, seeked again on the next append and sat on the spinner indefinitely), and runs a watchdog that restarts a visible player whose `currentTime` hasn't moved for 20s, one restart per 1.5s page-wide, doubling the wait for a player that keeps failing up to 5 min: go2rtc's video-rtc.js logs a failed dial and then waits on the socket forever. Consumer-side errors such as `codecs not matched` (a snapshot asking an H264 stream for JPEG) are logged but not recorded against the camera. go2rtc's `WRN [rtsp] error="..." stream=<name>` log lines are the other signal: `go2rtcmgr.Manager.OnWarning` → `ParseStreamError` → `Manager.RecordStreamError`, which stores the text on the camera (`last_error`, `last_error_at`), flips the status to `no_video` at once, and — for a TUTK camera reporting `discovery timeout` — runs the LAN IP recheck immediately (at most once a minute per camera) instead of waiting for the next scheduled one. Exposed as `video`, `last_video`, `last_error`, `last_error_at` in `/api/cameras`, as a second badge on the card, and as `camera_video` SSE events; transitions into or out of `no_video` land in the event log with go2rtc's reason.
 
 #### 5.3.2 Camera Filter
 
@@ -357,9 +369,19 @@ type Filter struct {
 
 Filtered-out cameras are never added to go2rtc and never appear in MQTT or WebUI.
 
+**Runtime rules (Settings page, 4.7+, `rules.go`):** `Manager.SetRules` compiles a `wyzeapi.CameraRules` (scope, extra CIDRs, nickname patterns with `*`, MACs, models, block/allow) and `Discover` runs `applyRules` after the env filters and the ignore list. Scope `local` drops a camera whose cloud-reported IPv4 address sits on none of the host's subnets (`lanresolve.LocalSubnets`, injected through `SetLocalSubnets`) nor on the extra CIDRs; a camera with no address is kept. Lists then work like `Filter` (block drops matches, allow keeps only matches) with case-insensitive `*` globbing on the nickname. Dropped cameras already in the registry are removed by `dropExcludedLocked` exactly as an ignore removes them (go2rtc stream deleted, state offline, `OnCameraRemoved` with reason `excluded`) and listed by `Excluded()` with the reason, for the dashboard strip, `/api/excluded` and the Settings page; when the rules change they come back through the normal added path. Persisted as `rules` through `OnRulesChange`; `PUT /api/settings` kicks the same discovery the Rediscover button runs so a save applies at once.
+
+**Ignore list (runtime, 4.7+):** `Manager.Ignore(name)` / `Unignore(mac)` maintain a MAC-keyed set applied after the env filters on every `Discover`. Ignoring deletes the go2rtc stream, marks the camera offline (so recording, MQTT state and webhooks see a normal shutdown), removes it from the registry and fires `OnCameraRemoved`, which main.go uses to drop the dashboard card (SSE `camera_removed`), stop the recorder and retract the HA entities (`RemoveDiscovery`). The list is persisted through `OnIgnoreChange` → `StateFile.Ignored` and installed at startup with `SetIgnored` before the first discovery, so an ignored camera never gets a stream at all. Restoring removes the MAC and triggers the same async rediscovery as the Rediscover button; `OnCameraAdded` (SSE `camera_added` + `PublishDiscovery`) brings the card and entities back. Nickname/model on each entry are refreshed from discovery so the WebUI strip stays readable after a rename.
+
+#### 5.3.2a Dashboard layout (`internal/webui/layout.go`, 4.7+)
+
+The tile order and lock flag are server-side (`StateFile.Layout`), not a browser preference, so every device shows the same grid. `orderCameras` renders listed cameras first in saved order and the rest by name; names in the saved order that no longer exist are skipped. The dashboard drags tiles with pointer events from a ⠿ handle that only exists while the grid is in arranging mode, PUTs the full order after each drop, and the lock button PUTs `locked`. Unknown names are kept on PUT so an offline camera keeps its slot. The layout also carries a per-camera view `rotation` (quarter turns only; 0 is dropped) that the ⟳ button sets while arranging; it's a CSS transform on the tile and the detail player, never a change to the stream.
+
 #### 5.3.3 Per-Camera Overrides
 
 `CAM_OPTIONS` in config.yml or env vars `RECORD_{CAM_NAME}`, `QUALITY_{CAM_NAME}`, `AUDIO_{CAM_NAME}` override global defaults per camera. Names are normalized (uppercase, spaces→underscores) to match env var conventions.
+
+**Saved quality (`quality.go`):** `Manager.SetQuality` (Settings page table, detail page buttons, MQTT `set/quality`, `POST /api/cameras/{name}/quality`) stores the operator's `hd` / `sd` by MAC, persisted as `qualities` in the state file through `OnQualityChange` and installed with `SetSavedQualities` before the first discovery; `""` deletes the entry and the camera falls back to `CamQuality` (`QUALITY_<CAM>`, then `QUALITY`). Only TUTK cameras take it (`ErrQualityNotTUTK` otherwise; the `subtype` in the `wyze://` URL is the only knob, and go2rtc maps `hd` to the model's best frame size and `sd` to 360p at a low bitrate). A change that alters the effective quality of a streaming camera re-registers it (`registerStream`, no delete) and fires `OnStreamRestart` with the reason, so its players reconnect to the new stream.
 
 ### 5.4 MQTT (`internal/mqtt/`)
 
@@ -466,6 +488,7 @@ Published on startup and on camera add/remove to `{dtopic}/...`:
 ```goat
 GET  /                           Camera grid — all cameras with status + stream links
 GET  /camera/{name}              Single camera page with live player
+GET  /settings                   Camera rules page (network scope, name / MAC / model lists)
 
 GET  /api/cameras                JSON: all cameras
 GET  /api/cameras/{name}         JSON: one camera
@@ -474,6 +497,17 @@ POST /api/cameras/{name}/quality body: {"quality":"hd"|"sd"}
 POST /api/cameras/{name}/audio   body: {"enabled":true|false}
 POST /api/cameras/{name}/record  body: {"action":"start"|"stop"} — toggles ffmpeg recorder
 POST /api/cameras/{name}/snapshot Force capture to SNAPSHOT_PATH
+POST /api/cameras/{name}/property body: {"property":"hor_flip","value":"on"} — camera-side setting via Wyze cloud (wyzeapi.CloudProperties, same table as MQTT set topics); mirrored to the MQTT state topic
+POST /api/cameras/{name}/reboot   Reboot the camera itself (Wyze run_action "restart"), then re-register the stream
+POST /api/cameras/{name}/pin      body: {"ip":"192.168.4.151"} — pin the LAN address (TUTK only; "" unpins); persisted by MAC
+POST /api/cameras/{name}/ignore   Drop the camera + remember its MAC (persisted; see 5.3.2)
+GET  /api/ignored                JSON: the ignore list
+POST /api/ignored/{mac}/restore  Take a MAC off the ignore list + rediscover (async)
+GET  /api/settings               Runtime camera rules: {"scope":"any"|"local","subnets":[cidr...],"names":[...],"macs":[...],"models":[...],"block":bool}
+PUT  /api/settings               Replace them (POST accepted too); validated, persisted in the state file, applied by an immediate discovery
+GET  /api/excluded               Cameras the rules dropped at the last discovery, with the reason for each
+GET  /api/layout                 {"order":[names...],"locked":bool,"rotation":{name:deg}} — dashboard tile arrangement
+PUT  /api/layout                 Replace it (POST accepted too); persisted in the state file. rotation: 0/90/180/270, view only
 
 POST /api/discover               Re-poll Wyze API for added/removed cameras (202 + async)
 
@@ -494,7 +528,7 @@ GET  /metrics.prom               Prometheus text exposition (unauthenticated by 
 GET  /dashboard.yaml             Auto-generated Lovelace YAML referencing MQTT entities
 
 GET  /events                     SSE stream: camera_state, camera_added, camera_removed,
-                                  snapshot_ready, bridge_status, recording_state
+                                  snapshot_ready, bridge_status, recording_state, camera_ip, camera_video, camera_lan
 ```
 
 #### 5.5.3 WebRTC Player
@@ -732,7 +766,7 @@ Key metrics:
 ```json
 {
   "status": "ok" | "degraded",
-  "version": "4.0-beta",
+  "version": "4.7.0",
   "uptime": 3601,
   "config_errors": 0,
   "issues": []
@@ -807,6 +841,11 @@ FILTER_BLOCKS       bool     invert: listed cameras are excluded
 QUALITY             string   "hd" | "sd", default "hd"
 AUDIO               bool     default true
 OFFLINE_TIME        int      seconds before marked offline, default 30
+
+# ── LAN IP resolution (TUTK cameras; see 5.3.1) ───────────────────────────────
+LAN_IP_RESOLVE      bool     verify LAN IPs by MAC over ARP before go2rtc dials, default true
+LAN_IP_SWEEP        bool     allow the last-resort ARP sweep of the local subnet, default true
+LAN_IP_RECHECK      string   re-verify streaming cameras this often, "0" disables, default "2m"
 
 # ── Recording ────────────────────────────────────────────────────────────────
 RECORD_ALL          bool     enable recording for all cameras

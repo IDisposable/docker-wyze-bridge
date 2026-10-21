@@ -7,6 +7,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -166,11 +167,75 @@ func (s *Server) handleWSProxy(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Debug().Str("cam", src).Msg("WS proxy established")
 
+	// The browser is pulling this stream for as long as the socket is
+	// up: that's what makes "no video" (rather than "idle") the right
+	// status when go2rtc can't deliver. And go2rtc's answer to a dial
+	// that failed goes to the player as a text frame, not to its log,
+	// so it's read off the bytes on the way through (see wssniff.go).
+	cam := s.camMgr.GetCamera(src)
+	if cam != nil {
+		cam.AddPuller(1)
+		defer cam.AddPuller(-1)
+	}
+	s.sockets.add(src, upstream)
+	defer s.sockets.remove(src, upstream)
+	sniff := newWSSniffer(func(text string) {
+		if msg := go2rtcWSError(text); msg != "" {
+			s.camMgr.RecordStreamError(s.rootCtx, src, msg)
+		}
+	})
+
 	// Bidirectional copy until either side closes
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, io.TeeReader(upstream, sniff)); done <- struct{}{} }()
 	<-done
 	upstream.Close()
 	client.Close()
+}
+
+// wsSockets tracks the go2rtc side of every open /ws proxy connection,
+// per camera, so a camera's players can be sent off to reconnect.
+type wsSockets struct {
+	mu    sync.Mutex
+	conns map[string]map[net.Conn]struct{}
+}
+
+func (w *wsSockets) add(cam string, c net.Conn) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.conns == nil {
+		w.conns = make(map[string]map[net.Conn]struct{})
+	}
+	if w.conns[cam] == nil {
+		w.conns[cam] = make(map[net.Conn]struct{})
+	}
+	w.conns[cam][c] = struct{}{}
+}
+
+func (w *wsSockets) remove(cam string, c net.Conn) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.conns[cam], c)
+	if len(w.conns[cam]) == 0 {
+		delete(w.conns, cam)
+	}
+}
+
+// DropStreamSockets closes every player socket open on a camera and
+// returns how many there were. Called after the bridge replaced the
+// camera's go2rtc stream: players still attached to the old one would
+// wait on it forever, and a closed socket makes them connect again
+// (video-rtc.js on its own, video-stream.js for a WebRTC player).
+func (s *Server) DropStreamSockets(cam string) int {
+	s.sockets.mu.Lock()
+	conns := make([]net.Conn, 0, len(s.sockets.conns[cam]))
+	for c := range s.sockets.conns[cam] {
+		conns = append(conns, c)
+	}
+	s.sockets.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	return len(conns)
 }

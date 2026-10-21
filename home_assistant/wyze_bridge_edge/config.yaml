@@ -6,7 +6,7 @@ description: >-
 slug: wyze_bridge_edge
 url: https://github.com/IDisposable/docker-wyze-bridge/tree/dev
 image: ghcr.io/idisposable/docker-wyze-bridge-homeassistant-edge
-version: 4.6.0-edge.20260924.1038
+version: 4.7.0-edge
 stage: experimental
 arch:
   - amd64
@@ -80,6 +80,9 @@ schema:
   camera:
     quality: list(hd|sd)?
     audio: bool?
+    lan_ip_resolve: bool?
+    lan_ip_sweep: bool?
+    lan_ip_recheck: 'match(^\d+[smhd]?$)?'
     options:
       - cam_name: str?
         quality: list(hd|sd)?

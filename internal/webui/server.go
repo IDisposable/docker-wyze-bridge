@@ -34,6 +34,15 @@ type SnapshotRequester func(ctx context.Context, camName string)
 // decoupled from camera.Manager.
 type DiscoverRequester func(ctx context.Context)
 
+// PropertySetObserver hears about a camera property the WebUI set
+// (flip, night vision...) so main.go can mirror it to MQTT.
+type PropertySetObserver func(camName, property, value string)
+
+// OnPropertySet registers the observer for WebUI property changes.
+func (s *Server) OnPropertySet(fn PropertySetObserver) {
+	s.onPropertySet = fn
+}
+
 // Server is the WebUI HTTP server.
 //
 // go2rtcAPI is late-bound: NewServer accepts nil so the WebUI can come
@@ -58,6 +67,13 @@ type Server struct {
 	onSnapReq     SnapshotRequester
 	onDiscoverReq DiscoverRequester
 	mars          MarsTokenMinter
+	cloud         CloudCommander
+	onPropertySet PropertySetObserver
+	lanResolver   LanResolverInfo
+	// layouts holds the dashboard tile order + lock; see layout.go.
+	layouts layoutStore
+	// sockets holds the open /ws proxy connections by camera; see proxy.go.
+	sockets wsSockets
 	kvs           KVSStreamProvider
 	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup
@@ -126,6 +142,28 @@ type Options struct {
 	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
 	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
 	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
+	Cloud       CloudCommander       // optional; nil → camera property/reboot endpoints return 503
+}
+
+// LanResolverInfo is what the detail page's Network box shows about
+// the LAN IP resolver: which engine it's running on. Satisfied by
+// *lanresolve.Resolver.
+type LanResolverInfo interface {
+	Engine() string
+}
+
+// SetLanResolver tells the detail page which resolver engine is
+// running. Not set (or LAN_IP_RESOLVE=false) renders as "off".
+func (s *Server) SetLanResolver(r LanResolverInfo) {
+	s.lanResolver = r
+}
+
+// CloudCommander is the slice of the Wyze API client the camera
+// controls need: set a property by friendly name, run an action.
+// Satisfied by *wyzeapi.Client; an interface so tests can fake it.
+type CloudCommander interface {
+	SetNamedProperty(cam wyzeapi.CameraInfo, property, raw string) (publishValue string, err error)
+	RunAction(cam wyzeapi.CameraInfo, action string) error
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics
@@ -142,6 +180,7 @@ func NewServer(opts Options) *Server {
 		rootCtx:     opts.RootCtx,
 		issues:      opts.Issues,
 		mars:        opts.Mars,
+		cloud:       opts.Cloud,
 		kvs:         opts.KVS,
 		authPhoneID: opts.AuthPhoneID,
 	}
@@ -287,6 +326,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Pages
 	mux.HandleFunc("/", s.auth.Wrap(s.handleIndex))
 	mux.HandleFunc("/camera/", s.auth.Wrap(s.handleCameraPage))
+	mux.HandleFunc("/settings", s.auth.Wrap(s.handleSettingsPage))
 
 	// Favicon (served from embedded icon.png, no auth required)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
@@ -297,6 +337,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cameras", s.auth.Wrap(s.handleAPICameras))
 	mux.HandleFunc("/api/cameras/", s.auth.Wrap(s.handleAPICameraAction))
 	mux.HandleFunc("/api/discover", s.auth.Wrap(s.handleAPIDiscover))
+	mux.HandleFunc("/api/ignored", s.auth.Wrap(s.handleAPIIgnored))
+	mux.HandleFunc("/api/ignored/", s.auth.Wrap(s.handleAPIIgnoredAction))
+	mux.HandleFunc("/api/layout", s.auth.Wrap(s.handleAPILayout))
+	mux.HandleFunc("/api/settings", s.auth.Wrap(s.handleAPISettings))
+	mux.HandleFunc("/api/excluded", s.auth.Wrap(s.handleAPIExcluded))
 	mux.HandleFunc("/api/snapshot/", s.auth.Wrap(s.handleSnapshot))
 	mux.HandleFunc("/api/streams", s.auth.Wrap(s.handleStreamsM3U8))
 	mux.HandleFunc("/api/streams/", s.auth.Wrap(s.handleStreamM3U8))

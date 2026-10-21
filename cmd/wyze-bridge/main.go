@@ -18,6 +18,7 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
+	"github.com/IDisposable/docker-wyze-bridge/internal/lanresolve"
 	"github.com/IDisposable/docker-wyze-bridge/internal/mqtt"
 	"github.com/IDisposable/docker-wyze-bridge/internal/recording"
 	"github.com/IDisposable/docker-wyze-bridge/internal/snapshot"
@@ -27,7 +28,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "4.0-beta"
+var Version = "4.7.0-dev"
 
 func main() {
 	// Load configuration
@@ -112,6 +113,42 @@ func main() {
 
 	camLog := log.With().Str("c", "camera").Logger()
 	camMgr := camera.NewManager(cfg, apiClient, nil, camLog)
+	// The operator's ignore list (edited from the WebUI) rides in the
+	// state file so it survives restarts; install it before the first
+	// discovery so ignored cameras never get a go2rtc stream at all.
+	camMgr.SetIgnored(state.Ignored)
+	if len(state.Ignored) > 0 {
+		log.Info().Int("count", len(state.Ignored)).Msg("restored ignore list from state file")
+	}
+	// Operator-pinned addresses go in before discovery too, so a pinned
+	// camera is never dialed at the cloud's address even once.
+	camMgr.SetPinnedIPs(state.PinnedIPs)
+	if len(state.PinnedIPs) > 0 {
+		log.Info().Int("count", len(state.PinnedIPs)).Msg("restored pinned addresses from state file")
+	}
+	// Saved HD/SD choices too, so the first dial asks for the right size.
+	camMgr.SetSavedQualities(state.Qualities)
+	// Runtime camera rules (Settings page) apply after the env filters
+	// on every discovery; the "local subnets only" scope needs to know
+	// this host's subnets.
+	camMgr.SetLocalSubnets(lanresolve.LocalSubnets)
+	if state.Rules != nil {
+		if err := camMgr.SetRules(*state.Rules); err != nil {
+			log.Warn().Err(err).Msg("camera rules in state file are invalid; ignoring them")
+		} else {
+			log.Info().Str("scope", state.Rules.Scope).Int("names", len(state.Rules.Names)).Int("macs", len(state.Rules.MACs)).Int("models", len(state.Rules.Models)).Bool("block", state.Rules.Block).Msg("restored camera rules from state file")
+		}
+	}
+	var lanResolver *lanresolve.Resolver
+	if cfg.LanIPResolve {
+		// Verifies TUTK cameras' LAN addresses by MAC before go2rtc
+		// dials them. Built early so the engine choice (raw ARP vs
+		// neighbor cache) is in the startup log next to the rest of
+		// the configuration.
+		lanLog := log.With().Str("c", "lanresolve").Logger()
+		lanResolver = lanresolve.New(lanresolve.Config{Sweep: cfg.LanIPSweep}, lanLog)
+		camMgr.SetLANResolver(lanResolver)
+	}
 	camMgr.OnChronicError(
 		func(camName string, errorCount int) {
 			detail := "Backoff is capped at 5min; reconnects keep firing. Check logs for the underlying go2rtc / stream error."
@@ -163,12 +200,29 @@ func main() {
 		Issues:    issueReg,
 		Mars:      apiClient,
 		KVS:       kvsAdapter{api: apiClient},
+		Cloud:     apiClient,
 		AuthPhoneID: func() string {
 			if a := apiClient.Auth(); a != nil {
 				return a.PhoneID
 			}
 			return ""
 		},
+	})
+	if lanResolver != nil {
+		// A typed nil in the interface would read as "resolver present",
+		// so only hand it over when the resolver was actually built.
+		webServer.SetLanResolver(lanResolver)
+	}
+
+	// Dashboard tile order + lock live in the state file so every
+	// browser sees the same grid; install before the listener starts
+	// and persist every change the UI makes.
+	if state.Layout != nil {
+		webServer.SetLayout(*state.Layout)
+	}
+	webServer.OnLayoutChange(func(l wyzeapi.Layout) {
+		state.SetLayout(l)
+		persistState(state, apiClient, cfg.StateDir)
 	})
 
 	// Start the WebUI HTTP listener ASAP. Handlers that need go2rtc
@@ -189,6 +243,20 @@ func main() {
 	camMgr.SetGo2RTCAPI(go2rtcAPI)
 	webServer.SetGo2RTCAPI(go2rtcAPI)
 
+	// go2rtc only ever reports a failed camera dial in its log, so
+	// route the stream= warnings back to the camera they belong to.
+	// RecordStreamError may run a LAN IP recheck (a second or two),
+	// hence the goroutine: the log relay must not stall on it.
+	if go2rtcMgr != nil {
+		go2rtcMgr.OnWarning(func(_, msg string) {
+			if name, errText, ok := go2rtcmgr.ParseStreamError(msg); ok {
+				go camMgr.RecordStreamError(ctx, name, errText)
+			}
+		})
+		// go2rtc restarted after a crash: its runtime streams are gone.
+		go2rtcMgr.OnRestart(func() { camMgr.Reregister(ctx) })
+	}
+
 	// Spawn gwell-proxy sidecar now that the shim is listening and
 	// go2rtc's RTSP server is accepting publishes into the reserved
 	// Gwell slots.
@@ -196,6 +264,14 @@ func main() {
 
 	mqttClient := setupMQTT(ctx, cfg, camMgr, apiClient)
 	webhookClient := setupWebhooks(cfg)
+
+	// A property set from the WebUI (flip, night vision) is mirrored to
+	// the MQTT state topic so HA's switches don't show the old value.
+	webServer.OnPropertySet(func(camName, property, value string) {
+		if mqttClient != nil {
+			mqttClient.PublishProperty(camName, property, value)
+		}
+	})
 	// Recording manager owns the per-camera ffmpeg supervisors. Needs
 	// to exist before wireCameraStateChanges so state-change callbacks
 	// can start/stop recorders on transitions.
@@ -433,6 +509,133 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 		go publishStateMQTT(mqttClient, cam)
 		go sendStateWebhook(ctx, webhookClient, name, snap, newState)
 		go persistState(state, apiClient, cfg.StateDir)
+	})
+
+	// Ignore-list edits persist immediately; a crash between the click
+	// and the next state save would otherwise bring the camera back.
+	camMgr.OnIgnoreChange(func(list []wyzeapi.IgnoredCamera) {
+		state.SetIgnored(list)
+		persistState(state, apiClient, cfg.StateDir)
+	})
+	camMgr.OnPinChange(func(pins map[string]string) {
+		state.SetPinnedIPs(pins)
+		persistState(state, apiClient, cfg.StateDir)
+	})
+	camMgr.OnQualityChange(func(cam *camera.Camera, quality string, saved map[string]string) {
+		state.SetQualities(saved)
+		persistState(state, apiClient, cfg.StateDir)
+		// Keep Home Assistant's quality select in step with a change
+		// made on the Settings page or the detail page.
+		if mqttClient != nil {
+			mqttClient.PublishProperty(cam.Name(), "quality", quality)
+		}
+	})
+	camMgr.OnRulesChange(func(r wyzeapi.CameraRules) {
+		state.SetRules(r)
+		persistState(state, apiClient, cfg.StateDir)
+	})
+
+	// A camera leaving the registry (ignored, or reaped after a rename)
+	// takes its card, its recorder and its HA entities with it. A camera
+	// arriving (first discovery, or restored from the ignore list) gets
+	// a card and HA entities; the dashboard reloads on camera_added.
+	camMgr.OnCameraRemoved(func(cam *camera.Camera, reason string) {
+		name := cam.Name()
+		recMgr.Stop(name)
+		if evLog := webServer.Events(); evLog != nil {
+			evLog.Record(webui.Event{Kind: "discover", Camera: name, Message: "removed (" + reason + ")"})
+		}
+		go webServer.SSE().SendJSON("camera_removed", map[string]interface{}{"name": name})
+		if mqttClient != nil && mqttClient.IsConnected() {
+			go mqttClient.RemoveDiscovery(cam.GetInfo().MAC)
+		}
+	})
+	camMgr.OnCameraAdded(func(cam *camera.Camera) {
+		go webServer.SSE().SendJSON("camera_added", map[string]interface{}{"name": cam.Name()})
+		if mqttClient != nil && mqttClient.IsConnected() {
+			go mqttClient.PublishDiscovery(cam)
+		}
+	})
+
+	// Video status is the honest version of "streaming": whether bytes
+	// are arriving. Changes go to the dashboard over SSE and, when a
+	// stream dies or recovers, to the event log with go2rtc's reason.
+	pushVideo := func(cam *camera.Camera) {
+		snap := cam.Snapshot()
+		go webServer.SSE().SendJSON("camera_video", map[string]interface{}{
+			"name":          cam.Name(),
+			"video":         snap.Video.String(),
+			"last_video":    snap.LastVideo,
+			"last_error":    snap.LastError,
+			"last_error_at": snap.LastErrorAt,
+		})
+	}
+	camMgr.OnVideoChange(func(cam *camera.Camera, old, cur camera.Video) {
+		pushVideo(cam)
+		if cur != camera.VideoNoVideo && old != camera.VideoNoVideo {
+			return // live ↔ idle is routine
+		}
+		if evLog := webServer.Events(); evLog != nil {
+			msg := old.String() + " → " + cur.String()
+			if cur == camera.VideoNoVideo {
+				if snap := cam.Snapshot(); snap.LastError != "" {
+					msg += " (" + snap.LastError + ")"
+				}
+			}
+			evLog.Record(webui.Event{Kind: "video", Camera: cam.Name(), Message: msg})
+		}
+	})
+	camMgr.OnStreamError(func(cam *camera.Camera, msg string) {
+		pushVideo(cam)
+	})
+	// A stream was replaced (gone silent, quality changed); players still
+	// on the old one have to reconnect to reach it.
+	camMgr.OnStreamRestart(func(cam *camera.Camera, reason string) {
+		n := webServer.DropStreamSockets(cam.Name())
+		log.Info().Str("cam", cam.Name()).Str("reason", reason).Int("players", n).Msg("stream restarted; players reconnecting")
+		if evLog := webServer.Events(); evLog != nil {
+			evLog.Record(webui.Event{Kind: "video", Camera: cam.Name(), Message: reason + "; stream restarted"})
+		}
+	})
+
+	// A corrected LAN address shows up in the event log (so the
+	// /metrics page explains why go2rtc's URL stopped matching the
+	// cloud's IP), updates the dashboard in place, and refreshes the
+	// MQTT attributes that carry the IP.
+	camMgr.OnLanIPChange(func(cam *camera.Camera, oldIP, newIP, source string) {
+		name := cam.Name()
+		if evLog := webServer.Events(); evLog != nil {
+			evLog.Record(webui.Event{
+				Kind:    "lan_ip",
+				Camera:  name,
+				Message: oldIP + " → " + newIP,
+				Detail:  "verified via " + source,
+			})
+		}
+		cloudIP, _ := cam.LanIPs()
+		lanSource, verifiedAt, misses := cam.LanStatus()
+		go webServer.SSE().SendJSON("camera_ip", map[string]interface{}{
+			"name":         name,
+			"ip":           newIP,
+			"cloud_ip":     cloudIP,
+			"source":       lanSource,
+			"source_label": webui.LanSourceLabel(lanSource),
+			"verified_at":  verifiedAt,
+			"sweep_misses": misses,
+		})
+		go publishStateMQTT(mqttClient, cam)
+	})
+	// Every resolver outcome drives the dashboard's "not on this LAN?"
+	// hint (shown after a couple of sweeps in a row missed the camera,
+	// cleared the moment it verifies again).
+	camMgr.OnLanStatus(func(cam *camera.Camera) {
+		snap := cam.Snapshot()
+		go webServer.SSE().SendJSON("camera_lan", map[string]interface{}{
+			"name":         cam.Name(),
+			"absent":       snap.LanAbsent,
+			"sweep_misses": snap.LanMisses,
+			"source":       snap.LanSource,
+		})
 	})
 }
 

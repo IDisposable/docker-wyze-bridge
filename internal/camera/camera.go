@@ -55,7 +55,42 @@ type Camera struct {
 	// pins this camera to the WebRTC path. Sticky for the process
 	// lifetime; a restart re-probes TUTK from scratch.
 	forceWebRTC bool
-	mu          sync.RWMutex
+	// lanIP overrides Info.LanIP once the LAN resolver has verified
+	// the camera answers at a different address than the Wyze cloud
+	// reports (the cloud lags DHCP changes by hours). Empty means the
+	// cloud IP is believed. Survives UpdateInfo so a 30-minute refresh
+	// can't put the stale address back; the resolver clears it when
+	// the cloud catches up. See internal/lanresolve.
+	lanIP string
+	// pinnedIP is an operator-set address (detail page / state file)
+	// that beats both the cloud's and the resolver's. For cameras the
+	// resolver can't reach, e.g. on a VLAN ARP doesn't cross.
+	pinnedIP string
+	// How the resolver last did with this camera, for the detail page
+	// and /api/cameras: lanSource is the rung that verified the current
+	// address ("" until one has), lanVerifiedAt when it last verified
+	// (resolve or recheck), lanMisses how many LAN sweeps in a row
+	// failed to hear the camera's MAC (0 while it verifies).
+	lanSource     string
+	lanVerifiedAt time.Time
+	lanMisses     int
+	// pullers counts browsers holding a /ws proxy socket for this
+	// camera's stream. go2rtc doesn't list a consumer it couldn't feed,
+	// so without this a dashboard waiting on a dead camera would read
+	// as "idle" instead of "no video". See video.go.
+	pullers int
+	// Video flow bookkeeping; see video.go. video/lastBytes/stalledPolls
+	// are poll-to-poll state reset whenever the camera leaves
+	// StateStreaming. lastVideo, lastError and lastErrorAt are history.
+	video            Video
+	lastVideo        time.Time
+	lastBytes        int
+	stalledPolls     int
+	lastError        string
+	lastErrorAt      time.Time
+	lastErrorRecheck time.Time
+	lastRestart      time.Time // last frozen-stream restart; see video.go
+	mu               sync.RWMutex
 }
 
 // NewCamera creates a new Camera from discovered info with default settings.
@@ -85,6 +120,8 @@ func (c *Camera) SetState(s State) {
 		c.ConnectedAt = time.Now()
 		c.ErrorCount = 0
 		c.tutkFailStreak = 0
+	} else {
+		c.resetFlow()
 	}
 	c.LastSeen = time.Now()
 }
@@ -95,6 +132,7 @@ func (c *Camera) IncrementError() time.Duration {
 	defer c.mu.Unlock()
 	c.ErrorCount++
 	c.State = StateError
+	c.resetFlow()
 	return c.BackoffDuration()
 }
 
@@ -165,11 +203,11 @@ func (c *Camera) Name() string {
 
 // StreamURL returns the go2rtc wyze:// URL for this camera. Reads
 // Info + Quality under the lock so it's consistent with concurrent
-// UpdateInfo / SetQuality.
+// UpdateInfo / SetQuality. Uses the resolved LAN IP when one is set.
 func (c *Camera) StreamURL() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.Info.StreamURL(c.Quality)
+	return c.info().StreamURL(c.Quality)
 }
 
 // UpdateInfo updates the camera info (e.g., after re-discovery with new IP).
@@ -181,11 +219,133 @@ func (c *Camera) UpdateInfo(info wyzeapi.CameraInfo) {
 
 // GetInfo returns a consistent snapshot of the Info struct. Use this
 // instead of reading c.Info directly when concurrency matters — a
-// bare c.Info read can tear against UpdateInfo's assignment.
+// bare c.Info read can tear against UpdateInfo's assignment. The
+// LanIP field reflects the resolved address when one is set, so every
+// consumer (stream URL, WebUI, MQTT, webhooks) agrees on where the
+// camera is.
 func (c *Camera) GetInfo() wyzeapi.CameraInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.Info
+	return c.info()
+}
+
+// info is GetInfo without the lock, for callers that already hold it.
+// Address precedence: pinned by the operator, then resolver-verified,
+// then whatever the cloud said.
+func (c *Camera) info() wyzeapi.CameraInfo {
+	info := c.Info
+	switch {
+	case c.pinnedIP != "":
+		info.LanIP = c.pinnedIP
+	case c.lanIP != "":
+		info.LanIP = c.lanIP
+	}
+	return info
+}
+
+// PinnedIP returns the operator-pinned address, "" when none.
+func (c *Camera) PinnedIP() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.pinnedIP
+}
+
+// SetPinnedIP pins (or with "" unpins) the camera's address. Returns
+// true when the effective address — what GetInfo and StreamURL report
+// — actually changed. The resolver's override is kept underneath so
+// unpinning falls back to it, not to the cloud's possibly stale value.
+func (c *Camera) SetPinnedIP(ip string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	before := c.info().LanIP
+	c.pinnedIP = ip
+	return c.info().LanIP != before
+}
+
+// LanIPs returns the address the Wyze cloud reports and the one the
+// LAN resolver verified ("" when none, or when they agree).
+func (c *Camera) LanIPs() (cloud, resolved string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Info.LanIP, c.lanIP
+}
+
+// SetLanIP records (or with "" clears) the resolver-verified address.
+// A value equal to the cloud IP is stored as "" since there is nothing
+// to override. Returns true when the effective address — what GetInfo
+// and StreamURL report — actually changed.
+func (c *Camera) SetLanIP(ip string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	before := c.info().LanIP
+	if ip == c.Info.LanIP {
+		ip = ""
+	}
+	c.lanIP = ip
+	return c.info().LanIP != before
+}
+
+// lanAbsentAfter is how many LAN sweeps in a row have to miss a camera
+// before the dashboard suggests it isn't on this LAN at all. One miss
+// can be a camera rebooting; two full sweeps a few minutes apart with
+// no answer means it's somewhere else (another house on the same Wyze
+// account, typically).
+const lanAbsentAfter = 2
+
+// lanAbsent is the "probably not on this LAN" verdict; see
+// lanAbsentAfter. A camera that verified on this LAN at any point in
+// this run doesn't qualify: a Wi-Fi camera dozing in power save can
+// miss a couple of sweeps and still be in the next room.
+func (c *Camera) lanAbsent() bool {
+	return c.lanMisses >= lanAbsentAfter && c.lanVerifiedAt.IsZero()
+}
+
+// heardWithin reports whether the camera proved it was on the LAN (an
+// ARP answer or video arriving) in the last d.
+func (c *Camera) heardWithin(d time.Duration, now time.Time) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	last := c.lanVerifiedAt
+	if c.lastVideo.After(last) {
+		last = c.lastVideo
+	}
+	return !last.IsZero() && now.Sub(last) < d
+}
+
+// LanStatus returns the resolver's history for this camera: the rung
+// that verified its address ("" if none ever has), when it last
+// verified, and the sweeps in a row that failed to hear it.
+func (c *Camera) LanStatus() (source string, verifiedAt time.Time, misses int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lanSource, c.lanVerifiedAt, c.lanMisses
+}
+
+// noteLanVerified records a successful verification by source, or by
+// the periodic recheck when source is "" (the rung stays as it was,
+// or becomes "recheck" if no rung ever verified the camera — the
+// startup probe missed it and the recheck caught it).
+func (c *Camera) noteLanVerified(source string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case source != "":
+		c.lanSource = source
+	case c.lanSource == "":
+		c.lanSource = "recheck"
+	}
+	c.lanVerifiedAt = time.Now()
+	c.lanMisses = 0
+}
+
+// noteLanMisses records that the resolver couldn't verify the camera
+// and how many sweeps have now failed to find it. The source and
+// verified-at history stay: "last verified 3h ago via sweep" is useful
+// context for a camera that is missing now.
+func (c *Camera) noteLanMisses(misses int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lanMisses = misses
 }
 
 // GetQuality returns the current quality setting under RLock.
@@ -240,6 +400,24 @@ type Snapshot struct {
 	// as `protocol_forced` in /api/metrics so operators can tell the
 	// registry default from the promoted-at-runtime state.
 	ForceWebRTC bool
+	// Video is whether frames are actually arriving (see video.go);
+	// LastVideo is when they last did, LastError the most recent go2rtc
+	// stream error and when it was reported. Zero values when unknown.
+	Video       Video
+	LastVideo   time.Time
+	LastError   string
+	LastErrorAt time.Time
+	// LanSource / LanVerifiedAt / LanMisses are the LAN resolver's
+	// history for the camera; see Camera.LanStatus.
+	LanSource     string
+	LanVerifiedAt time.Time
+	LanMisses     int
+	// LanAbsent is true once enough sweeps in a row missed the camera
+	// that it's probably not on this LAN (see lanAbsentAfter).
+	LanAbsent bool
+	// PinnedIP is the operator-set address, "" when none; Info.LanIP
+	// already reflects it.
+	PinnedIP string
 }
 
 // Snapshot returns a consistent view of the camera under RLock.
@@ -247,15 +425,24 @@ func (c *Camera) Snapshot() Snapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return Snapshot{
-		Info:        c.Info,
-		State:       c.State,
-		Quality:     c.Quality,
-		AudioOn:     c.AudioOn,
-		Record:      c.Record,
-		ErrorCount:  c.ErrorCount,
-		ConnectedAt: c.ConnectedAt,
-		LastSeen:    c.LastSeen,
-		ForceWebRTC: c.forceWebRTC,
+		Info:          c.info(),
+		State:         c.State,
+		Quality:       c.Quality,
+		AudioOn:       c.AudioOn,
+		Record:        c.Record,
+		ErrorCount:    c.ErrorCount,
+		ConnectedAt:   c.ConnectedAt,
+		LastSeen:      c.LastSeen,
+		ForceWebRTC:   c.forceWebRTC,
+		Video:         c.video,
+		LastVideo:     c.lastVideo,
+		LastError:     c.lastError,
+		LastErrorAt:   c.lastErrorAt,
+		LanSource:     c.lanSource,
+		LanVerifiedAt: c.lanVerifiedAt,
+		LanMisses:     c.lanMisses,
+		LanAbsent:     c.lanAbsent(),
+		PinnedIP:      c.pinnedIP,
 	}
 }
 
@@ -264,19 +451,31 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return map[string]interface{}{
-		"name":         c.Info.Name,
-		"nickname":     c.Info.Nickname,
-		"model":        c.Info.Model,
-		"model_name":   c.Info.ModelName(),
-		"mac":          c.Info.MAC,
-		"ip":           c.Info.LanIP,
-		"state":        c.State.String(),
-		"quality":      c.Quality,
-		"audio":        c.AudioOn,
-		"record":       c.Record,
-		"fw_version":   c.Info.FWVersion,
-		"connected_at": c.ConnectedAt,
-		"last_seen":    c.LastSeen,
-		"error_count":  c.ErrorCount,
+		"name":          c.Info.Name,
+		"nickname":      c.Info.Nickname,
+		"model":         c.Info.Model,
+		"model_name":    c.Info.ModelName(),
+		"mac":           c.Info.MAC,
+		"ip":            c.info().LanIP,
+		"cloud_ip":      c.Info.LanIP,
+		"state":         c.State.String(),
+		"quality":       c.Quality,
+		"audio":         c.AudioOn,
+		"record":        c.Record,
+		"fw_version":    c.Info.FWVersion,
+		"connected_at":  c.ConnectedAt,
+		"last_seen":     c.LastSeen,
+		"error_count":   c.ErrorCount,
+		"video":         c.video.String(),
+		"last_video":    c.lastVideo,
+		"last_error":    c.lastError,
+		"last_error_at": c.lastErrorAt,
+		// LAN resolver history: which rung verified the address, when it
+		// last verified, and how many sweeps in a row missed the camera.
+		"lan_ip_source":      c.lanSource,
+		"lan_ip_verified_at": c.lanVerifiedAt,
+		"lan_sweep_misses":   c.lanMisses,
+		"lan_absent":         c.lanAbsent(),
+		"pinned_ip":          c.pinnedIP,
 	}
 }

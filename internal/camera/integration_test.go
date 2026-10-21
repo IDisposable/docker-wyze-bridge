@@ -37,7 +37,7 @@ func mockGo2RTCServer(t *testing.T) (*httptest.Server, *go2rtcmgr.APIClient) {
 			}
 			w.WriteHeader(200)
 		case r.URL.Path == "/api/streams" && r.Method == "DELETE":
-			name := r.URL.Query().Get("name")
+			name := r.URL.Query().Get("src") // go2rtc deletes by src=, not name=
 			delete(streams, name)
 			w.WriteHeader(200)
 		case r.URL.Path == "/api/frame.jpeg":
@@ -199,7 +199,7 @@ func TestManager_SetQuality(t *testing.T) {
 	}, "hd", true, false)
 	mgr.cameras["qual_cam"] = cam
 
-	err := mgr.SetQuality(ctx, "qual_cam", "sd")
+	_, err := mgr.SetQuality(ctx, "qual_cam", "sd")
 	if err != nil {
 		t.Fatalf("SetQuality: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestManager_RestartStream_NonExistent(t *testing.T) {
 
 func TestManager_SetQuality_NonExistent(t *testing.T) {
 	mgr, _ := newTestManager(t)
-	err := mgr.SetQuality(context.Background(), "nonexistent", "sd")
+	_, err := mgr.SetQuality(context.Background(), "nonexistent", "sd")
 	if err != nil {
 		t.Errorf("SetQuality on nonexistent should return nil, got %v", err)
 	}

@@ -139,6 +139,130 @@ Registry → Model Overrides** → `model=HL_CAM4, is_webrtc=true`). To
 disable the auto-fallback entirely, set `TUTK_FALLBACK_THRESHOLD=0` —
 the chronic-error hint still points at the manual override.
 
+### Cameras whose LAN IP changed (`discovery timeout`)
+
+The Wyze cloud reports each camera's LAN IP, but only as of the last
+time the camera phoned home. After a DHCP lease change the cloud can
+lag for hours, and go2rtc keeps dialing the old address: the camera
+shows `streaming` in the UI while every pull ends in
+`wyze: connect failed: discovery timeout`.
+
+**4.7+ checks the LAN itself.** Before a TUTK camera is handed to
+go2rtc, and every `LAN_IP_RECHECK` (default `2m`) while it streams,
+the bridge asks the LAN which address the camera's MAC is answering
+from: first the cloud IP (one ARP round trip, a few milliseconds),
+then any address the kernel's neighbor cache or an earlier sweep
+already associates with that MAC, and as a last resort an ARP sweep
+of the camera's `/24` and the rest of the local subnet. The requests
+are addressed to the camera's own MAC rather than broadcast, because
+a Wi-Fi camera dozing in power save can sleep through a broadcast but
+gets a unicast frame delivered and retried by the access point (and a
+sweep addressed to one station costs the rest of the LAN nothing). A
+first recheck runs twenty seconds after startup, since a camera or
+two usually miss the startup probe, when all of them are asked at
+once. The same probe also teaches the NAS's own kernel where the
+camera is, which matters: Linux only looks a new address up by
+broadcast, so until something did this go2rtc's dial couldn't even
+leave the box for a camera that sleeps through broadcasts. The verified
+address goes into the stream URL, the dashboard, MQTT and
+`/api/cameras` (`cloud_ip` keeps the cloud's value), and shows up as
+a `lan_ip` event on `/metrics`. A camera the bridge can't find keeps
+whatever address it had, so nothing is ever worse than before.
+
+Requirements: `network_mode: host` (TUTK needs it anyway) and
+`CAP_NET_RAW`, which Docker grants by default. Without raw sockets
+the bridge falls back to reading the kernel's neighbor cache, which
+can trail a moved camera by a minute or so. The startup log says
+which engine is active (`LAN IP resolver ready engine=arp`).
+
+To see the resolver at work, open a camera's detail page: the
+**Network** box shows the address the cloud reported, when the bridge
+last verified the camera and by which route (cloud address, last
+known address, neighbor cache, LAN sweep), how many sweeps in a row
+missed it, and which engine is running. The same fields are in
+`/api/cameras` as `lan_ip_source`, `lan_ip_verified_at` and
+`lan_sweep_misses`.
+
+For the odd camera ARP can't reach (on a VLAN the container doesn't sit
+on, say) the same box has a **Pinned** field: type the address, click
+**Pin**, and the bridge uses it no matter what the cloud or the
+resolver say, across restarts, until you **Clear** it. Pins are kept by
+MAC in the state file and only make sense for cameras the bridge dials
+directly (TUTK); doorbells and OG cameras are refused. REST: `POST
+/api/cameras/{name}/pin` with `{"ip":"192.168.4.151"}`, empty to unpin.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `LAN_IP_RESOLVE` | `true` | Verify TUTK cameras' LAN addresses by MAC before go2rtc dials them |
+| `LAN_IP_SWEEP` | `true` | Allow the last-resort ARP sweep (paced, capped at a `/22`, throttled so an absent camera can't flood the LAN) |
+| `LAN_IP_RECHECK` | `2m` | How often streaming cameras are re-verified; `0` disables |
+
+### Dashboard
+
+The dashboard follows your OS light/dark setting; the ◐ button in
+the header overrides it (remembered per browser). The chips count
+cameras, live streams, streams with no video and ignored cameras,
+and the filter box narrows the grid by name, model or IP.
+
+### Arranging the dashboard
+
+Click **🔓 Arrange** in the header, drag tiles by the ⠿ handle into
+the order you want, then click **🔒 Locked**. A locked grid has no
+handles, so a stray touch on a phone can't shuffle it. The order is
+saved in the bridge's state file, not the browser, so every device
+sees the same grid; new cameras land at the end in name order.
+
+While arranging, the ⟳ button on a tile turns its picture a quarter
+turn per click, for cameras mounted sideways or upside down. That's a
+view rotation: it applies to the tile and the detail page and is saved
+with the layout, but the stream the camera sends (RTSP, HLS, Home
+Assistant) is untouched. To flip the stream itself use the camera's
+own flip settings (see the detail page).
+
+### Camera controls
+
+The detail page has a **Camera** row for settings that live on the
+camera itself and go through the Wyze cloud: flip horizontal, flip
+vertical, night vision (auto / on / off) and **⟲ Reboot camera**.
+These are the same properties the MQTT `set` topics drive, so a
+change made here is mirrored to the camera's MQTT state topic and
+Home Assistant stays in step. Wyze doesn't report these values back,
+so the buttons are stateless: green means Wyze accepted it, red means
+it didn't. Reboot asks first, restarts the camera (the stream drops
+for about a minute) and re-registers the go2rtc stream so it dials
+the camera fresh when it's back; **Restart Stream** next to it only
+re-registers the stream. REST: `POST /api/cameras/{name}/property`
+with `{"property":"hor_flip","value":"on"}` (any name from the MQTT
+set table), `POST /api/cameras/{name}/reboot`.
+
+### What the badges mean
+
+The green `streaming` badge means go2rtc accepted the stream; it says
+nothing about video, because go2rtc only dials a camera when something
+pulls the stream and never reports a failed dial. The second badge is
+the honest one: `live` means bytes arrived in the last 30 seconds,
+`idle` means nobody is pulling (normal), `no video` means something
+is pulling but nothing is coming back, or go2rtc reported an error for
+that stream — hover for the reason. The dashboard's own players count
+as pulling, and the error go2rtc sends a player when a dial fails is
+read off on the way through, so a card you're looking at tells the
+truth within a minute even when nothing else pulls that camera. If a
+camera's connection is up but has gone silent while something is
+pulling it (a V3 that drops off Wi-Fi mid-stream leaves go2rtc holding
+a dead session, and every new viewer joins it), the bridge restarts
+the stream on its own, at most once every two minutes, and sends the
+dashboard's players to reconnect; that's what the Restart Stream
+button does by hand. The dashboard's
+players also start a moment apart instead of all at once, and any
+player whose picture stops moving for 20 seconds reconnects by itself
+(backing off for a camera that keeps failing), and each tile asks for
+a single MSE stream rather than WebRTC and MSE at once. go2rtc's player waits
+forever after a failed dial, which is why a card could spin while the
+same camera opened instantly on its detail page. A `discovery timeout` on a TUTK
+camera also triggers an immediate LAN IP recheck (see above). The
+detail page shows when video last flowed and the last error; the
+`/metrics` event log records every drop and recovery.
+
 ## Quick Start
 
 ```bash
@@ -147,10 +271,15 @@ docker run -p 5080:5080 -p 8554:8554 -p 8888:8888 -p 8889:8889 -p 8189:8189/udp 
   -e WYZE_PASSWORD=yourpass \
   -e WYZE_API_ID=your-api-id \
   -e WYZE_API_KEY=your-api-key \
+  -v "$PWD/config:/config" \
   idisposablegithub365/wyze-bridge:latest
 ```
 
-Then open `http://localhost:5080` for the WebUI.
+Then open `http://localhost:5080` for the WebUI. Keep the `/config`
+mount: the state file there holds the Wyze login and everything you
+set in the WebUI (ignore list, Settings rules, pinned addresses,
+video quality, tile layout), and without it all of that is lost each
+time the container is recreated.
 
 > [!TIP]
 > **TUTK / older doorbell users:** if streams fail with `discovery
@@ -262,7 +391,9 @@ discovery.
 Auto-created entities per camera:
 
 - `camera.<mac>` — live stream + snapshot
-- `switch.<mac>_audio`, `switch.<mac>_quality` — runtime controls
+- `select.<mac>_quality` (HD / SD, saved like the Settings page
+  choice and kept in step with it), `switch.<mac>_audio` — runtime
+  controls
 - `binary_sensor.<mac>_recording` — flips with the record button
 
 Bridge-wide entities:
@@ -303,6 +434,18 @@ AUDIO_BACKYARD=false       # audio off for this camera
 RECORD_GARAGE=true         # recording on for just this camera
 ```
 
+Quality can also be set per camera at runtime: the **Video quality**
+table on the Settings page, the HD / SD buttons on a camera's page,
+the MQTT `quality` select, or `POST /api/cameras/{name}/quality` with
+`{"quality":"sd"}` (`""` goes back to the default). The choice is
+saved in the state file by MAC and beats `QUALITY_<CAM>` and
+`QUALITY`; changing it restarts that camera's stream once. HD is the
+camera's best (1080p on a V3, 2K on the 2K models), SD is 360p at a
+much lower bitrate, which helps a camera on weak Wi-Fi. There's one
+stream per camera, so the dashboard, Home Assistant, RTSP clients and
+recordings all get the same one. Doorbells and Gwell cameras pick
+their own and aren't listed.
+
 ### Camera Filtering
 
 ```bash
@@ -311,6 +454,49 @@ FILTER_BLOCKS=true                  # Or exclude the listed ones
 FILTER_MODELS=WYZECP1_JEF           # By model code (comma-separated)
 FILTER_MACS=AA:BB:CC:DD:EE:FF       # By MAC
 ```
+
+**Ignore list (4.7+).** Every camera card on the dashboard has a 🚫
+button. Ignoring a camera drops it from go2rtc, hides it, stops the
+reconnect attempts and LAN sweeps for it, and remembers its MAC in
+the state file so it stays gone across restarts — handy for cameras
+on your Wyze account that aren't on this LAN (a relative's house, a
+shared camera). Ignored cameras are listed at the bottom of the
+dashboard with a **Restore** button; restoring rediscovers right
+away. The env filters above still apply first. REST: `GET
+/api/ignored`, `POST /api/cameras/{name}/ignore`, `POST
+/api/ignored/{mac}/restore`.
+
+You usually don't have to go looking for them: once two LAN sweeps in
+a row have failed to hear a camera's MAC, and it hasn't verified on
+the LAN at all since the bridge started, its card grows a "Not on
+this LAN?" note with an **Ignore it** button that does the same thing.
+The note goes away by itself the moment the camera verifies (or video
+flows), so a camera that was just rebooting doesn't get flagged for
+long. `/api/cameras` reports the verdict as `lan_absent`.
+
+**Camera rules (Settings page, 4.7+).** For the account-wide version of
+the same problem, open **Settings** in the header. The **network
+scope** switch has two positions: *any address* (the default, every
+camera the cloud lists) and *local subnets only*, which skips cameras
+whose address isn't on one of the bridge's own subnets, i.e. what
+another house's cameras look like. There's a box for extra CIDRs that
+should count as local (a camera VLAN the container doesn't sit on) and
+the page shows the subnets it detected. Below that are lists by
+nickname (one per line, `*` matches anything, case doesn't matter),
+MAC and model, with a block-or-allow switch exactly like
+`FILTER_BLOCKS`. Rules are saved in the state file and applied on the
+spot: a camera they drop leaves go2rtc and the dashboard like an
+ignored one (and comes back as soon as the rules let it), and the
+**Excluded by rules** strip at the bottom of the dashboard lists each
+one with the reason. The `FILTER_*` env vars still run first, and the
+🚫 ignore list still applies on top. A camera the cloud has no address
+for can't fail the scope check, so a camera that's merely unplugged
+stays on the dashboard, and if the bridge can't tell what's local at
+all (no LAN interface and no CIDRs listed) the scope excludes nothing
+and the log says so. Note that eero's default LAN is
+`192.168.4.0/22`, so if the other household is also on eero its
+cameras look local by address and need a name rule or the 🚫 instead.
+REST: `GET`/`PUT /api/settings`, `GET /api/excluded`.
 
 ### Snapshots
 

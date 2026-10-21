@@ -3,10 +3,13 @@ package go2rtcmgr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -17,6 +20,23 @@ type APIClient struct {
 	baseURL    string
 	httpClient *http.Client
 	log        zerolog.Logger
+
+	// mu lets one stream-table call at a time reach go2rtc. go2rtc
+	// 1.9.14 guards its stream table on create and lookup but not when
+	// it lists the table or deletes from it, and the Go runtime kills
+	// the process when it catches a map being read and written at the
+	// same moment. The bridge used to fire a camera's delete and add
+	// alongside every other camera's at startup and on reconnects; one
+	// at a time costs a few milliseconds per camera.
+	mu sync.Mutex
+}
+
+// Unreachable reports an API call that failed because go2rtc itself
+// wasn't there to answer (not running, or restarting), as opposed to
+// go2rtc answering with an error about the stream.
+func Unreachable(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 // StreamInfo contains details about a go2rtc stream.
@@ -26,10 +46,61 @@ type StreamInfo struct {
 	Consumers []ConsumerInfo `json:"consumers,omitempty"`
 }
 
-// ProducerInfo describes a stream producer (source).
+// ProducerInfo describes a stream producer (source). go2rtc reports a
+// bare {"url": ...} for a producer it hasn't dialed; once connected
+// the object grows remote_addr, bytes_recv and per-track receivers
+// with their own byte counters. The wyze:// source feeds its tracks
+// through the receivers, so Receivers[].Bytes is where TUTK video
+// shows up (bytes_recv stays 0 for it).
 type ProducerInfo struct {
-	URL    string        `json:"url,omitempty"`
-	Medias []interface{} `json:"medias,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	RemoteAddr string         `json:"remote_addr,omitempty"`
+	BytesRecv  int            `json:"bytes_recv,omitempty"`
+	Medias     []interface{}  `json:"medias,omitempty"`
+	Receivers  []ReceiverInfo `json:"receivers,omitempty"`
+}
+
+// ReceiverInfo is one producer track's counters.
+type ReceiverInfo struct {
+	Bytes   int `json:"bytes,omitempty"`
+	Packets int `json:"packets,omitempty"`
+}
+
+// Connected reports whether go2rtc currently holds a connection to
+// this producer, as opposed to just knowing its URL.
+func (p ProducerInfo) Connected() bool {
+	return p.RemoteAddr != "" || len(p.Receivers) > 0 || p.BytesRecv > 0
+}
+
+// Bytes is the total the producer has delivered on this connection.
+func (p ProducerInfo) Bytes() int {
+	n := p.BytesRecv
+	for _, r := range p.Receivers {
+		n += r.Bytes
+	}
+	return n
+}
+
+// ProducerConnected reports whether any producer of the stream is
+// connected.
+func (s *StreamInfo) ProducerConnected() bool {
+	for _, p := range s.Producers {
+		if p.Connected() {
+			return true
+		}
+	}
+	return false
+}
+
+// ProducerBytes sums every producer's delivered bytes. go2rtc resets
+// the counters when a producer reconnects, so callers comparing polls
+// must treat a decrease as a fresh connection, not as negative flow.
+func (s *StreamInfo) ProducerBytes() int {
+	n := 0
+	for _, p := range s.Producers {
+		n += p.Bytes()
+	}
+	return n
 }
 
 // ConsumerInfo describes a stream consumer.
@@ -56,6 +127,8 @@ func (c *APIClient) BaseURL() string {
 
 // ListStreams returns all configured streams.
 func (c *APIClient) ListStreams(ctx context.Context) (map[string]*StreamInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/streams", nil)
 	if err != nil {
 		return nil, err
@@ -89,6 +162,8 @@ func (c *APIClient) ListStreams(ctx context.Context) (map[string]*StreamInfo, er
 // manifests as `av_interleaved_write_frame(): Broken pipe` on the
 // ffmpeg side.
 func (c *APIClient) AddStream(ctx context.Context, name, streamURL string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.log.Debug().Str("stream", name).Bool("placeholder", streamURL == "").Msg("adding stream to go2rtc")
 
 	u := fmt.Sprintf("%s/api/streams?name=%s", c.baseURL, url.QueryEscape(name))
@@ -118,8 +193,14 @@ func (c *APIClient) AddStream(ctx context.Context, name, streamURL string) error
 }
 
 // DeleteStream removes a stream from go2rtc.
+//
+// go2rtc reads the stream to delete from src=, not name=. Asked with
+// name= alone it took the request for "list everything" and deleted
+// nothing, which is how this call behaved until 4.7.
 func (c *APIClient) DeleteStream(ctx context.Context, name string) error {
-	u := fmt.Sprintf("%s/api/streams?name=%s", c.baseURL, url.QueryEscape(name))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	u := fmt.Sprintf("%s/api/streams?src=%s", c.baseURL, url.QueryEscape(name))
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", u, nil)
 	if err != nil {
@@ -143,6 +224,8 @@ func (c *APIClient) DeleteStream(ctx context.Context, name string) error {
 
 // GetStreamInfo returns detailed info for a specific stream.
 func (c *APIClient) GetStreamInfo(ctx context.Context, name string) (*StreamInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	u := fmt.Sprintf("%s/api/streams?src=%s", c.baseURL, url.QueryEscape(name))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)

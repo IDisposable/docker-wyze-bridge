@@ -67,3 +67,13 @@ func (c *Client) PublishBridgeState(online bool) {
 	}
 	c.publish(fmt.Sprintf("%s/bridge/state", c.topic), state, true)
 }
+
+// PublishProperty reports a camera property the bridge just set by
+// another route (the WebUI's flip buttons, say) on the same retained
+// state topic the MQTT set handler uses, so HA's switches follow.
+func (c *Client) PublishProperty(camName, property, value string) {
+	if !c.IsConnected() {
+		return
+	}
+	c.publish(fmt.Sprintf("%s/%s/%s", c.topic, camName, property), value, true)
+}

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -25,6 +27,59 @@ type Manager struct {
 	ready      chan struct{}
 	mu         sync.Mutex
 	cancel     context.CancelFunc
+	// onWarning sees every WRN/ERR line go2rtc prints, after the
+	// timestamp/level prefix is stripped. go2rtc never reports a failed
+	// dial through its API — the only place "wyze: connect failed:
+	// discovery timeout" surfaces is here — so this is how the bridge
+	// learns a camera's stream is actually broken. See ParseStreamError.
+	onWarning func(level, msg string)
+
+	// Supervision. go2rtc is the whole streaming plane, so when it dies
+	// on its own (a Go panic exits with status 2) it is started again
+	// after restartDelay, which doubles from restartMin up to
+	// restartMax while it keeps dying and resets once a run lasts
+	// restartStable. onRestart runs after each restarted go2rtc answers
+	// its API; the streams the bridge added at runtime are gone by
+	// then and have to be added again.
+	onRestart     func()
+	startedAt     time.Time
+	restartDelay  time.Duration
+	restartMin    time.Duration
+	restartMax    time.Duration
+	restartStable time.Duration
+	readyTimeout  time.Duration
+
+	// crashLines counts down the lines after a "panic:" or "fatal
+	// error:" that are logged at error level. Those lines carry no
+	// level prefix, so they'd otherwise go to trace and the reason
+	// go2rtc died would never reach the log.
+	crashLines atomic.Int32
+}
+
+// crashLineBudget is how much of a crash dump reaches the log: the
+// panic message and the first goroutine's stack, not every goroutine.
+const crashLineBudget = 60
+
+// OnRestart registers a callback for go2rtc having been restarted after
+// an unexpected exit, once it is ready again. Runs on its own goroutine.
+func (m *Manager) OnRestart(fn func()) {
+	m.mu.Lock()
+	m.onRestart = fn
+	m.mu.Unlock()
+}
+
+// OnWarning registers the observer for go2rtc's WRN/ERR lines. Called
+// from the relay goroutines; keep it quick and non-blocking.
+func (m *Manager) OnWarning(fn func(level, msg string)) {
+	m.mu.Lock()
+	m.onWarning = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) warningObserver() func(level, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onWarning
 }
 
 // NewManager creates a new go2rtc process manager.
@@ -35,6 +90,11 @@ func NewManager(binaryPath, configPath string, log zerolog.Logger) *Manager {
 		configPath: configPath,
 		apiURL:     "http://127.0.0.1:1984",
 		ready:      make(chan struct{}),
+
+		restartMin:    2 * time.Second,
+		restartMax:    time.Minute,
+		restartStable: 5 * time.Minute,
+		readyTimeout:  15 * time.Second,
 	}
 }
 
@@ -63,51 +123,155 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
-
-	m.cmd = exec.CommandContext(ctx, m.binaryPath, "-config", m.configPath)
-	configureProcess(m.cmd)
-
-	stdout, err := m.cmd.StdoutPipe()
-	if err != nil {
+	if err := m.spawnLocked(ctx); err != nil {
 		cancel()
+		return err
+	}
+	return nil
+}
+
+// spawnLocked starts one go2rtc process under ctx and watches it. The
+// caller holds m.mu.
+func (m *Manager) spawnLocked(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, m.binaryPath, "-config", m.configPath)
+	configureProcess(cmd)
+
+	// Our own pipes rather than StdoutPipe/StderrPipe: Wait closes
+	// those as soon as the process exits, which can cut off the end of
+	// a crash dump still sitting in the pipe. These read to EOF.
+	stdout, stdoutW, err := os.Pipe()
+	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
-
-	stderr, err := m.cmd.StderrPipe()
+	stderr, stderrW, err := os.Pipe()
 	if err != nil {
-		cancel()
+		stdout.Close()
+		stdoutW.Close()
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
-	if err := m.cmd.Start(); err != nil {
-		cancel()
+	err = cmd.Start()
+	// The child has its own copies now; ours must go or EOF never comes.
+	stdoutW.Close()
+	stderrW.Close()
+	if err != nil {
+		stdout.Close()
+		stderr.Close()
 		return fmt.Errorf("start go2rtc: %w", err)
 	}
+	m.cmd = cmd
+	m.startedAt = time.Now()
+	m.crashLines.Store(0)
 
 	m.log.Info().
 		Str("binary", m.binaryPath).
 		Str("config", m.configPath).
-		Int("pid", m.cmd.Process.Pid).
+		Int("pid", cmd.Process.Pid).
 		Msg("go2rtc started")
 
-	// Relay stdout/stderr through zerolog
-	go m.relayOutput(bufio.NewScanner(stdout))
-	go m.relayOutput(bufio.NewScanner(stderr))
+	// Relay stdout/stderr through zerolog.
+	relayed := make(chan struct{}, 2)
+	relay := func(r *os.File) {
+		defer r.Close()
+		m.relayOutput(bufio.NewScanner(r))
+		relayed <- struct{}{}
+	}
+	go relay(stdout)
+	go relay(stderr)
 
 	// Monitor process exit
 	go func() {
-		err := m.cmd.Wait()
+		err := cmd.Wait()
+		// Let the relays finish the crash dump before saying it died,
+		// but don't hang on a grandchild (ffmpeg) holding a pipe open.
+		drain := time.After(2 * time.Second)
+	relays:
+		for range 2 {
+			select {
+			case <-relayed:
+			case <-drain:
+				break relays
+			}
+		}
 		m.mu.Lock()
-		m.cmd = nil
+		if m.cmd == cmd {
+			m.cmd = nil
+		}
 		m.mu.Unlock()
 		if err != nil && ctx.Err() == nil {
 			m.log.Error().Err(err).Msg("go2rtc exited unexpectedly")
+			go m.restartAfterCrash(ctx)
+		} else if ctx.Err() == nil {
+			// Exit status 0 without being asked to stop is still go2rtc
+			// gone; bring it back the same way.
+			m.log.Warn().Msg("go2rtc exited on its own")
+			go m.restartAfterCrash(ctx)
 		} else {
 			m.log.Info().Msg("go2rtc stopped")
 		}
 	}()
 
 	return nil
+}
+
+// nextRestartDelay picks the wait before the next restart: restartMin
+// after a run that lasted restartStable, otherwise double the last.
+func (m *Manager) nextRestartDelay(now time.Time) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.restartDelay == 0 || now.Sub(m.startedAt) >= m.restartStable {
+		m.restartDelay = m.restartMin
+	} else {
+		m.restartDelay = min(m.restartDelay*2, m.restartMax)
+	}
+	return m.restartDelay
+}
+
+// restartAfterCrash brings go2rtc back after it died on its own: wait,
+// start it, wait for its API, then tell the bridge so it can add its
+// streams again. A start that fails, or a process that never answers,
+// goes round again with a longer wait. Stop (ctx cancelled) ends it.
+func (m *Manager) restartAfterCrash(ctx context.Context) {
+	delay := m.nextRestartDelay(time.Now())
+	m.log.Warn().Dur("in", delay).Msg("restarting go2rtc")
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(delay):
+	}
+
+	m.mu.Lock()
+	if ctx.Err() != nil || m.cmd != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.ready = make(chan struct{})
+	err := m.spawnLocked(ctx)
+	cmd := m.cmd
+	m.mu.Unlock()
+	if err != nil {
+		m.log.Error().Err(err).Msg("go2rtc restart failed")
+		go m.restartAfterCrash(ctx)
+		return
+	}
+
+	if err := m.WaitReady(ctx, m.readyTimeout); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		// Kill it; the exit watcher schedules the next attempt.
+		m.log.Error().Err(err).Msg("restarted go2rtc never answered; killing it")
+		_ = cmd.Process.Kill()
+		return
+	}
+
+	m.mu.Lock()
+	fn := m.onRestart
+	m.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // Stop gracefully stops the go2rtc subprocess.
@@ -127,6 +291,9 @@ func (m *Manager) Stop() error {
 
 // WaitReady polls the go2rtc API until it responds or the timeout expires.
 func (m *Manager) WaitReady(ctx context.Context, timeout time.Duration) error {
+	m.mu.Lock()
+	ready := m.ready
+	m.mu.Unlock()
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -139,7 +306,11 @@ func (m *Manager) WaitReady(ctx context.Context, timeout time.Duration) error {
 			return fmt.Errorf("go2rtc not ready after %v", timeout)
 		case <-ticker.C:
 			if m.IsHealthy(ctx) {
-				close(m.ready)
+				select {
+				case <-ready:
+				default:
+					close(ready)
+				}
 				m.log.Info().Msg("go2rtc is ready")
 				return nil
 			}
@@ -205,6 +376,13 @@ func (m *Manager) emitLogLine(line string) {
 	if shouldSuppressGo2RTCLogLine(line) {
 		return
 	}
+	if strings.HasPrefix(line, "panic: ") || strings.HasPrefix(line, "fatal error: ") {
+		m.crashLines.Store(crashLineBudget)
+	}
+	if m.crashLines.Load() > 0 && m.crashLines.Add(-1) >= 0 {
+		m.log.Error().Msg(line)
+		return
+	}
 
 	parts := strings.SplitN(line, " ", 3)
 	if len(parts) == 3 {
@@ -217,13 +395,56 @@ func (m *Manager) emitLogLine(line string) {
 			return
 		case "WRN":
 			m.log.Warn().Msg(parts[2])
+			if fn := m.warningObserver(); fn != nil {
+				fn("warn", parts[2])
+			}
 			return
 		case "ERR", "FTL", "PNC":
 			m.log.Error().Msg(parts[2])
+			if fn := m.warningObserver(); fn != nil {
+				fn("error", parts[2])
+			}
 			return
 		}
 	}
 	m.log.Trace().Msg(line)
+}
+
+// ParseStreamError pulls the stream name and error text out of a go2rtc
+// warning that names its stream, such as
+//
+//	[rtsp] error="streams: wyze: connect failed: discovery timeout" stream=side_garage
+//
+// Lines without a stream= token (the mjpeg snapshot path, for one)
+// can't be attributed and return ok=false.
+func ParseStreamError(msg string) (stream, errText string, ok bool) {
+	i := strings.Index(msg, "stream=")
+	if i < 0 {
+		return "", "", false
+	}
+	fields := strings.Fields(msg[i+len("stream="):])
+	if len(fields) == 0 {
+		return "", "", false
+	}
+	stream = strings.Trim(fields[0], `"`)
+	if stream == "" {
+		return "", "", false
+	}
+	if j := strings.Index(msg, `error="`); j >= 0 {
+		rest := msg[j+len(`error="`):]
+		if k := strings.Index(rest, `"`); k >= 0 {
+			errText = rest[:k]
+		}
+	}
+	if errText == "" {
+		// No quoted error: use the message minus the stream token so
+		// the camera still gets something readable.
+		errText = strings.TrimSpace(strings.Replace(msg, "stream="+stream, "", 1))
+	}
+	// go2rtc prefixes every source error with "streams: "; drop it, the
+	// camera card has no room for boilerplate.
+	errText = strings.TrimPrefix(errText, "streams: ")
+	return stream, errText, true
 }
 
 func shouldSuppressGo2RTCLogLine(line string) bool {

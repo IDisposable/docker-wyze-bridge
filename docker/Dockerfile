@@ -2,8 +2,18 @@
 FROM alpine:3.21 AS go2rtc-fetch
 ARG GO2RTC_VERSION=1.9.14
 ARG TARGETARCH
+# BuildKit sets TARGETARCH; the legacy builder and some GUI builds
+# (Portainer, NAS apps) don't, so fall back to the arch we're running on.
 RUN apk add --no-cache curl ca-certificates && \
     ARCH=${TARGETARCH}; \
+    if [ -z "$ARCH" ]; then \
+      case "$(uname -m)" in \
+        x86_64) ARCH=amd64 ;; \
+        aarch64) ARCH=arm64 ;; \
+        armv7l|armv6l) ARCH=arm ;; \
+        *) ARCH="$(uname -m)" ;; \
+      esac; \
+    fi; \
     if [ "$ARCH" = "arm" ]; then ARCH="arm"; fi; \
     curl -fsSL \
       "https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/go2rtc_linux_${ARCH}" \
@@ -22,7 +32,7 @@ RUN go mod download
 COPY . .
 # Replace placeholder video-rtc.js with real one before embedding
 COPY --from=go2rtc-fetch /video-rtc.js ./internal/webui/static/video-rtc.js
-ARG VERSION=dev
+ARG VERSION=4.7.0-dev
 RUN CGO_ENABLED=0 GOOS=linux \
     go build -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /wyze-bridge ./cmd/wyze-bridge

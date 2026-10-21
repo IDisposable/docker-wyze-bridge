@@ -52,7 +52,10 @@ Legend used in this document:
 
 ## Per-camera state topics (Publish)
 
-All retained unless noted.
+All retained unless noted. The property topics (`night_vision`,
+`hor_flip`, `ver_flip`, ...) are also republished when the same
+property is set from the WebUI's camera controls
+(`POST /api/cameras/{name}/property`), so HA follows either route.
 
 | Topic | Payload | HA entity type | Notes |
 |---|---|---|---|

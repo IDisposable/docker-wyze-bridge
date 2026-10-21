@@ -44,6 +44,14 @@ image: idisposablegithub365/wyze-bridge:go
 | **Gwell / WebRTC support** | OG-family Gwell cameras (GW_GC1/GC2) + Doorbell lineage (GW_BE1 / GW_DBD) now work end-to-end. See [Gwell Cameras Now Supported](#new-gwell-cameras-now-supported). |
 | **Record start/stop in the UI** | Every camera card has a record button. Click starts per-camera `ffmpeg -f segment`; click again stops it. Also flipped via MQTT or `POST /api/cameras/<name>/record`. |
 | **Observability surfaces** | `/metrics` HTML dashboard, `/metrics.prom` Prometheus exposition, `/api/metrics` JSON, expanded `/api/health`, auto-generated `/dashboard.yaml` for Home Assistant. |
+| **WebUI restyle (4.7)** | Same pages, cleaner look: light/dark (follows the OS, ◐ to override), header chips for cameras / live / no video / ignored, a filter box, 16:9 tiles with meaningful badge colors, consistent action buttons, tidier detail page. No new dependencies; everything is still embedded. |
+| **Honest video status (4.7)** | A second badge on every card: `live` / `idle` / `no video`, from go2rtc's producer byte counters and its `stream=` warnings. The last go2rtc error shows on the detail page and in `/api/cameras` (`video`, `last_video`, `last_error`, `last_error_at`); a TUTK `discovery timeout` triggers an immediate LAN IP recheck. |
+| **Arrange and lock tiles (4.7)** | Drag the ⠿ handle to put the dashboard in the order you want, rotate a sideways camera's picture with ⟳, then lock it. Saved in the state file (`GET`/`PUT /api/layout`) so your phone and desktop agree. |
+| **Network box on the detail page (4.7)** | Says what the Wyze cloud reported, how and when the bridge verified the camera's address (cloud address, last known, neighbor cache or LAN sweep), how many sweeps in a row missed it, and which resolver engine is running. Same data in `/api/cameras` (`lan_ip_source`, `lan_ip_verified_at`, `lan_sweep_misses`). |
+| **Camera rules on a Settings page (4.7)** | Network scope (any address, or local subnets only so another house's cameras are skipped by address), extra CIDRs, and name (`*` wildcard) / MAC / model lists in block or allow mode. Saved in the state file, applied right away, excluded cameras listed with the reason. The `FILTER_*` env vars still run first. `GET`/`PUT /api/settings`, `GET /api/excluded`. |
+| **Pinned LAN address (4.7)** | For a camera ARP can't reach: type its address in the detail page's Network box and Pin it. Beats the cloud and the resolver, kept by MAC in the state file, TUTK cameras only. `POST /api/cameras/{name}/pin`. |
+| **Camera controls on the detail page (4.7)** | Flip horizontal / vertical, night vision auto / on / off and a reboot button, sent through the Wyze cloud like the MQTT `set` topics and mirrored to MQTT so Home Assistant agrees. `POST /api/cameras/{name}/property`, `POST /api/cameras/{name}/reboot`. |
+| **Ignore list in the WebUI (4.7)** | Each camera card has a 🚫 button; ignored cameras are dropped from go2rtc, hidden, never retried, remembered by MAC in the state file, and restorable from a strip at the bottom of the dashboard. A card whose camera two LAN sweeps in a row couldn't hear shows a "Not on this LAN?" note with the same button. `GET /api/ignored`, `POST /api/cameras/{name}/ignore`, `POST /api/ignored/{mac}/restore`. |
 | **MQTT metric topics** | Bridge-wide gauges at `<topic>/bridge/*` (uptime, camera counts, config errors, recordings size) + per-camera `<topic>/<cam>/recording`. All auto-created via HA discovery. See [DOCS/MQTT_SPEC.md](DOCS/MQTT_SPEC.md) for complete details |
 
 ## Breaking Changes
@@ -219,6 +227,29 @@ Tracked in [#117](https://github.com/IDisposable/docker-wyze-bridge/issues/117),
 [#87](https://github.com/IDisposable/docker-wyze-bridge/issues/87).
 Design + testing notes in `DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md`.
 
+### Stale LAN IP after a DHCP change (`discovery timeout`)
+
+The Wyze cloud's idea of a camera's LAN IP can lag a DHCP lease
+change by hours. The old bridge took the cloud's word for it, so a
+camera that moved kept being dialed at its old address and every
+pull failed with `wyze: connect failed: discovery timeout` while the
+UI still said `streaming`.
+
+**4.7+ resolves the address on the LAN.** Before a TUTK camera is
+registered with go2rtc the bridge verifies, by MAC over ARP, that
+the cloud IP really is the camera; if not it finds where the MAC
+is answering from (neighbor cache, then a paced ARP sweep) and uses
+that. Streaming cameras are re-verified every `LAN_IP_RECHECK`
+(default `2m`) and re-registered with go2rtc when they move. The
+corrected address is what the WebUI, MQTT and `/api/cameras` show
+(`cloud_ip` keeps the cloud's value) and each correction is a
+`lan_ip` event on `/metrics`. Set `LAN_IP_RESOLVE=false` to get the
+old behavior, `LAN_IP_SWEEP=false` to keep the verification but
+never sweep. Needs `network_mode: host` (TUTK already does) and the
+default `CAP_NET_RAW`; without raw sockets the bridge reads the
+kernel's neighbor cache instead, which can trail a moved camera by
+a minute or so. See README → *Cameras whose LAN IP changed*.
+
 ## Default Behavior Changes (4.0)
 
 The rewrite is a good opportunity to pick sensible defaults. If you
@@ -248,6 +279,9 @@ rely on an earlier behavior, set the env var explicitly.
 | `STUN_SERVER` | `stun:stun.l.google.com:19302` | STUN server for WebRTC |
 | `BRIDGE_API_TOKEN` | — | Bearer token for REST API access (renamed from `WB_API` in 4.0) |
 | `FORCE_IOTC_DETAIL` | `false` | Verbose TUTK/go2rtc logging |
+| `LAN_IP_RESOLVE` | `true` | Verify TUTK cameras' LAN IPs by MAC (ARP) before go2rtc dials them (4.7) |
+| `LAN_IP_SWEEP` | `true` | Allow the last-resort ARP sweep when a camera moved (4.7) |
+| `LAN_IP_RECHECK` | `2m` | Re-verify streaming cameras' addresses this often; `0` disables (4.7) |
 
 ### Ignored Variables (silently dropped)
 

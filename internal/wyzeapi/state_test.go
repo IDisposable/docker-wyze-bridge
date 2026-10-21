@@ -3,6 +3,7 @@ package wyzeapi
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,199 @@ func TestStateFile_Permissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm&0077 != 0 {
 		t.Errorf("state file permissions = %o, should not be world-readable", perm)
+	}
+}
+
+func TestStateFile_IgnoredRoundTrip(t *testing.T) {
+	// The WebUI ignore list survives a save and load, empty fields and all.
+	// SetIgnored keeps its own copy of the list, and nil clears it.
+	dir := t.TempDir()
+	since := time.Date(2026, 10, 20, 15, 0, 0, 0, time.UTC)
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	sf.SetIgnored([]IgnoredCamera{
+		{MAC: "D03F2700CA01", Nickname: "Front Porch Cam", Model: "WYZE_CAKP2JFUS", Since: since},
+		{MAC: "80482C0D6B02", Since: since},
+	})
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Ignored) != 2 || loaded.Ignored[0].MAC != "D03F2700CA01" || loaded.Ignored[0].Nickname != "Front Porch Cam" || !loaded.Ignored[0].Since.Equal(since) {
+		t.Errorf("ignored = %+v", loaded.Ignored)
+	}
+	if loaded.Ignored[1].Nickname != "" || loaded.Ignored[1].Model != "" {
+		t.Errorf("empty nickname/model should round-trip empty: %+v", loaded.Ignored[1])
+	}
+
+	// SetIgnored copies: mutating the caller's slice afterwards must
+	// not reach the state file.
+	list := []IgnoredCamera{{MAC: "AA"}}
+	sf.SetIgnored(list)
+	list[0].MAC = "BB"
+	if sf.Ignored[0].MAC != "AA" {
+		t.Error("SetIgnored aliased the caller's slice")
+	}
+	sf.SetIgnored(nil)
+	if len(sf.Ignored) != 0 {
+		t.Error("SetIgnored(nil) should clear the list")
+	}
+}
+
+func TestStateFile_LoadWithoutIgnoredField(t *testing.T) {
+	// Older state files have no "ignored" key: load must leave the
+	// list empty rather than fail.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "wyze-bridge.state.json"), []byte(`{"cameras":{},"updated":"2026-01-01T00:00:00Z"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Ignored) != 0 {
+		t.Errorf("ignored = %+v, want empty", loaded.Ignored)
+	}
+}
+
+func TestStateFile_LayoutRoundTrip(t *testing.T) {
+	// A state file with no layout loads with a nil Layout. A saved tile
+	// order and lock come back as set, even if the caller changes its
+	// slice after SetLayout.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Layout != nil {
+		t.Errorf("no layout saved should load as nil, got %+v", loaded.Layout)
+	}
+
+	order := []string{"driveway", "side_garage"}
+	sf.SetLayout(Layout{Order: order, Locked: true})
+	order[0] = "mutated" // SetLayout must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ = LoadState(dir, zerolog.Nop())
+	if loaded.Layout == nil || !loaded.Layout.Locked || len(loaded.Layout.Order) != 2 || loaded.Layout.Order[0] != "driveway" {
+		t.Errorf("layout = %+v", loaded.Layout)
+	}
+}
+
+func TestStateFile_LayoutRotationRoundTrip(t *testing.T) {
+	// Per-tile rotation survives a save and load, and SetLayout copies the
+	// map so later edits by the caller don't leak in. No rotations at all
+	// is stored as nil.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	rot := map[string]int{"garage": 90}
+	sf.SetLayout(Layout{Order: []string{"garage"}, Rotation: rot})
+	rot["garage"] = 270 // SetLayout must have copied the map
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Layout == nil || loaded.Layout.Rotation["garage"] != 90 {
+		t.Errorf("layout = %+v", loaded.Layout)
+	}
+	sf.SetLayout(Layout{Order: []string{"garage"}})
+	if sf.Layout.Rotation != nil {
+		t.Error("empty rotation should be stored as nil")
+	}
+}
+
+func TestStateFile_PinnedIPsRoundTrip(t *testing.T) {
+	// Pinned LAN IPs are saved under pinned_ips and load back as set, even
+	// if the caller edits its map afterwards. Clearing the last pin drops
+	// the field from the file.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	pins := map[string]string{"D03F27B081EF": "192.168.4.200"}
+	sf.SetPinnedIPs(pins)
+	pins["D03F27B081EF"] = "mutated" // SetPinnedIPs must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.PinnedIPs["D03F27B081EF"] != "192.168.4.200" {
+		t.Errorf("pinned_ips = %v", loaded.PinnedIPs)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "wyze-bridge.state.json"))
+	if !strings.Contains(string(data), `"pinned_ips"`) {
+		t.Error("pins should be in the file under pinned_ips")
+	}
+
+	// Clearing the last pin drops the field from the file entirely.
+	sf.SetPinnedIPs(nil)
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(filepath.Join(dir, "wyze-bridge.state.json"))
+	if strings.Contains(string(data), `"pinned_ips"`) {
+		t.Error("an empty pin map should be omitted from the file")
+	}
+	loaded, _ = LoadState(dir, zerolog.Nop())
+	if len(loaded.PinnedIPs) != 0 {
+		t.Errorf("after clear: %v", loaded.PinnedIPs)
+	}
+}
+
+func TestStateFile_RulesRoundTrip(t *testing.T) {
+	// Camera rules survive a save and load, copied away from the caller.
+	// Rules that do nothing clear the field, but extra subnets alone are
+	// kept for when the scope goes back to local.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	names := []string{"Pet Cam*"}
+	sf.SetRules(CameraRules{Scope: "local", Subnets: []string{"192.168.4.0/22"}, Names: names, Block: true})
+	names[0] = "mutated" // SetRules must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Rules == nil || loaded.Rules.Scope != "local" || loaded.Rules.Names[0] != "Pet Cam*" || !loaded.Rules.Block || loaded.Rules.Subnets[0] != "192.168.4.0/22" {
+		t.Errorf("rules = %+v", loaded.Rules)
+	}
+	// Empty rules drop the field; extra subnets alone keep it (they're
+	// worth remembering for when scope goes back to local).
+	sf.SetRules(CameraRules{})
+	if sf.Rules != nil {
+		t.Error("empty rules should clear the field")
+	}
+	sf.SetRules(CameraRules{Subnets: []string{"10.0.0.0/8"}})
+	if sf.Rules == nil {
+		t.Error("subnets alone should be kept")
+	}
+	if !(CameraRules{}).Empty() || (CameraRules{Scope: "local"}).Empty() || (CameraRules{MACs: []string{"A"}}).Empty() || !(CameraRules{Scope: "any"}).Empty() {
+		t.Error("Empty() wrong")
+	}
+}
+
+func TestStateFile_QualitiesRoundTrip(t *testing.T) {
+	// Saved HD/SD choices load back as set, even if the caller edits its
+	// map afterwards. Clearing them drops qualities from the file.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	saved := map[string]string{"D03F27B081EF": "sd"}
+	sf.SetQualities(saved)
+	saved["D03F27B081EF"] = "mutated" // SetQualities must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Qualities["D03F27B081EF"] != "sd" {
+		t.Errorf("qualities = %v", loaded.Qualities)
+	}
+	sf.SetQualities(nil)
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "wyze-bridge.state.json"))
+	if strings.Contains(string(data), `"qualities"`) {
+		t.Error("an empty quality map should be omitted from the file")
 	}
 }
