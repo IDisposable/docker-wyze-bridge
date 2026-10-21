@@ -62,7 +62,17 @@ type Camera struct {
 	// can't put the stale address back; the resolver clears it when
 	// the cloud catches up. See internal/lanresolve.
 	lanIP string
-	mu    sync.RWMutex
+	// Video flow bookkeeping; see video.go. video/lastBytes/stalledPolls
+	// are poll-to-poll state reset whenever the camera leaves
+	// StateStreaming. lastVideo, lastError and lastErrorAt are history.
+	video            Video
+	lastVideo        time.Time
+	lastBytes        int
+	stalledPolls     int
+	lastError        string
+	lastErrorAt      time.Time
+	lastErrorRecheck time.Time
+	mu               sync.RWMutex
 }
 
 // NewCamera creates a new Camera from discovered info with default settings.
@@ -92,6 +102,8 @@ func (c *Camera) SetState(s State) {
 		c.ConnectedAt = time.Now()
 		c.ErrorCount = 0
 		c.tutkFailStreak = 0
+	} else {
+		c.resetFlow()
 	}
 	c.LastSeen = time.Now()
 }
@@ -102,6 +114,7 @@ func (c *Camera) IncrementError() time.Duration {
 	defer c.mu.Unlock()
 	c.ErrorCount++
 	c.State = StateError
+	c.resetFlow()
 	return c.BackoffDuration()
 }
 
@@ -282,6 +295,13 @@ type Snapshot struct {
 	// as `protocol_forced` in /api/metrics so operators can tell the
 	// registry default from the promoted-at-runtime state.
 	ForceWebRTC bool
+	// Video is whether frames are actually arriving (see video.go);
+	// LastVideo is when they last did, LastError the most recent go2rtc
+	// stream error and when it was reported. Zero values when unknown.
+	Video       Video
+	LastVideo   time.Time
+	LastError   string
+	LastErrorAt time.Time
 }
 
 // Snapshot returns a consistent view of the camera under RLock.
@@ -298,6 +318,10 @@ func (c *Camera) Snapshot() Snapshot {
 		ConnectedAt: c.ConnectedAt,
 		LastSeen:    c.LastSeen,
 		ForceWebRTC: c.forceWebRTC,
+		Video:       c.video,
+		LastVideo:   c.lastVideo,
+		LastError:   c.lastError,
+		LastErrorAt: c.lastErrorAt,
 	}
 }
 
@@ -306,20 +330,24 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return map[string]interface{}{
-		"name":         c.Info.Name,
-		"nickname":     c.Info.Nickname,
-		"model":        c.Info.Model,
-		"model_name":   c.Info.ModelName(),
-		"mac":          c.Info.MAC,
-		"ip":           c.info().LanIP,
-		"cloud_ip":     c.Info.LanIP,
-		"state":        c.State.String(),
-		"quality":      c.Quality,
-		"audio":        c.AudioOn,
-		"record":       c.Record,
-		"fw_version":   c.Info.FWVersion,
-		"connected_at": c.ConnectedAt,
-		"last_seen":    c.LastSeen,
-		"error_count":  c.ErrorCount,
+		"name":          c.Info.Name,
+		"nickname":      c.Info.Nickname,
+		"model":         c.Info.Model,
+		"model_name":    c.Info.ModelName(),
+		"mac":           c.Info.MAC,
+		"ip":            c.info().LanIP,
+		"cloud_ip":      c.Info.LanIP,
+		"state":         c.State.String(),
+		"quality":       c.Quality,
+		"audio":         c.AudioOn,
+		"record":        c.Record,
+		"fw_version":    c.Info.FWVersion,
+		"connected_at":  c.ConnectedAt,
+		"last_seen":     c.LastSeen,
+		"error_count":   c.ErrorCount,
+		"video":         c.video.String(),
+		"last_video":    c.lastVideo,
+		"last_error":    c.lastError,
+		"last_error_at": c.lastErrorAt,
 	}
 }

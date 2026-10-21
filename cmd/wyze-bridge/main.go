@@ -205,6 +205,18 @@ func main() {
 	camMgr.SetGo2RTCAPI(go2rtcAPI)
 	webServer.SetGo2RTCAPI(go2rtcAPI)
 
+	// go2rtc only ever reports a failed camera dial in its log, so
+	// route the stream= warnings back to the camera they belong to.
+	// RecordStreamError may run a LAN IP recheck (a second or two),
+	// hence the goroutine: the log relay must not stall on it.
+	if go2rtcMgr != nil {
+		go2rtcMgr.OnWarning(func(_, msg string) {
+			if name, errText, ok := go2rtcmgr.ParseStreamError(msg); ok {
+				go camMgr.RecordStreamError(ctx, name, errText)
+			}
+		})
+	}
+
 	// Spawn gwell-proxy sidecar now that the shim is listening and
 	// go2rtc's RTSP server is accepting publishes into the reserved
 	// Gwell slots.
@@ -478,6 +490,38 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 		if mqttClient != nil && mqttClient.IsConnected() {
 			go mqttClient.PublishDiscovery(cam)
 		}
+	})
+
+	// Video status is the honest version of "streaming": whether bytes
+	// are arriving. Changes go to the dashboard over SSE and, when a
+	// stream dies or recovers, to the event log with go2rtc's reason.
+	pushVideo := func(cam *camera.Camera) {
+		snap := cam.Snapshot()
+		go webServer.SSE().SendJSON("camera_video", map[string]interface{}{
+			"name":          cam.Name(),
+			"video":         snap.Video.String(),
+			"last_video":    snap.LastVideo,
+			"last_error":    snap.LastError,
+			"last_error_at": snap.LastErrorAt,
+		})
+	}
+	camMgr.OnVideoChange(func(cam *camera.Camera, old, cur camera.Video) {
+		pushVideo(cam)
+		if cur != camera.VideoNoVideo && old != camera.VideoNoVideo {
+			return // live ↔ idle is routine
+		}
+		if evLog := webServer.Events(); evLog != nil {
+			msg := old.String() + " → " + cur.String()
+			if cur == camera.VideoNoVideo {
+				if snap := cam.Snapshot(); snap.LastError != "" {
+					msg += " (" + snap.LastError + ")"
+				}
+			}
+			evLog.Record(webui.Event{Kind: "video", Camera: cam.Name(), Message: msg})
+		}
+	})
+	camMgr.OnStreamError(func(cam *camera.Camera, msg string) {
+		pushVideo(cam)
 	})
 
 	// A corrected LAN address shows up in the event log (so the

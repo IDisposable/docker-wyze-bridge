@@ -348,6 +348,8 @@ type Camera struct {
 
 **Health polling:** Every 30s, `GET /api/streams` from go2rtc API. Any camera expected to be streaming but showing no active producer transitions to reconnecting.
 
+**Video status (4.6+, `video.go`):** `StateStreaming` only means go2rtc accepted the stream; go2rtc dials lazily when a consumer pulls and never reports a failed dial through its API. The same 30s poll therefore also reads each producer's `remote_addr` and per-receiver byte counters and folds them into `Camera.video`: `live` (bytes arrived since the previous poll), `idle` (no consumer, not dialed — normal), `no_video` (pulled or connected but nothing new for two polls). go2rtc's `WRN [rtsp] error="..." stream=<name>` log lines are the other signal: `go2rtcmgr.Manager.OnWarning` → `ParseStreamError` → `Manager.RecordStreamError`, which stores the text on the camera (`last_error`, `last_error_at`), flips the status to `no_video` at once, and — for a TUTK camera reporting `discovery timeout` — runs the LAN IP recheck immediately (at most once a minute per camera) instead of waiting for the next scheduled one. Exposed as `video`, `last_video`, `last_error`, `last_error_at` in `/api/cameras`, as a second badge on the card, and as `camera_video` SSE events; transitions into or out of `no_video` land in the event log with go2rtc's reason.
+
 #### 5.3.2 Camera Filter
 
 ```go
@@ -503,7 +505,7 @@ GET  /metrics.prom               Prometheus text exposition (unauthenticated by 
 GET  /dashboard.yaml             Auto-generated Lovelace YAML referencing MQTT entities
 
 GET  /events                     SSE stream: camera_state, camera_added, camera_removed,
-                                  snapshot_ready, bridge_status, recording_state, camera_ip
+                                  snapshot_ready, bridge_status, recording_state, camera_ip, camera_video
 ```
 
 #### 5.5.3 WebRTC Player

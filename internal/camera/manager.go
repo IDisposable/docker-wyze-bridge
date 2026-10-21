@@ -55,6 +55,10 @@ type Manager struct {
 	onIgnoreChange func(list []wyzeapi.IgnoredCamera)
 	onAdded        func(cam *Camera)
 	onRemoved      func(cam *Camera, reason string)
+	// onVideoChange / onStreamError report whether frames are really
+	// flowing and what go2rtc complained about; see video.go.
+	onVideoChange func(cam *Camera, old, cur Video)
+	onStreamError func(cam *Camera, msg string)
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a
@@ -393,6 +397,7 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 	}
 	m.mu.RUnlock()
 
+	now := time.Now()
 	for _, cam := range cams {
 		if cam.GetState() != StateStreaming {
 			continue
@@ -435,7 +440,9 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 			// per-call (streamSourceFor is idempotent).
 			_, protocol := m.streamSourceFor(cam)
 			m.recordTUTKFailure(cam, protocol)
+			continue
 		}
+		m.observeVideo(cam, info, now)
 	}
 }
 

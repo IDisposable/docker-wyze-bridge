@@ -171,6 +171,19 @@ which engine is active (`LAN IP resolver ready engine=arp`).
 | `LAN_IP_SWEEP` | `true` | Allow the last-resort ARP sweep (paced, capped at a `/22`, throttled so an absent camera can't flood the LAN) |
 | `LAN_IP_RECHECK` | `2m` | How often streaming cameras are re-verified; `0` disables |
 
+### What the badges mean
+
+The green `streaming` badge means go2rtc accepted the stream; it says
+nothing about video, because go2rtc only dials a camera when something
+pulls the stream and never reports a failed dial. The second badge is
+the honest one: `live` means bytes arrived in the last 30 seconds,
+`idle` means nobody is pulling (normal), `no video` means something
+is pulling but nothing is coming back, or go2rtc logged an error for
+that stream — hover for the reason. A `discovery timeout` on a TUTK
+camera also triggers an immediate LAN IP recheck (see above). The
+detail page shows when video last flowed and the last error; the
+`/metrics` event log records every drop and recovery.
+
 ## Quick Start
 
 ```bash

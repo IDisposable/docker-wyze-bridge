@@ -26,10 +26,61 @@ type StreamInfo struct {
 	Consumers []ConsumerInfo `json:"consumers,omitempty"`
 }
 
-// ProducerInfo describes a stream producer (source).
+// ProducerInfo describes a stream producer (source). go2rtc reports a
+// bare {"url": ...} for a producer it hasn't dialed; once connected
+// the object grows remote_addr, bytes_recv and per-track receivers
+// with their own byte counters. The wyze:// source feeds its tracks
+// through the receivers, so Receivers[].Bytes is where TUTK video
+// shows up (bytes_recv stays 0 for it).
 type ProducerInfo struct {
-	URL    string        `json:"url,omitempty"`
-	Medias []interface{} `json:"medias,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	RemoteAddr string         `json:"remote_addr,omitempty"`
+	BytesRecv  int            `json:"bytes_recv,omitempty"`
+	Medias     []interface{}  `json:"medias,omitempty"`
+	Receivers  []ReceiverInfo `json:"receivers,omitempty"`
+}
+
+// ReceiverInfo is one producer track's counters.
+type ReceiverInfo struct {
+	Bytes   int `json:"bytes,omitempty"`
+	Packets int `json:"packets,omitempty"`
+}
+
+// Connected reports whether go2rtc currently holds a connection to
+// this producer, as opposed to just knowing its URL.
+func (p ProducerInfo) Connected() bool {
+	return p.RemoteAddr != "" || len(p.Receivers) > 0 || p.BytesRecv > 0
+}
+
+// Bytes is the total the producer has delivered on this connection.
+func (p ProducerInfo) Bytes() int {
+	n := p.BytesRecv
+	for _, r := range p.Receivers {
+		n += r.Bytes
+	}
+	return n
+}
+
+// ProducerConnected reports whether any producer of the stream is
+// connected.
+func (s *StreamInfo) ProducerConnected() bool {
+	for _, p := range s.Producers {
+		if p.Connected() {
+			return true
+		}
+	}
+	return false
+}
+
+// ProducerBytes sums every producer's delivered bytes. go2rtc resets
+// the counters when a producer reconnects, so callers comparing polls
+// must treat a decrease as a fresh connection, not as negative flow.
+func (s *StreamInfo) ProducerBytes() int {
+	n := 0
+	for _, p := range s.Producers {
+		n += p.Bytes()
+	}
+	return n
 }
 
 // ConsumerInfo describes a stream consumer.

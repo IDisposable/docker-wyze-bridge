@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -105,5 +107,104 @@ func TestEmitLogLine(t *testing.T) {
 				t.Errorf("message = %q, want %q", got, tc.wantMsg)
 			}
 		})
+	}
+}
+
+func TestParseStreamError(t *testing.T) {
+	// go2rtc only reports a failed camera dial in its log, so the bridge
+	// pulls the stream name and error text back out of the line. Lines
+	// with no stream= value can't be tied to a camera and are skipped.
+	cases := []struct {
+		in          string
+		stream, err string
+		ok          bool
+	}{
+		{`[rtsp] error="streams: wyze: connect failed: discovery timeout" stream=side_garage`, "side_garage", "wyze: connect failed: discovery timeout", true},
+		{`[rtsp] error="streams: websocket: close 1006 (abnormal closure): unexpected EOF" stream=front_door`, "front_door", "websocket: close 1006 (abnormal closure): unexpected EOF", true},
+		{`[streams] stream=garage_cam something odd happened`, "garage_cam", "[streams]  something odd happened", true},
+		{`github.com/AlexxIT/go2rtc/internal/mjpeg/mjpeg.go:82 > error="streams: wyze: connect failed: discovery timeout"`, "", "", false},
+		{`stream=`, "", "", false},
+		{``, "", "", false},
+	}
+	for _, c := range cases {
+		stream, errText, ok := ParseStreamError(c.in)
+		if ok != c.ok || stream != c.stream || errText != c.err {
+			t.Errorf("ParseStreamError(%q) = (%q, %q, %v), want (%q, %q, %v)", c.in, stream, errText, ok, c.stream, c.err, c.ok)
+		}
+	}
+}
+
+func TestEmitLogLine_WarningObserver(t *testing.T) {
+	// Only go2rtc's WRN and ERR lines reach the warning observer, with the
+	// level spelled out. Info lines, known noise and lines with no level
+	// are not passed on.
+	m := NewManager("go2rtc", "/tmp/x.yaml", zerolog.Nop())
+	var got []string
+	m.OnWarning(func(level, msg string) { got = append(got, level+": "+msg) })
+	m.emitLogLine(`12:00:00.000 WRN [rtsp] error="streams: wyze: connect failed: discovery timeout" stream=side_garage`)
+	m.emitLogLine(`12:00:00.000 ERR [api] boom`)
+	m.emitLogLine(`12:00:00.000 INF [api] listen addr=:1984`) // not a warning
+	m.emitLogLine(`[OOO] something - reset`)                  // suppressed noise
+	m.emitLogLine(`garbage without a level`)
+	want := []string{
+		`warn: [rtsp] error="streams: wyze: connect failed: discovery timeout" stream=side_garage`,
+		`error: [api] boom`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("observer got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestProducerInfo_ConnectedAndBytes(t *testing.T) {
+	// A producer that only has a URL isn't connected. Bytes come from the
+	// receivers or from bytes_recv, and a stream adds up all its producers
+	// so the health check sees the real flow.
+	idle := ProducerInfo{URL: "wyze://10.0.0.1"}
+	if idle.Connected() || idle.Bytes() != 0 {
+		t.Error("a bare url producer is not connected")
+	}
+	live := ProducerInfo{URL: "wyze://10.0.0.1", RemoteAddr: "10.0.0.1:32761", Receivers: []ReceiverInfo{{Bytes: 1000, Packets: 5}, {Bytes: 24}}}
+	if !live.Connected() || live.Bytes() != 1024 {
+		t.Errorf("live: connected=%v bytes=%d", live.Connected(), live.Bytes())
+	}
+	rtsp := ProducerInfo{URL: "rtsp://x", BytesRecv: 77}
+	if !rtsp.Connected() || rtsp.Bytes() != 77 {
+		t.Errorf("rtsp: connected=%v bytes=%d", rtsp.Connected(), rtsp.Bytes())
+	}
+	s := &StreamInfo{Producers: []ProducerInfo{idle, live, rtsp}}
+	if !s.ProducerConnected() || s.ProducerBytes() != 1101 {
+		t.Errorf("stream: connected=%v bytes=%d", s.ProducerConnected(), s.ProducerBytes())
+	}
+	empty := &StreamInfo{}
+	if empty.ProducerConnected() || empty.ProducerBytes() != 0 {
+		t.Error("empty stream should be disconnected with zero bytes")
+	}
+}
+
+func TestListStreams_ParsesProducerCounters(t *testing.T) {
+	// ListStreams decodes go2rtc's /api/streams JSON into producer and
+	// consumer counters, so a live camera shows its bytes and an idle one
+	// with just a URL reads as disconnected.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"side_garage":{"producers":[{"id":3,"format_name":"wyze","protocol":"udp","remote_addr":"192.168.4.151:32761","url":"wyze://192.168.4.151?uid=x","medias":["video, recvonly, H264"],"receivers":[{"id":4,"codec":{"codec_name":"h264"},"bytes":123456,"packets":321}]}],"consumers":[{"id":9,"format_name":"rtsp","bytes_send":5}]},"idle_cam":{"producers":[{"url":"wyze://10.0.0.2"}],"consumers":[]}}`))
+	}))
+	defer srv.Close()
+	c := NewAPIClient(srv.URL, zerolog.Nop())
+	streams, err := c.ListStreams(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sg := streams["side_garage"]
+	if sg == nil || !sg.ProducerConnected() || sg.ProducerBytes() != 123456 || len(sg.Consumers) != 1 {
+		t.Errorf("side_garage = %+v", sg)
+	}
+	idle := streams["idle_cam"]
+	if idle == nil || idle.ProducerConnected() || idle.ProducerBytes() != 0 || len(idle.Consumers) != 0 {
+		t.Errorf("idle_cam = %+v", idle)
 	}
 }

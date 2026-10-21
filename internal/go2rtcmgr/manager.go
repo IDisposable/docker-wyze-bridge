@@ -25,6 +25,26 @@ type Manager struct {
 	ready      chan struct{}
 	mu         sync.Mutex
 	cancel     context.CancelFunc
+	// onWarning sees every WRN/ERR line go2rtc prints, after the
+	// timestamp/level prefix is stripped. go2rtc never reports a failed
+	// dial through its API — the only place "wyze: connect failed:
+	// discovery timeout" surfaces is here — so this is how the bridge
+	// learns a camera's stream is actually broken. See ParseStreamError.
+	onWarning func(level, msg string)
+}
+
+// OnWarning registers the observer for go2rtc's WRN/ERR lines. Called
+// from the relay goroutines; keep it quick and non-blocking.
+func (m *Manager) OnWarning(fn func(level, msg string)) {
+	m.mu.Lock()
+	m.onWarning = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) warningObserver() func(level, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onWarning
 }
 
 // NewManager creates a new go2rtc process manager.
@@ -217,13 +237,56 @@ func (m *Manager) emitLogLine(line string) {
 			return
 		case "WRN":
 			m.log.Warn().Msg(parts[2])
+			if fn := m.warningObserver(); fn != nil {
+				fn("warn", parts[2])
+			}
 			return
 		case "ERR", "FTL", "PNC":
 			m.log.Error().Msg(parts[2])
+			if fn := m.warningObserver(); fn != nil {
+				fn("error", parts[2])
+			}
 			return
 		}
 	}
 	m.log.Trace().Msg(line)
+}
+
+// ParseStreamError pulls the stream name and error text out of a go2rtc
+// warning that names its stream, such as
+//
+//	[rtsp] error="streams: wyze: connect failed: discovery timeout" stream=side_garage
+//
+// Lines without a stream= token (the mjpeg snapshot path, for one)
+// can't be attributed and return ok=false.
+func ParseStreamError(msg string) (stream, errText string, ok bool) {
+	i := strings.Index(msg, "stream=")
+	if i < 0 {
+		return "", "", false
+	}
+	fields := strings.Fields(msg[i+len("stream="):])
+	if len(fields) == 0 {
+		return "", "", false
+	}
+	stream = strings.Trim(fields[0], `"`)
+	if stream == "" {
+		return "", "", false
+	}
+	if j := strings.Index(msg, `error="`); j >= 0 {
+		rest := msg[j+len(`error="`):]
+		if k := strings.Index(rest, `"`); k >= 0 {
+			errText = rest[:k]
+		}
+	}
+	if errText == "" {
+		// No quoted error: use the message minus the stream token so
+		// the camera still gets something readable.
+		errText = strings.TrimSpace(strings.Replace(msg, "stream="+stream, "", 1))
+	}
+	// go2rtc prefixes every source error with "streams: "; drop it, the
+	// camera card has no room for boilerplate.
+	errText = strings.TrimPrefix(errText, "streams: ")
+	return stream, errText, true
 }
 
 func shouldSuppressGo2RTCLogLine(line string) bool {
