@@ -277,3 +277,34 @@ func TestRecordStreamError_TimeoutMovesCamera(t *testing.T) {
 		t.Errorf("go2rtc should have the new address, has %q", src)
 	}
 }
+
+func TestObserveVideo_BrowserPullerCountsAsConsumer(t *testing.T) {
+	// go2rtc lists no consumer for a stream it can't feed, so the
+	// dashboard's open socket is what turns "idle" into "no video".
+	mgr, _ := newTestManager(t)
+	cam := NewCamera(wyzeapi.CameraInfo{Name: "attic", Model: "WYZE_CAKP2JFUS", MAC: "AABBCCDDEE01", LanIP: "10.0.0.9"}, "hd", true, false)
+	cam.SetState(StateStreaming)
+	now := time.Now()
+	notConnected := &go2rtcmgr.StreamInfo{Producers: []go2rtcmgr.ProducerInfo{{URL: "wyze://10.0.0.9"}}}
+
+	mgr.observeVideo(cam, notConnected, now)
+	mgr.observeVideo(cam, notConnected, now.Add(30*time.Second))
+	if cam.Video() != VideoIdle {
+		t.Fatalf("nobody pulling: %v, want idle", cam.Video())
+	}
+	cam.AddPuller(1)
+	mgr.observeVideo(cam, notConnected, now.Add(60*time.Second))
+	mgr.observeVideo(cam, notConnected, now.Add(90*time.Second))
+	if cam.Video() != VideoNoVideo {
+		t.Errorf("browser pulling, nothing arriving: %v, want no_video", cam.Video())
+	}
+	cam.AddPuller(-1)
+	cam.AddPuller(-1) // never below zero
+	if cam.Pullers() != 0 {
+		t.Errorf("pullers = %d", cam.Pullers())
+	}
+	mgr.observeVideo(cam, notConnected, now.Add(120*time.Second))
+	if cam.Video() != VideoIdle {
+		t.Errorf("socket gone: %v, want idle", cam.Video())
+	}
+}

@@ -74,6 +74,11 @@ type Camera struct {
 	lanSource     string
 	lanVerifiedAt time.Time
 	lanMisses     int
+	// pullers counts browsers holding a /ws proxy socket for this
+	// camera's stream. go2rtc doesn't list a consumer it couldn't feed,
+	// so without this a dashboard waiting on a dead camera would read
+	// as "idle" instead of "no video". See video.go.
+	pullers int
 	// Video flow bookkeeping; see video.go. video/lastBytes/stalledPolls
 	// are poll-to-poll state reset whenever the camera leaves
 	// StateStreaming. lastVideo, lastError and lastErrorAt are history.

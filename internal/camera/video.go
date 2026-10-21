@@ -92,6 +92,24 @@ func (c *Camera) recordError(msg string, at time.Time) (old, cur Video) {
 	return old, c.video
 }
 
+// AddPuller counts a browser socket for this stream opening (+1) or
+// closing (-1); see Camera.pullers.
+func (c *Camera) AddPuller(delta int) {
+	c.mu.Lock()
+	c.pullers += delta
+	if c.pullers < 0 {
+		c.pullers = 0
+	}
+	c.mu.Unlock()
+}
+
+// Pullers returns how many browser sockets are open for the stream.
+func (c *Camera) Pullers() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.pullers
+}
+
 // Video returns the current video status under RLock.
 func (c *Camera) Video() Video {
 	c.mu.RLock()
@@ -119,6 +137,11 @@ func (m *Manager) observeVideo(cam *Camera, info *go2rtcmgr.StreamInfo, now time
 		connected = info.ProducerConnected()
 		consumers = len(info.Consumers)
 		bytes = info.ProducerBytes()
+	}
+	// A browser waiting on the /ws proxy is a consumer go2rtc doesn't
+	// list until it can feed it.
+	if p := cam.Pullers(); p > consumers {
+		consumers = p
 	}
 	old, cur := cam.observeFlow(connected, consumers, bytes, now)
 	if old == cur {
