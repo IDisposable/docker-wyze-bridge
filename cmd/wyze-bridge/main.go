@@ -251,6 +251,8 @@ func main() {
 				go camMgr.RecordStreamError(ctx, name, errText)
 			}
 		})
+		// go2rtc restarted after a crash: its runtime streams are gone.
+		go2rtcMgr.OnRestart(func() { camMgr.Reregister(ctx) })
 	}
 
 	// Spawn gwell-proxy sidecar now that the shim is listening and

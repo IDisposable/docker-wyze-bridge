@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -66,9 +68,10 @@ func TestAPIClient_AddStream(t *testing.T) {
 }
 
 func TestAPIClient_DeleteStream(t *testing.T) {
-	var gotMethod string
+	var gotMethod, gotSrc string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
+		gotSrc = r.URL.Query().Get("src")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -80,6 +83,54 @@ func TestAPIClient_DeleteStream(t *testing.T) {
 	}
 	if gotMethod != "DELETE" {
 		t.Errorf("method = %q, want DELETE", gotMethod)
+	}
+	// go2rtc names the stream to delete with src=; without it the
+	// request is a listing and nothing is deleted.
+	if gotSrc != "test_cam" {
+		t.Errorf("src = %q, want test_cam", gotSrc)
+	}
+}
+
+func TestAPIClient_StreamTableCallsOneAtATime(t *testing.T) {
+	// go2rtc lists and deletes from its stream table without a lock, so
+	// the bridge must never have two of these calls in flight at once.
+	var mu sync.Mutex
+	inFlight, most := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		most = max(most, inFlight)
+		mu.Unlock()
+		time.Sleep(2 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	c := NewAPIClient(server.URL, zerolog.Nop())
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			switch i % 4 {
+			case 0:
+				_ = c.AddStream(ctx, "cam", "wyze://x")
+			case 1:
+				_ = c.DeleteStream(ctx, "cam")
+			case 2:
+				_, _ = c.ListStreams(ctx)
+			case 3:
+				_, _ = c.GetStreamInfo(ctx, "cam")
+			}
+		}()
+	}
+	wg.Wait()
+	if most != 1 {
+		t.Errorf("%d calls reached go2rtc at once, want 1", most)
 	}
 }
 

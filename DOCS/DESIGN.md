@@ -234,6 +234,8 @@ go2rtc stdout/stderr is captured and re-emitted through zerolog:
 
 `WaitReady` polls `GET /api/streams` until it returns 200 or times out. On startup this gives go2rtc up to 10 seconds to be ready before cameras are added.
 
+**Supervision (4.6+):** go2rtc is the whole streaming plane, so an unexpected exit (a Go panic exits with status 2) no longer leaves the bridge serving "connection refused" until someone restarts the container. The exit watcher starts it again after 2s, doubling to a 1 min ceiling while it keeps dying and starting over once a run lasts 5 min; a restarted go2rtc that doesn't answer its API within 15s is killed and goes round again. Once it answers, `OnRestart` fires and `camera.Manager.Reregister` adds every runtime stream back at once (Gwell slots return from `go2rtc.yaml`). A crash dump has no level prefix, so the `panic:` / `fatal error:` line and the next 60 lines are logged at error instead of trace, and go2rtc's output goes through plain `os.Pipe`s read to EOF so `Wait` can't cut the dump short. While go2rtc is down, `AddStream` fails with a dial error (`go2rtcmgr.Unreachable`); those don't count toward the chronic-error report or the TUTK → WebRTC fallback.
+
 #### 5.2.2 Config Generation
 
 The go2rtc YAML config is generated from the current camera list and configuration. Written to `$STATE_DIR/go2rtc.yaml`.
