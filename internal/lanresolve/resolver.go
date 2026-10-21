@@ -28,7 +28,6 @@ package lanresolve
 import (
 	"context"
 	"errors"
-	"math"
 	"net"
 	"sync"
 	"time"
@@ -53,11 +52,11 @@ type Config struct {
 // otherwise sweep the LAN on every reconnect attempt, so its gap
 // doubles on each miss up to sweepCamGapMax and resets on a hit.
 const (
-	sweepGlobalGap = 15 * time.Second // between any two sweeps, LAN-wide
-	sweepCamGap    = 1 * time.Minute  // first per-camera gap after a miss
+	sweepGlobalGap = 2 * time.Second // between any two sweeps, LAN-wide (unicast, so this is manners, not necessity)
+	sweepCamGap    = 1 * time.Minute // first per-camera gap after a miss
 	sweepCamGapMax = 1 * time.Hour
-	seenTTL        = 2 * time.Minute // how long a sweep observation stays usable
-	resolveTimeout = 8 * time.Second // overall budget per Resolve call
+	seenTTL        = 2 * time.Minute  // how long a sweep observation stays usable
+	resolveTimeout = 12 * time.Second // overall budget per Resolve call
 	defaultMax     = 1024
 )
 
@@ -85,10 +84,9 @@ type Result struct {
 	// "sweep" — or "unverified" when none did.
 	Source  string
 	Elapsed time.Duration
-	// Misses counts the sweeps in a row that covered the LAN without
-	// hearing this MAC, this camera's own and other cameras' full ones
-	// alike. 0 whenever the address verified. Two or more is the
-	// WebUI's cue that the camera probably isn't on this LAN at all.
+	// Misses counts this camera's sweeps in a row that didn't hear its
+	// MAC. 0 whenever the address verified. Two or more is the WebUI's
+	// cue that the camera probably isn't on this LAN at all.
 	Misses int
 }
 
@@ -103,13 +101,14 @@ type Resolver struct {
 	ifaces func() ([]lanInterface, error)
 	cache  func() ([]neighbor, error)
 	now    func() time.Time
+	// sleep waits for d or until ctx is done, reporting which; tests
+	// replace it with one that moves the fake clock instead.
+	sleep func(ctx context.Context, d time.Duration) bool
 
 	mu        sync.Mutex
 	lastSweep time.Time
-	lastFull  time.Time            // last sweep that covered every local address
 	camNext   map[string]time.Time // earliest next sweep per MAC
 	camMiss   map[string]int       // consecutive sweep misses per MAC
-	camMissAt map[string]time.Time // the full sweep each MAC's last miss was counted against
 	seen      map[string]seenAddr  // MAC -> address a sweep heard from
 	sweepMu   sync.Mutex           // one sweep at a time, LAN-wide
 }
@@ -141,15 +140,15 @@ func newResolver(cfg Config, log zerolog.Logger) *Resolver {
 		cfg.SweepMax = defaultMax
 	}
 	return &Resolver{
-		cfg:       cfg,
-		log:       log,
-		ifaces:    listInterfaces,
-		cache:     readNeighbors,
-		now:       time.Now,
-		camNext:   make(map[string]time.Time),
-		camMiss:   make(map[string]int),
-		camMissAt: make(map[string]time.Time),
-		seen:      make(map[string]seenAddr),
+		cfg:     cfg,
+		log:     log,
+		ifaces:  listInterfaces,
+		cache:   readNeighbors,
+		now:     time.Now,
+		sleep:   sleepCtx,
+		camNext: make(map[string]time.Time),
+		camMiss: make(map[string]int),
+		seen:    make(map[string]seenAddr),
 	}
 }
 
@@ -197,7 +196,7 @@ func (r *Resolver) Resolve(ctx context.Context, t Target) Result {
 			return Result{}, false
 		}
 		tried[key] = true
-		got, err := r.engine.probe(ctx, ip)
+		got, err := r.engine.probe(ctx, ip, mac)
 		switch {
 		case err != nil:
 			log.Debug().Err(err).Str("ip", key).Str("rung", source).Msg("lan resolve: probe failed")
@@ -247,59 +246,65 @@ func (r *Resolver) Resolve(ctx context.Context, t Target) Result {
 		}
 	}
 
-	// Rung 3: ask everyone. The allowed check happens under sweepMu so
-	// cameras queued behind a sweep see its result (via recent) rather
-	// than each starting their own.
+	// Rung 3: ask every address, addressed to this camera's MAC. The
+	// allowed check happens under sweepMu so a second resolve of the
+	// same camera queued behind its sweep sees the result (via recent)
+	// rather than starting another. A camera that only has to wait for
+	// the LAN-wide gap waits (within the resolve budget) instead of
+	// giving up, so when several cameras come up missing together they
+	// each get their sweep in one pass; one inside its own backoff
+	// doesn't.
 	if r.cfg.Sweep && ctx.Err() == nil {
 		ifaces, err := r.ifaces()
 		if err == nil {
 			hints := []net.IP{net.ParseIP(t.CloudIP), net.ParseIP(t.LastIP)}
 			addrs := without(sweepAddresses(ifaces, hints, r.cfg.SweepMax), tried)
-			// A sweep is "full" when, together with the addresses rung 1
-			// and 2 already probed, it covers every address a sweep could
-			// ever ask about (the uncapped plan). After one of those, a
-			// MAC nobody heard from is simply not on the LAN, and the
-			// other absent cameras can skip their own sweeps for a while.
-			full := len(addrs)+len(tried) >= len(sweepAddresses(ifaces, nil, math.MaxInt32))
-			if len(addrs) > 0 {
+			for len(addrs) > 0 && ctx.Err() == nil {
 				r.sweepMu.Lock()
-				switch {
-				case r.recent(mac) != nil:
-					// Someone else's sweep just answered our question.
-					ip := r.recent(mac)
+				if ip := r.recent(mac); ip != nil {
+					// A sweep that just finished answered our question.
 					r.sweepMu.Unlock()
 					if hit, ok := probe(ip, "recent"); ok {
 						return finish(hit)
 					}
 					r.forget(mac)
-				case r.sweptRecently():
-					// Another camera's full sweep would have heard this
-					// MAC too; count it as a miss, once per sweep.
-					r.noteAbsent(mac)
-					r.sweepMu.Unlock()
-					log.Debug().Msg("lan resolve: LAN swept recently and the camera was not on it")
-				case !r.sweepAllowed(mac):
+					break
+				}
+				wait, backoff := r.sweepWait(mac)
+				if backoff {
 					r.sweepMu.Unlock()
 					log.Debug().Msg("lan resolve: sweep throttled")
-				default:
-					ip, heard, err := r.engine.sweep(ctx, addrs, mac)
-					r.remember(heard)
-					if err == nil && ctx.Err() == nil {
-						// A sweep that failed or was cut short by the
-						// context proved nothing either way, so it neither
-						// schedules a backoff nor counts as having covered
-						// the LAN.
-						r.noteSweep(mac, ip != nil, full)
-					}
-					r.sweepMu.Unlock()
-					if err != nil {
-						log.Debug().Err(err).Msg("lan resolve: sweep failed")
-					} else if ip != nil {
-						return finish(Result{IP: ip.String(), Verified: true, Source: "sweep"})
-					} else {
-						log.Debug().Int("addresses", len(addrs)).Int("heard", len(heard)).Bool("full", full).Msg("lan resolve: sweep found nothing")
-					}
+					break
 				}
+				if wait > 0 {
+					r.sweepMu.Unlock()
+					if !r.sleep(ctx, wait) {
+						return finish(res)
+					}
+					continue
+				}
+				ip, heard, err := r.engine.sweep(ctx, addrs, mac)
+				r.remember(heard)
+				if err == nil && ctx.Err() == nil {
+					// A sweep that failed or was cut short by the
+					// context proved nothing either way, so it
+					// doesn't count as a miss or schedule a backoff.
+					r.noteSweep(mac, ip != nil)
+				}
+				r.sweepMu.Unlock()
+				if err != nil {
+					log.Debug().Err(err).Msg("lan resolve: sweep failed")
+				} else if ip != nil {
+					// One more probe of the address the sweep found, so
+					// the engine can seed the kernel's neighbor cache
+					// (see arpEngine); the result stands either way.
+					delete(tried, ip.String())
+					probe(ip, "sweep")
+					return finish(Result{IP: ip.String(), Verified: true, Source: "sweep"})
+				} else {
+					log.Debug().Int("addresses", len(addrs)).Int("heard", len(heard)).Msg("lan resolve: sweep found nothing")
+				}
+				break
 			}
 		}
 	}
@@ -320,7 +325,7 @@ func (r *Resolver) Check(ctx context.Context, ip, mac string) (bool, error) {
 	if target == nil || want == "" {
 		return false, errBadTarget
 	}
-	got, err := r.engine.probe(ctx, target)
+	got, err := r.engine.probe(ctx, target, want)
 	if err != nil {
 		return false, err
 	}
@@ -359,53 +364,53 @@ func (r *Resolver) remember(heard map[string]net.IP) {
 	}
 }
 
-// sweepAllowed enforces the LAN-wide gap and the per-camera backoff.
-// Call with sweepMu held.
-func (r *Resolver) sweepAllowed(mac string) bool {
+// sweepWait says how long until mac may sweep: 0 means now. backoff is
+// true when the camera's own backoff is what's in the way (its last
+// sweeps missed), as opposed to the LAN-wide gap after someone else's
+// sweep, which is worth waiting out. Call with sweepMu held.
+func (r *Resolver) sweepWait(mac string) (wait time.Duration, backoff bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
-	if !r.lastSweep.IsZero() && now.Sub(r.lastSweep) < sweepGlobalGap {
-		return false
-	}
 	if next, ok := r.camNext[mac]; ok && now.Before(next) {
-		return false
+		return next.Sub(now), true
 	}
-	return true
+	if !r.lastSweep.IsZero() {
+		if gap := sweepGlobalGap - now.Sub(r.lastSweep); gap > 0 {
+			return gap, false
+		}
+	}
+	return 0, false
 }
 
-// sweptRecently reports whether a full sweep finished within seenTTL.
-// Call with sweepMu held. Callers check recent() first, so reaching
-// this means the camera was not heard by that sweep.
-func (r *Resolver) sweptRecently() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return !r.lastFull.IsZero() && r.now().Sub(r.lastFull) < seenTTL
+// sleepCtx is the production sleep: true after d, false if ctx ended
+// first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // noteSweep records that a sweep ran for mac and schedules the next one
 // it may run: right away after a hit, or after a gap that doubles with
-// every consecutive miss. full marks a sweep that covered every local
-// address, which lets other cameras skip theirs (see sweptRecently).
-func (r *Resolver) noteSweep(mac string, hit, full bool) {
+// every consecutive miss.
+func (r *Resolver) noteSweep(mac string, hit bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
 	r.lastSweep = now
-	if full {
-		r.lastFull = now
-	}
 	if hit {
 		delete(r.camMiss, mac)
-		delete(r.camMissAt, mac)
 		delete(r.camNext, mac)
 		return
 	}
 	misses := r.camMiss[mac] + 1
 	r.camMiss[mac] = misses
-	if full {
-		r.camMissAt[mac] = now
-	}
 	gap := sweepCamGap
 	for i := 1; i < misses && gap < sweepCamGapMax; i++ {
 		gap *= 2
@@ -414,22 +419,6 @@ func (r *Resolver) noteSweep(mac string, hit, full bool) {
 		gap = sweepCamGapMax
 	}
 	r.camNext[mac] = now.Add(gap)
-}
-
-// noteAbsent counts a full sweep run for some other camera that didn't
-// hear mac either. Each full sweep is counted once per MAC no matter
-// how many times the camera is resolved while that sweep is fresh, so
-// a fast reconnect loop can't inflate the number. Call with sweepMu
-// held (lastFull is read under r.mu, but the caller's sweptRecently
-// check must still be current).
-func (r *Resolver) noteAbsent(mac string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.camMissAt[mac].Equal(r.lastFull) {
-		return
-	}
-	r.camMissAt[mac] = r.lastFull
-	r.camMiss[mac]++
 }
 
 // misses returns the consecutive sweep misses recorded for mac.
@@ -446,7 +435,6 @@ func (r *Resolver) clearMisses(mac string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.camMiss, mac)
-	delete(r.camMissAt, mac)
 	delete(r.camNext, mac)
 }
 

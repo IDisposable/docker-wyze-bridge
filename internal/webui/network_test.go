@@ -49,7 +49,7 @@ func TestLanLabels(t *testing.T) {
 	for in, want := range map[string]string{
 		"cloud": "the address the Wyze cloud reported", "last": "its last known address",
 		"recent": "an earlier LAN sweep", "neigh": "the kernel's neighbor cache",
-		"sweep": "a LAN sweep", "": "", "unverified": "",
+		"sweep": "a LAN sweep", "recheck": "the periodic recheck", "pinned": "the pinned address", "": "", "unverified": "",
 	} {
 		if got := LanSourceLabel(in); got != want {
 			t.Errorf("LanSourceLabel(%q) = %q, want %q", in, got, want)

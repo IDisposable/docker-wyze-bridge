@@ -38,6 +38,20 @@ func macString(hw net.HardwareAddr) string {
 	return hex.EncodeToString(hw)
 }
 
+// macBytes is the inverse of macString: the six raw bytes for a
+// normalized MAC, or nil when the string isn't one. Used to address
+// ARP frames straight to a camera instead of broadcasting them.
+func macBytes(mac string) net.HardwareAddr {
+	if len(mac) != 12 {
+		return nil
+	}
+	b, err := hex.DecodeString(mac)
+	if err != nil || isZeroMAC(b) {
+		return nil
+	}
+	return net.HardwareAddr(b)
+}
+
 // isZeroMAC reports whether every byte is zero — what the neighbor cache
 // shows for an entry the kernel never resolved.
 func isZeroMAC(hw net.HardwareAddr) bool {

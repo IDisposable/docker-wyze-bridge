@@ -19,6 +19,24 @@ import (
 // neighbor cache, so a stale entry there can't mislead us. This is the
 // same thing arp-scan does, and it's what makes a wrong cloud IP cost a
 // few milliseconds instead of go2rtc's five-second discovery timeout.
+//
+// Requests for a camera whose MAC we know are sent unicast to that MAC
+// (a broadcast copy goes out too on a probe, so a stranger holding the
+// address still shows up). Wi-Fi matters here: a broadcast frame is
+// transmitted once, unacknowledged, and a camera dozing in power save
+// may sleep through it, whereas a unicast frame is queued for the
+// station, acknowledged and retried by the access point. Wyze cameras
+// answered broadcast probes at startup and then went quiet for the
+// kernel's own broadcast ARP a minute later; unicast reaches them.
+//
+// The kernel matters too, because go2rtc's packets leave through its
+// neighbor cache, and the kernel only resolves a new address by
+// broadcast — the same broadcast the camera sleeps through, which is
+// how "discovery timeout" happens for a camera that is right there.
+// The kernel does record an ARP reply for an entry it already has, so
+// a probe first sends the address a throwaway UDP datagram (creating
+// or refreshing the entry) and then the unicast request; the camera's
+// reply lands in that entry and go2rtc's next dial goes straight out.
 type arpEngine struct {
 	ifaces func() ([]lanInterface, error)
 
@@ -30,6 +48,9 @@ type arpEngine struct {
 	// context is done; it is latency the caller never sees because
 	// replies are delivered through a channel as they arrive.
 	recvSlice time.Duration
+	// nudge sends the kernel-seeding datagram (udpNudge); a seam for
+	// tests.
+	nudge func(ctx context.Context, ip net.IP) error
 }
 
 // errARPUnavailable tells newProber to fall back to the neighbor engine.
@@ -67,6 +88,7 @@ func newARPEngine(ifaces func() ([]lanInterface, error)) (prober, error) {
 		ifaces:    ifaces,
 		sendPace:  2 * time.Millisecond,
 		recvSlice: 100 * time.Millisecond,
+		nudge:     udpNudge,
 	}, nil
 }
 
@@ -74,8 +96,10 @@ func (e *arpEngine) name() string { return "arp" }
 
 // probe sends a request for ip on every interface that shares its subnet
 // and returns the first reply's hardware address. Retransmits every
-// probeRetransmit until probeTimeout or ctx is done.
-func (e *arpEngine) probe(ctx context.Context, ip net.IP) (string, error) {
+// probeRetransmit until probeTimeout or ctx is done. With want set,
+// each round also sends the request unicast to that MAC (see the type
+// comment for why).
+func (e *arpEngine) probe(ctx context.Context, ip net.IP, want string) (string, error) {
 	ifaces, err := e.ifaces()
 	if err != nil {
 		return "", err
@@ -93,11 +117,22 @@ func (e *arpEngine) probe(ctx context.Context, ip net.IP) (string, error) {
 		return "", errNoSocket
 	}
 
+	direct := macBytes(want)
+	if direct != nil {
+		// Give the kernel an entry for the reply to land in (see the
+		// type comment). Best effort: a failed nudge is just a nudge
+		// not sent.
+		_ = e.nudge(ctx, ip)
+	}
 	retry := time.NewTicker(probeRetransmit)
 	defer retry.Stop()
 	for {
 		for _, s := range socks {
-			_ = s.send(ip) // a failed send on one interface shouldn't stop the others
+			// A failed send on one interface shouldn't stop the others.
+			_ = s.send(ip, broadcastHW)
+			if direct != nil {
+				_ = s.send(ip, direct)
+			}
 		}
 	wait:
 		for {
@@ -119,7 +154,12 @@ func (e *arpEngine) probe(ctx context.Context, ip net.IP) (string, error) {
 // sweep paces one request per address, listening the whole time, and
 // returns as soon as mac claims any of them. After the last request it
 // keeps listening for sweepTail so a slow reply to an early request
-// still counts. Every reply is collected into heard.
+// still counts. Every reply is collected into heard. The requests go
+// unicast to mac: only that station can answer, the switch delivers
+// them to its port alone, and the access point retries them, so the
+// sweep is both reliable for a dozing camera and nearly free for
+// everyone else on the LAN. A MAC that doesn't parse falls back to
+// broadcast.
 func (e *arpEngine) sweep(ctx context.Context, ips []net.IP, mac string) (net.IP, map[string]net.IP, error) {
 	ifaces, err := e.ifaces()
 	if err != nil {
@@ -158,12 +198,16 @@ func (e *arpEngine) sweep(ctx context.Context, ips []net.IP, mac string) (net.IP
 		return got == mac
 	}
 
+	dst := macBytes(mac)
+	if dst == nil {
+		dst = broadcastHW
+	}
 	pace := time.NewTicker(e.sendPace)
 	defer pace.Stop()
 	for _, ip := range ips {
 		for _, ifi := range onLink(ifaces, ip) {
 			if s := sockByIndex[ifi.Index]; s != nil {
-				_ = s.send(ip)
+				_ = s.send(ip, dst)
 			}
 		}
 		select {
@@ -262,13 +306,19 @@ func openARPSocket(ifi lanInterface) (*arpSocket, error) {
 
 // send broadcasts a who-has request for target from this interface's
 // own address.
-func (s *arpSocket) send(target net.IP) error {
+// broadcastHW is the Ethernet destination for a classic ARP request.
+var broadcastHW = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+
+// send writes one "who has target" request to the interface, addressed
+// at the Ethernet layer to dst: broadcastHW to ask everyone, or a
+// station's own MAC to ask it alone.
+func (s *arpSocket) send(target net.IP, dst net.HardwareAddr) error {
 	to := &syscall.SockaddrLinklayer{
 		Protocol: htons(syscall.ETH_P_ARP),
 		Ifindex:  s.ifi.Index,
 		Halen:    6,
-		Addr:     [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 	}
+	copy(to.Addr[:], dst)
 	pkt := arpRequest(s.ifi.HW, s.ifi.IP, target)
 	return syscall.Sendto(s.fd, pkt, 0, to)
 }

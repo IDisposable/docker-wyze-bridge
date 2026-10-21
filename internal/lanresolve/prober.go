@@ -17,16 +17,19 @@ import (
 // resolver tolerates by re-checking periodically.
 type prober interface {
 	// probe returns the normalized MAC currently answering for ip, or ""
-	// when nothing answered within the engine's timeout. An error means
+	// when nothing answered within the engine's timeout. want is the
+	// MAC the caller expects there (normalized, or ""): an engine that
+	// can address frames directly uses it, since a Wi-Fi camera dozing
+	// in power save can miss broadcasts for seconds but gets a unicast
+	// frame delivered and retried by its access point. An error means
 	// the question couldn't be asked at all (off-link address, socket
 	// failure) rather than "nobody home".
-	probe(ctx context.Context, ip net.IP) (string, error)
+	probe(ctx context.Context, ip net.IP, want string) (string, error)
 
 	// sweep asks every address in ips, in order, and returns the first
 	// one claimed by mac, or nil when none was. heard carries every
-	// MAC -> IP reply observed along the way, so one sweep can answer
-	// for several cameras. Engines pace their sends so a /22 doesn't
-	// turn into a broadcast storm on Wi-Fi.
+	// MAC -> IP reply observed along the way. Engines pace their sends
+	// so a /22 doesn't turn into a storm on Wi-Fi.
 	sweep(ctx context.Context, ips []net.IP, mac string) (found net.IP, heard map[string]net.IP, err error)
 
 	// name labels the engine in logs and the metrics page.
@@ -38,14 +41,14 @@ type prober interface {
 // waiting for a reply.
 var errOffLink = errors.New("address is not on any local subnet")
 
-// Timing shared by both engines. A camera on Wi-Fi power save can hold
-// an ARP reply for a beacon interval or two, so the probe retransmits
-// and waits most of a second before giving up; a healthy camera answers
-// in a few milliseconds and never sees the retransmit.
+// Timing shared by both engines. A camera on Wi-Fi power save wakes
+// for its access point only every listen interval, so the probe
+// retransmits and waits a second and a half before giving up; a healthy
+// camera answers in a few milliseconds and never sees the retransmit.
 const (
-	probeTimeout    = 800 * time.Millisecond
-	probeRetransmit = 200 * time.Millisecond
-	sweepTail       = 800 * time.Millisecond // listen after the last request
+	probeTimeout    = 1500 * time.Millisecond
+	probeRetransmit = 250 * time.Millisecond
+	sweepTail       = 1000 * time.Millisecond // listen after the last request
 )
 
 // newProber picks the best engine the host allows. The ARP engine is

@@ -301,12 +301,17 @@ func (c *Camera) LanStatus() (source string, verifiedAt time.Time, misses int) {
 }
 
 // noteLanVerified records a successful verification by source, or by
-// the periodic recheck when source is "" (the rung stays as it was).
+// the periodic recheck when source is "" (the rung stays as it was,
+// or becomes "recheck" if no rung ever verified the camera — the
+// startup probe missed it and the recheck caught it).
 func (c *Camera) noteLanVerified(source string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if source != "" {
+	switch {
+	case source != "":
 		c.lanSource = source
+	case c.lanSource == "":
+		c.lanSource = "recheck"
 	}
 	c.lanVerifiedAt = time.Now()
 	c.lanMisses = 0
