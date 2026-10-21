@@ -140,7 +140,8 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
 }
 .camera-links a,
 .camera-links .copy-btn,
-.camera-links .snap-btn {
+.camera-links .snap-btn,
+.camera-links .ignore-btn {
     font-size: 0.7rem;
     padding: 0.2rem 0.6rem;
     background: var(--accent);
@@ -152,12 +153,37 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
 }
 .camera-links a:hover,
 .camera-links .copy-btn:hover,
-.camera-links .snap-btn:hover { color: var(--text); text-decoration: none; }
+.camera-links .snap-btn:hover,
+.camera-links .ignore-btn:hover { color: var(--text); text-decoration: none; }
 .camera-links .copy-btn.copied,
 .camera-links .snap-btn.snapped { background: var(--success); color: #fff; }
 /* Push the snapshot icon to the right edge so RTSP/HLS stay grouped. */
 .camera-links .snap-btn { margin-left: auto; padding: 0.15rem 0.4rem; }
 .snap-btn:disabled { opacity: 0.6; cursor: wait; }
+.camera-links .ignore-btn { padding: 0.15rem 0.4rem; }
+.camera-links .ignore-btn:hover { background: var(--error); color: #fff; }
+.ignore-btn:disabled { opacity: 0.6; cursor: wait; }
+
+/* Ignored cameras strip under the grid: the undo for the ignore
+   button, so it lives on the same page rather than behind a menu. */
+.ignored { margin-top: 2rem; color: var(--text-dim); }
+.ignored h2 { font-size: 1rem; color: var(--text); margin-bottom: 0.5rem; }
+.ignored h2 small { font-weight: normal; color: var(--text-dim); margin-left: 0.5rem; }
+.ignored table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.ignored th, .ignored td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--border); }
+.ignored th { font-weight: 600; color: var(--text); }
+.ignored .restore-btn {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    background: var(--accent);
+    border: none;
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font-family: inherit;
+}
+.ignored .restore-btn:hover:not(:disabled) { background: var(--success); color: #fff; }
+.ignored .restore-btn:disabled { opacity: 0.6; cursor: wait; }
 .actions .snap-btn.snapped { background: var(--success); color: #fff; }
 
 .no-cameras {

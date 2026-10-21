@@ -113,6 +113,13 @@ func main() {
 
 	camLog := log.With().Str("c", "camera").Logger()
 	camMgr := camera.NewManager(cfg, apiClient, nil, camLog)
+	// The operator's ignore list (edited from the WebUI) rides in the
+	// state file so it survives restarts; install it before the first
+	// discovery so ignored cameras never get a go2rtc stream at all.
+	camMgr.SetIgnored(state.Ignored)
+	if len(state.Ignored) > 0 {
+		log.Info().Int("count", len(state.Ignored)).Msg("restored ignore list from state file")
+	}
 	if cfg.LanIPResolve {
 		// Verifies TUTK cameras' LAN addresses by MAC before go2rtc
 		// dials them. Built early so the engine choice (raw ARP vs
@@ -442,6 +449,35 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 		go publishStateMQTT(mqttClient, cam)
 		go sendStateWebhook(ctx, webhookClient, name, snap, newState)
 		go persistState(state, apiClient, cfg.StateDir)
+	})
+
+	// Ignore-list edits persist immediately; a crash between the click
+	// and the next state save would otherwise bring the camera back.
+	camMgr.OnIgnoreChange(func(list []wyzeapi.IgnoredCamera) {
+		state.SetIgnored(list)
+		persistState(state, apiClient, cfg.StateDir)
+	})
+
+	// A camera leaving the registry (ignored, or reaped after a rename)
+	// takes its card, its recorder and its HA entities with it. A camera
+	// arriving (first discovery, or restored from the ignore list) gets
+	// a card and HA entities; the dashboard reloads on camera_added.
+	camMgr.OnCameraRemoved(func(cam *camera.Camera, reason string) {
+		name := cam.Name()
+		recMgr.Stop(name)
+		if evLog := webServer.Events(); evLog != nil {
+			evLog.Record(webui.Event{Kind: "discover", Camera: name, Message: "removed (" + reason + ")"})
+		}
+		go webServer.SSE().SendJSON("camera_removed", map[string]interface{}{"name": name})
+		if mqttClient != nil && mqttClient.IsConnected() {
+			go mqttClient.RemoveDiscovery(cam.GetInfo().MAC)
+		}
+	})
+	camMgr.OnCameraAdded(func(cam *camera.Camera) {
+		go webServer.SSE().SendJSON("camera_added", map[string]interface{}{"name": cam.Name()})
+		if mqttClient != nil && mqttClient.IsConnected() {
+			go mqttClient.PublishDiscovery(cam)
+		}
 	})
 
 	// A corrected LAN address shows up in the event log (so the

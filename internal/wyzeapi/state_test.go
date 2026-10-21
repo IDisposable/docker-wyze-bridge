@@ -142,3 +142,57 @@ func TestStateFile_Permissions(t *testing.T) {
 		t.Errorf("state file permissions = %o, should not be world-readable", perm)
 	}
 }
+
+func TestStateFile_IgnoredRoundTrip(t *testing.T) {
+	// The WebUI ignore list survives a save and load, empty fields and all.
+	// SetIgnored keeps its own copy of the list, and nil clears it.
+	dir := t.TempDir()
+	since := time.Date(2026, 10, 20, 15, 0, 0, 0, time.UTC)
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	sf.SetIgnored([]IgnoredCamera{
+		{MAC: "D03F2700CA01", Nickname: "Front Porch Cam", Model: "WYZE_CAKP2JFUS", Since: since},
+		{MAC: "80482C0D6B02", Since: since},
+	})
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Ignored) != 2 || loaded.Ignored[0].MAC != "D03F2700CA01" || loaded.Ignored[0].Nickname != "Front Porch Cam" || !loaded.Ignored[0].Since.Equal(since) {
+		t.Errorf("ignored = %+v", loaded.Ignored)
+	}
+	if loaded.Ignored[1].Nickname != "" || loaded.Ignored[1].Model != "" {
+		t.Errorf("empty nickname/model should round-trip empty: %+v", loaded.Ignored[1])
+	}
+
+	// SetIgnored copies: mutating the caller's slice afterwards must
+	// not reach the state file.
+	list := []IgnoredCamera{{MAC: "AA"}}
+	sf.SetIgnored(list)
+	list[0].MAC = "BB"
+	if sf.Ignored[0].MAC != "AA" {
+		t.Error("SetIgnored aliased the caller's slice")
+	}
+	sf.SetIgnored(nil)
+	if len(sf.Ignored) != 0 {
+		t.Error("SetIgnored(nil) should clear the list")
+	}
+}
+
+func TestStateFile_LoadWithoutIgnoredField(t *testing.T) {
+	// Older state files have no "ignored" key: load must leave the
+	// list empty rather than fail.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "wyze-bridge.state.json"), []byte(`{"cameras":{},"updated":"2026-01-01T00:00:00Z"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(dir, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Ignored) != 0 {
+		t.Errorf("ignored = %+v, want empty", loaded.Ignored)
+	}
+}

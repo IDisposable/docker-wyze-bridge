@@ -48,6 +48,13 @@ type Manager struct {
 	// address changes. See lanip.go.
 	resolver      LANResolver
 	onLanIPChange func(cam *Camera, oldIP, newIP, source string)
+	// ignored is the operator's runtime ignore list keyed by MAC; see
+	// ignore.go. onAdded / onRemoved fire when a camera enters or
+	// leaves the registry so the WebUI, MQTT and recording can follow.
+	ignored        map[string]wyzeapi.IgnoredCamera
+	onIgnoreChange func(list []wyzeapi.IgnoredCamera)
+	onAdded        func(cam *Camera)
+	onRemoved      func(cam *Camera, reason string)
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a
@@ -77,6 +84,7 @@ func NewManager(
 		},
 		cameras:         make(map[string]*Camera),
 		chronicReported: make(map[string]bool),
+		ignored:         make(map[string]wyzeapi.IgnoredCamera),
 	}
 	if go2rtcAPI != nil {
 		m.go2rtc.Store(go2rtcAPI)
@@ -173,7 +181,7 @@ func (m *Manager) Discover(ctx context.Context) error {
 		supported = append(supported, cam)
 	}
 
-	filtered := m.filter.Apply(supported)
+	filtered := m.dropIgnored(m.filter.Apply(supported))
 
 	m.log.Info().
 		Int("discovered", len(cameras)).
@@ -182,10 +190,10 @@ func (m *Manager) Discover(ctx context.Context) error {
 		Msg("camera discovery complete")
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Track which existing cameras are still present
 	seen := make(map[string]bool)
+	var added []*Camera
 
 	for _, info := range filtered {
 		name := info.NormalizedName()
@@ -204,6 +212,7 @@ func (m *Manager) Discover(ctx context.Context) error {
 				m.cfg.CamRecord(name),
 			)
 			m.cameras[name] = cam
+			added = append(added, cam)
 			m.log.Info().
 				Str("cam", name).
 				Str("model", info.ModelName()).
@@ -212,13 +221,27 @@ func (m *Manager) Discover(ctx context.Context) error {
 		}
 	}
 
-	m.reapRenameOrphans(ctx, filtered)
+	removed := m.reapRenameOrphans(ctx, filtered)
 
 	// Mark cameras not in discovery as offline
 	for name, cam := range m.cameras {
 		if !seen[name] && cam.GetState() != StateOffline {
 			m.changeState(cam, StateOffline)
 			m.log.Warn().Str("cam", name).Msg("camera no longer in discovery, marking offline")
+		}
+	}
+
+	m.mu.Unlock()
+
+	// Observers run outside the lock: they enumerate Cameras().
+	for _, cam := range removed {
+		if m.onRemoved != nil {
+			m.onRemoved(cam, "renamed")
+		}
+	}
+	for _, cam := range added {
+		if m.onAdded != nil {
+			m.onAdded(cam)
 		}
 	}
 
@@ -466,8 +489,11 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 // user renamed the camera in the Wyze app). Without this, the old
 // entry's go2rtc stream lingers forever — Discover only ever adds
 // new entries, and the old name stays "offline" while a fresh entry
-// is created under the new name. Called under m.mu.Lock() by Discover.
-func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.CameraInfo) {
+// is created under the new name. Called under m.mu.Lock() by Discover;
+// returns the dropped cameras so Discover can notify observers once
+// the lock is released.
+func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.CameraInfo) []*Camera {
+	var removed []*Camera
 	newByMAC := make(map[string]string, len(filtered))
 	for _, info := range filtered {
 		if info.MAC == "" {
@@ -493,7 +519,9 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 			_ = go2rtc.DeleteStream(ctx, oldName)
 		}
 		delete(m.cameras, oldName)
+		removed = append(removed, existing)
 	}
+	return removed
 }
 
 // reconnectErrored tries to reconnect cameras in error state whose backoff has elapsed.

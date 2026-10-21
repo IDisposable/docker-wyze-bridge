@@ -9,6 +9,7 @@
 
     // SSE connection for real-time updates
     let eventSource = null;
+    let reloadTimer = null;
 
     function connectSSE() {
         if (eventSource) {
@@ -23,8 +24,11 @@
         });
 
         eventSource.addEventListener('camera_added', function(e) {
-            // Reload page when a new camera is discovered
-            location.reload();
+            // Reload page when a new camera is discovered. A discovery
+            // pass adds every camera within a few milliseconds, so
+            // coalesce the burst into one reload.
+            clearTimeout(reloadTimer);
+            reloadTimer = setTimeout(function() { location.reload(); }, 1000);
         });
 
         eventSource.addEventListener('camera_removed', function(e) {
@@ -242,6 +246,59 @@
         });
     }
 
+    // Ignore button: POST /api/cameras/{name}/ignore after a confirm.
+    // The server drops the camera and persists its MAC; the SSE
+    // camera_removed event takes the card off the grid, and the page
+    // reloads so the "Ignored cameras" strip picks up the new row.
+    function wireIgnoreButtons() {
+        document.querySelectorAll('.ignore-btn').forEach(function(btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                const cam = btn.getAttribute('data-cam');
+                const nick = btn.getAttribute('data-nickname') || cam;
+                if (!cam || btn.disabled) return;
+                if (!confirm('Ignore "' + nick + '"?\n\nThe bridge will stop connecting to it and hide it. You can restore it from the Ignored cameras list at the bottom of the dashboard.')) return;
+                btn.disabled = true;
+                fetch(B + '/api/cameras/' + cam + '/ignore', { method: 'POST' })
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        location.reload();
+                    })
+                    .catch(function(err) {
+                        console.error('Ignore failed:', err);
+                        btn.disabled = false;
+                    });
+            });
+        });
+    }
+
+    // Restore button on the ignored strip: POST /api/ignored/{mac}/restore.
+    // The server rediscovers asynchronously; camera_added reloads the
+    // page when the card is back, but drop the row right away so the
+    // click visibly did something.
+    function wireRestoreButtons() {
+        document.querySelectorAll('.restore-btn').forEach(function(btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                const mac = btn.getAttribute('data-mac');
+                if (!mac || btn.disabled) return;
+                btn.disabled = true;
+                btn.textContent = 'Restoring…';
+                fetch(B + '/api/ignored/' + encodeURIComponent(mac) + '/restore', { method: 'POST' })
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        const row = btn.closest('tr');
+                        if (row) row.remove();
+                    })
+                    .catch(function(err) {
+                        console.error('Restore failed:', err);
+                        btn.textContent = 'Restore';
+                        btn.disabled = false;
+                    });
+            });
+        });
+    }
+
     // Rediscover button: POST /api/discover to kick a Wyze API refresh.
     // The discovery pass is async on the server — camera state updates
     // arrive over SSE as cameras come online, so we just flash the
@@ -277,6 +334,8 @@
         wireCopyButtons();
         wireSnapButtons();
         wireRecordButtons();
+        wireIgnoreButtons();
+        wireRestoreButtons();
         wireDiscoverButton();
     }
 

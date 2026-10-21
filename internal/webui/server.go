@@ -297,6 +297,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cameras", s.auth.Wrap(s.handleAPICameras))
 	mux.HandleFunc("/api/cameras/", s.auth.Wrap(s.handleAPICameraAction))
 	mux.HandleFunc("/api/discover", s.auth.Wrap(s.handleAPIDiscover))
+	mux.HandleFunc("/api/ignored", s.auth.Wrap(s.handleAPIIgnored))
+	mux.HandleFunc("/api/ignored/", s.auth.Wrap(s.handleAPIIgnoredAction))
 	mux.HandleFunc("/api/snapshot/", s.auth.Wrap(s.handleSnapshot))
 	mux.HandleFunc("/api/streams", s.auth.Wrap(s.handleStreamsM3U8))
 	mux.HandleFunc("/api/streams/", s.auth.Wrap(s.handleStreamM3U8))
