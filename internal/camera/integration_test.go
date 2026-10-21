@@ -37,7 +37,7 @@ func mockGo2RTCServer(t *testing.T) (*httptest.Server, *go2rtcmgr.APIClient) {
 			}
 			w.WriteHeader(200)
 		case r.URL.Path == "/api/streams" && r.Method == "DELETE":
-			name := r.URL.Query().Get("name")
+			name := r.URL.Query().Get("src") // go2rtc deletes by src=, not name=
 			delete(streams, name)
 			w.WriteHeader(200)
 		case r.URL.Path == "/api/frame.jpeg":

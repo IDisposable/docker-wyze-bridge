@@ -26,7 +26,7 @@ func go2rtcSpy(t *testing.T) (*go2rtcmgr.APIClient, func() []string) {
 		switch {
 		case r.URL.Path == "/api/streams" && r.Method == "DELETE":
 			mu.Lock()
-			deleted = append(deleted, r.URL.Query().Get("name"))
+			deleted = append(deleted, r.URL.Query().Get("src"))
 			mu.Unlock()
 			w.WriteHeader(200)
 		case r.URL.Path == "/api/streams":

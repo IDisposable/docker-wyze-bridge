@@ -351,20 +351,24 @@ func (m *Manager) registerStream(ctx context.Context, go2rtc *go2rtcmgr.APIClien
 		Bool("dtls", snap.Info.DTLS).
 		Msg("connecting camera to go2rtc")
 
-	// Drop any prior go2rtc entry first so the PUT below is a clean
-	// re-create rather than an in-place source swap. Without this,
-	// a reconnect after HealthCheck saw 0 producers can leave the
-	// old (dead) source pool attached and the fresh AddStream never
-	// actually plays. Skipped for Gwell publish-only slots — those
-	// have an active RTSP publisher we'd disrupt (and HealthCheck
-	// already excludes Gwell, so we don't get here for them anyway).
-	if protocol != "gwell" {
-		_ = go2rtc.DeleteStream(ctx, cam.Name())
-	}
-
+	// No DeleteStream first: go2rtc's PUT builds a fresh stream and
+	// swaps it into its table, so the old (dead) source pool is already
+	// gone from the name. (The delete that used to sit here never
+	// deleted anything, see DeleteStream, and go2rtc's DELETE handler
+	// writes its table without the lock its readers take.)
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
 		backoff := cam.IncrementError()
 		errors := cam.GetErrorCount()
+		if go2rtcmgr.Unreachable(err) {
+			// go2rtc is down, not the camera: no chronic report and no
+			// strike toward the WebRTC fallback. Reregister puts the
+			// stream back as soon as go2rtc is up again.
+			m.log.Warn().Err(err).
+				Str("cam", cam.Name()).
+				Dur("backoff", backoff).
+				Msg("go2rtc not reachable; stream not added")
+			return
+		}
 		m.log.Error().Err(err).
 			Str("cam", cam.Name()).
 			Str("protocol", protocol).
@@ -381,6 +385,39 @@ func (m *Manager) registerStream(ctx context.Context, go2rtc *go2rtcmgr.APIClien
 		Str("protocol", protocol).
 		Msg("camera connected successfully")
 	m.changeState(cam, StateStreaming)
+}
+
+// Reregister adds every camera's stream to go2rtc again, all at once.
+// Streams the bridge adds at runtime live only in go2rtc's memory, so
+// after go2rtc restarts they're gone; without this each camera would
+// wait for the health poll to notice and its reconnect backoff to run
+// out. Addresses haven't changed, so the LAN resolver isn't asked.
+// Gwell slots come back from go2rtc.yaml and are left to gwell-proxy.
+func (m *Manager) Reregister(ctx context.Context) {
+	go2rtc := m.go2rtcClient()
+	if go2rtc == nil {
+		return
+	}
+	m.mu.RLock()
+	cams := make([]*Camera, 0, len(m.cameras))
+	for _, c := range m.cameras {
+		cams = append(cams, c)
+	}
+	m.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, cam := range cams {
+		if _, protocol := m.streamSourceFor(cam); protocol == "gwell" {
+			continue
+		}
+		wg.Add(1)
+		go func(c *Camera) {
+			defer wg.Done()
+			m.registerStream(ctx, go2rtc, c)
+		}(cam)
+	}
+	wg.Wait()
+	m.log.Info().Int("cameras", len(cams)).Msg("streams re-added after go2rtc restart")
 }
 
 // streamSourceFor returns the go2rtc source URL and a label for the
