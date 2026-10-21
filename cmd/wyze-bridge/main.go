@@ -577,6 +577,15 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 	camMgr.OnStreamError(func(cam *camera.Camera, msg string) {
 		pushVideo(cam)
 	})
+	// A stream was replaced (gone silent, quality changed); players still
+	// on the old one have to reconnect to reach it.
+	camMgr.OnStreamRestart(func(cam *camera.Camera, reason string) {
+		n := webServer.DropStreamSockets(cam.Name())
+		log.Info().Str("cam", cam.Name()).Str("reason", reason).Int("players", n).Msg("stream restarted; players reconnecting")
+		if evLog := webServer.Events(); evLog != nil {
+			evLog.Record(webui.Event{Kind: "video", Camera: cam.Name(), Message: reason + "; stream restarted"})
+		}
+	})
 
 	// A corrected LAN address shows up in the event log (so the
 	// /metrics page explains why go2rtc's URL stopped matching the

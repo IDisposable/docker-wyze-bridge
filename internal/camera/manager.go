@@ -68,8 +68,9 @@ type Manager struct {
 	onRemoved      func(cam *Camera, reason string)
 	// onVideoChange / onStreamError report whether frames are really
 	// flowing and what go2rtc complained about; see video.go.
-	onVideoChange func(cam *Camera, old, cur Video)
-	onStreamError func(cam *Camera, msg string)
+	onVideoChange   func(cam *Camera, old, cur Video)
+	onStreamError   func(cam *Camera, msg string)
+	onStreamRestart func(cam *Camera, reason string)
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a

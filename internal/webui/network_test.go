@@ -170,6 +170,11 @@ func TestRenderIndex_LanHint(t *testing.T) {
 	if !strings.Contains(body, `class="lan-hint" data-cam="garage" hidden>`) {
 		t.Fatalf("hint should be rendered hidden:\n%s", between(body, `class="lan-hint"`, "</p>"))
 	}
+	// Grid tiles ask go2rtc for one MSE consumer each and keep a deeper
+	// buffer than the detail page (see video-stream.js).
+	if !strings.Contains(body, `mode="mse" buffer="2.5" muted></video-rtc>`) {
+		t.Error("grid players should carry mode=\"mse\" and buffer=\"2.5\"")
+	}
 
 	// Two sweeps missed it: the hint shows with the count and an ignore
 	// button that reuses the normal ignore action.

@@ -104,7 +104,7 @@
         document.querySelectorAll('.video-badge[data-cam="' + data.name + '"]').forEach(function(el) {
             el.className = 'video-badge ' + data.video;
             el.textContent = labels[data.video] || '';
-            el.title = data.last_error ? data.last_error : '';
+            el.title = data.video === 'live' ? 'last video just now' : (data.last_error || '');
         });
         const err = document.querySelector('.cam-last-error[data-cam="' + data.name + '"]');
         if (err) err.textContent = data.last_error ? data.last_error + ' (just now)' : 'none';

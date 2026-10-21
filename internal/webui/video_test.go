@@ -49,6 +49,9 @@ func TestFormatWhenAndError(t *testing.T) {
 	if got := videoTitle(snap); got != formatError(snap) {
 		t.Errorf("title with error = %q", got)
 	}
+	if got := videoTitle(camera.Snapshot{Video: camera.VideoLive, LastVideo: time.Now(), LastError: "old news"}); got != "last video just now" {
+		t.Errorf("live camera with an old error should show the video time, got %q", got)
+	}
 	if got := videoTitle(camera.Snapshot{LastVideo: time.Now()}); got != "last video just now" {
 		t.Errorf("title with video = %q", got)
 	}

@@ -3,6 +3,7 @@ package webui
 import (
 	"bufio"
 	"encoding/binary"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -204,4 +205,52 @@ func FuzzWSSniffer(f *testing.F) {
 			t.Fatalf("sniffer buffer grew to %d", len(s.buf))
 		}
 	})
+}
+
+func TestDropStreamSockets_ClosesOnlyThatCamerasPlayers(t *testing.T) {
+	// After the bridge replaces a silent stream, players on the old
+	// one are cut loose so they reconnect to the new one. Other
+	// cameras' players are untouched.
+	srv, _ := testServer(t)
+	cam := injectStreamingCamera(srv, "pet_cam")
+	upstreamURL, gotRequest, release := fakeGo2rtcWS(t, wsFrame(2, make([]byte, 10)))
+	t.Cleanup(func() { close(release) })
+	srv.SetGo2RTCAPI(go2rtcmgr.NewAPIClient(upstreamURL, zerolog.Nop()))
+
+	front := httptest.NewServer(http.HandlerFunc(srv.handleWSProxy))
+	t.Cleanup(front.Close)
+	client, err := net.Dial("tcp", strings.TrimPrefix(front.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	client.Write([]byte("GET /ws?src=pet_cam HTTP/1.1\r\nHost: bridge\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: x\r\nSec-WebSocket-Version: 13\r\n\r\n"))
+	select {
+	case <-gotRequest:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream never saw the upgrade")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cam.Pullers() != 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if n := srv.DropStreamSockets("side_yard"); n != 0 {
+		t.Errorf("dropped %d sockets for a camera nobody is watching", n)
+	}
+	if n := srv.DropStreamSockets("pet_cam"); n != 1 {
+		t.Fatalf("dropped %d sockets, want 1", n)
+	}
+	// The browser side closes: reads drain to EOF.
+	client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.Copy(io.Discard, client); err != nil {
+		t.Errorf("browser socket not closed: %v", err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cam.Pullers() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if cam.Pullers() != 0 {
+		t.Errorf("pullers = %d after drop", cam.Pullers())
+	}
 }
