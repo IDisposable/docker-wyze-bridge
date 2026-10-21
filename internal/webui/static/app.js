@@ -302,6 +302,56 @@
         });
     }
 
+    // Settings page: per-camera video quality. Each select POSTs its
+    // camera's choice ("" = default) at once; the server saves it and
+    // restarts that stream if the frame size changed. The "every camera"
+    // buttons walk the selects one at a time so the cameras aren't all
+    // redialed in the same instant.
+    function wireQualityTable() {
+        const table = document.getElementById('quality-table');
+        if (!table) return;
+        const send = function(sel) {
+            const cell = sel.closest('tr').querySelector('.quality-status');
+            cell.textContent = 'Saving…';
+            cell.className = 'quality-status';
+            sel.disabled = true;
+            return fetch(B + '/api/cameras/' + encodeURIComponent(sel.dataset.cam) + '/quality', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ quality: sel.value })
+            })
+                .then(function(resp) {
+                    return resp.json().then(function(data) {
+                        if (!resp.ok) throw new Error(data.error || (resp.status + ' ' + resp.statusText));
+                        return data;
+                    });
+                })
+                .then(function(data) {
+                    cell.textContent = 'Saved, streaming ' + data.quality.toUpperCase();
+                    cell.className = 'quality-status ok';
+                })
+                .catch(function(err) {
+                    console.error('Quality change failed:', err);
+                    cell.textContent = String(err.message || err);
+                    cell.className = 'quality-status failed';
+                })
+                .then(function() { sel.disabled = false; });
+        };
+        table.querySelectorAll('.quality-select').forEach(function(sel) {
+            sel.addEventListener('change', function() { send(sel); });
+        });
+        document.querySelectorAll('.quality-all button').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                let chain = Promise.resolve();
+                table.querySelectorAll('.quality-select').forEach(function(sel) {
+                    if (sel.value === btn.dataset.all) return;
+                    sel.value = btn.dataset.all;
+                    chain = chain.then(function() { return send(sel); });
+                });
+            });
+        });
+    }
+
     function refreshExcluded() {
         const tbody = document.querySelector('#excluded-table tbody');
         if (!tbody) return;
@@ -756,6 +806,7 @@
         wireRebootButtons();
         wirePinForms();
         wireRulesForm();
+        wireQualityTable();
         wireLockButton();
         wireDragHandles();
         wireRotateButtons();

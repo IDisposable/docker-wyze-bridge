@@ -343,7 +343,7 @@ func TestSetQuality_KeepsResolvedIP(t *testing.T) {
 	mgr.cameras[cam.Name()] = cam
 	mgr.connectCamera(context.Background(), cam)
 
-	if err := mgr.SetQuality(context.Background(), "side_garage", "sd"); err != nil {
+	if _, err := mgr.SetQuality(context.Background(), "side_garage", "sd"); err != nil {
 		t.Fatal(err)
 	}
 	src := srcOf("side_garage")

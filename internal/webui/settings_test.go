@@ -235,3 +235,42 @@ func TestRenderIndex_ExcludedStrip(t *testing.T) {
 		t.Error("settings page should list the excluded camera")
 	}
 }
+
+func TestSettingsPage_QualityTable(t *testing.T) {
+	// One select per TUTK camera, preset to the saved choice; a camera
+	// that picks its own quality (a doorbell) gets a note instead; a
+	// change POSTs to the camera's quality action and "" means default.
+	srv, _ := testServer(t)
+	injectStreamingCamera(srv, "garage")
+	door := camera.NewCamera(wyzeapi.CameraInfo{Name: "front_door", Model: "GW_DBD", MAC: "AABBCCDDEEFF", Nickname: "Front door"}, "hd", true, false)
+	srv.camMgr.InjectCamera("front_door", door)
+
+	post := func(name, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		srv.handleAPICameraAction(w, httptest.NewRequest("POST", "/api/cameras/"+name+"/quality", strings.NewReader(body)))
+		return w
+	}
+	if w := post("garage", `{"quality":"sd"}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"quality":"sd"`) {
+		t.Fatalf("sd: %d %s", w.Code, w.Body.String())
+	}
+
+	w := httptest.NewRecorder()
+	srv.handleSettingsPage(w, httptest.NewRequest("GET", "/settings", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, `data-cam="garage"`) || !strings.Contains(body, `<option value="sd" selected>SD</option>`) {
+		t.Errorf("garage's select should show the saved SD:\n%s", between(body, `id="quality-table"`, "</table>"))
+	}
+	if !strings.Contains(body, `<option value="">Default (hd)</option>`) {
+		t.Error("the default option should name the env default")
+	}
+	if strings.Contains(body, `data-cam="front_door"`) || !strings.Contains(body, "set by the camera") {
+		t.Error("the doorbell should get a note, not a select")
+	}
+
+	if w := post("garage", `{"quality":""}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"quality":"hd"`) {
+		t.Errorf("back to default: %d %s", w.Code, w.Body.String())
+	}
+	if w := post("front_door", `{"quality":"sd"}`); w.Code != http.StatusBadRequest {
+		t.Errorf("doorbell quality: %d, want 400", w.Code)
+	}
+}

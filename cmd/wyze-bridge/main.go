@@ -126,6 +126,8 @@ func main() {
 	if len(state.PinnedIPs) > 0 {
 		log.Info().Int("count", len(state.PinnedIPs)).Msg("restored pinned addresses from state file")
 	}
+	// Saved HD/SD choices too, so the first dial asks for the right size.
+	camMgr.SetSavedQualities(state.Qualities)
 	// Runtime camera rules (Settings page) apply after the env filters
 	// on every discovery; the "local subnets only" scope needs to know
 	// this host's subnets.
@@ -518,6 +520,15 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 	camMgr.OnPinChange(func(pins map[string]string) {
 		state.SetPinnedIPs(pins)
 		persistState(state, apiClient, cfg.StateDir)
+	})
+	camMgr.OnQualityChange(func(cam *camera.Camera, quality string, saved map[string]string) {
+		state.SetQualities(saved)
+		persistState(state, apiClient, cfg.StateDir)
+		// Keep Home Assistant's quality select in step with a change
+		// made on the Settings page or the detail page.
+		if mqttClient != nil {
+			mqttClient.PublishProperty(cam.Name(), "quality", quality)
+		}
 	})
 	camMgr.OnRulesChange(func(r wyzeapi.CameraRules) {
 		state.SetRules(r)

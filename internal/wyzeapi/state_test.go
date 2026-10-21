@@ -312,3 +312,28 @@ func TestStateFile_RulesRoundTrip(t *testing.T) {
 		t.Error("Empty() wrong")
 	}
 }
+
+func TestStateFile_QualitiesRoundTrip(t *testing.T) {
+	// Saved HD/SD choices load back as set, even if the caller edits its
+	// map afterwards. Clearing them drops qualities from the file.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	saved := map[string]string{"D03F27B081EF": "sd"}
+	sf.SetQualities(saved)
+	saved["D03F27B081EF"] = "mutated" // SetQualities must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Qualities["D03F27B081EF"] != "sd" {
+		t.Errorf("qualities = %v", loaded.Qualities)
+	}
+	sf.SetQualities(nil)
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "wyze-bridge.state.json"))
+	if strings.Contains(string(data), `"qualities"`) {
+		t.Error("an empty quality map should be omitted from the file")
+	}
+}

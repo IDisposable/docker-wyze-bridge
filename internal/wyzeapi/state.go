@@ -28,6 +28,10 @@ type StateFile struct {
 	// cameras the resolver can't reach (another VLAN, say). A pin wins
 	// over both the cloud's address and the resolver's.
 	PinnedIPs map[string]string `json:"pinned_ips,omitempty"`
+	// Qualities are the operator's saved HD/SD choices keyed by MAC
+	// (Settings page, detail page, MQTT). A camera without one gets
+	// QUALITY_<CAM> or QUALITY.
+	Qualities map[string]string `json:"qualities,omitempty"`
 	// Rules are the WebUI's runtime camera rules (network scope, name /
 	// MAC / model lists), applied after the env filters on every
 	// discovery. See camera.Manager.SetRules.
@@ -111,6 +115,21 @@ func (sf *StateFile) SetPinnedIPs(pins map[string]string) {
 		sf.PinnedIPs = make(map[string]string, len(pins))
 		for k, v := range pins {
 			sf.PinnedIPs[k] = v
+		}
+	}
+	sf.writeMu.Unlock()
+}
+
+// SetQualities replaces the saved quality choices under the same lock
+// Save uses. An empty map clears the field from the file.
+func (sf *StateFile) SetQualities(saved map[string]string) {
+	sf.writeMu.Lock()
+	if len(saved) == 0 {
+		sf.Qualities = nil
+	} else {
+		sf.Qualities = make(map[string]string, len(saved))
+		for k, v := range saved {
+			sf.Qualities[k] = v
 		}
 	}
 	sf.writeMu.Unlock()
