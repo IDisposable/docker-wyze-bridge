@@ -65,7 +65,7 @@ func TestARPEngine_ProbeDefaultGateway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	start := time.Now()
-	mac, err := eng.probe(ctx, gw)
+	mac, err := eng.probe(ctx, gw, "")
 	if err != nil {
 		t.Fatalf("probe %s: %v", gw, err)
 	}
@@ -113,7 +113,7 @@ func TestARPEngine_ProbeUnusedAddressTimesOut(t *testing.T) {
 	}
 	ctx := context.Background()
 	start := time.Now()
-	mac, err := eng.probe(ctx, target)
+	mac, err := eng.probe(ctx, target, "")
 	took := time.Since(start)
 	if err != nil {
 		t.Fatalf("probe %s: %v", target, err)
@@ -143,7 +143,7 @@ func TestARPEngine_ProbeOffLink(t *testing.T) {
 	if target == nil {
 		t.Skip("every TEST-NET is on-link here")
 	}
-	_, err := eng.probe(context.Background(), target)
+	_, err := eng.probe(context.Background(), target, "")
 	if !errors.Is(err, errOffLink) {
 		t.Fatalf("probe of off-link %s: err = %v, want errOffLink", target, err)
 	}
@@ -156,7 +156,7 @@ func TestARPEngine_SweepFindsGateway(t *testing.T) {
 	gw := defaultGateway(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	mac, err := eng.probe(ctx, gw)
+	mac, err := eng.probe(ctx, gw, "")
 	if err != nil || mac == "" {
 		t.Skipf("gateway did not answer a probe (%q, %v)", mac, err)
 	}
@@ -198,7 +198,7 @@ func TestNeighEngine_Real_ProbeDefaultGateway(t *testing.T) {
 	gw := defaultGateway(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	want, err := arp.probe(ctx, gw)
+	want, err := arp.probe(ctx, gw, "")
 	if err != nil || want == "" {
 		t.Skipf("gateway did not answer ARP (%q, %v)", want, err)
 	}
@@ -210,7 +210,7 @@ func TestNeighEngine_Real_ProbeDefaultGateway(t *testing.T) {
 	if eng.name() != "neigh" {
 		t.Errorf("name = %q", eng.name())
 	}
-	got, err := eng.probe(ctx, gw)
+	got, err := eng.probe(ctx, gw, "")
 	if err != nil {
 		t.Fatalf("neigh probe %s: %v", gw, err)
 	}
@@ -252,5 +252,31 @@ func TestUDPNudge_OffLinkAndCancelled(t *testing.T) {
 	gw := defaultGateway(t)
 	if err := udpNudge(context.Background(), gw); err != nil {
 		t.Errorf("nudge %s: %v", gw, err)
+	}
+}
+
+func TestARPEngine_ProbeNudgesKernelWhenMACKnown(t *testing.T) {
+	// With the expected MAC known, the probe first sends the address a
+	// datagram so the kernel has a neighbor entry for the reply to land
+	// in; without one it just asks.
+	eng := realARPEngine(t)
+	gw := defaultGateway(t)
+	var nudged []string
+	eng.nudge = func(_ context.Context, ip net.IP) error { nudged = append(nudged, ip.String()); return nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mac, err := eng.probe(ctx, gw, "")
+	if err != nil || mac == "" {
+		t.Skipf("gateway didn't answer a broadcast probe (%q, %v); can't test the unicast path here", mac, err)
+	}
+	if len(nudged) != 0 {
+		t.Errorf("probe without a MAC nudged %v", nudged)
+	}
+	again, err := eng.probe(ctx, gw, mac)
+	if err != nil || again != mac {
+		t.Errorf("unicast probe = %q, %v (want %q)", again, err, mac)
+	}
+	if len(nudged) != 1 || nudged[0] != gw.String() {
+		t.Errorf("probe with a MAC should nudge the address once, got %v", nudged)
 	}
 }

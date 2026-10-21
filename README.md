@@ -153,7 +153,17 @@ the bridge asks the LAN which address the camera's MAC is answering
 from: first the cloud IP (one ARP round trip, a few milliseconds),
 then any address the kernel's neighbor cache or an earlier sweep
 already associates with that MAC, and as a last resort an ARP sweep
-of the camera's `/24` and the rest of the local subnet. The verified
+of the camera's `/24` and the rest of the local subnet. The requests
+are addressed to the camera's own MAC rather than broadcast, because
+a Wi-Fi camera dozing in power save can sleep through a broadcast but
+gets a unicast frame delivered and retried by the access point (and a
+sweep addressed to one station costs the rest of the LAN nothing). A
+first recheck runs twenty seconds after startup, since a camera or
+two usually miss the startup probe, when all of them are asked at
+once. The same probe also teaches the NAS's own kernel where the
+camera is, which matters: Linux only looks a new address up by
+broadcast, so until something did this go2rtc's dial couldn't even
+leave the box for a camera that sleeps through broadcasts. The verified
 address goes into the stream URL, the dashboard, MQTT and
 `/api/cameras` (`cloud_ip` keeps the cloud's value), and shows up as
 a `lan_ip` event on `/metrics`. A camera the bridge can't find keeps

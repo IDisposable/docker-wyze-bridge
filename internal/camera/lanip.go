@@ -120,15 +120,18 @@ func (m *Manager) resolveLanIP(ctx context.Context, cam *Camera) bool {
 	return true
 }
 
-// RecheckLanIPs asks, for every streaming TUTK camera, whether it still
-// answers at the address go2rtc was given. go2rtc only dials when a
-// consumer pulls the stream and never reports a failed dial back to
-// us, so without this a camera that changed address mid-run would sit
-// at "streaming" with a dead URL until the next restart. A camera that
-// answers costs one ARP round trip; one that doesn't gets the full
-// resolver ladder, and only a verified different address causes the
-// stream to be re-registered — an unreachable camera is left alone so
-// a battery camera asleep in the yard doesn't flap.
+// RecheckLanIPs asks, for every streaming TUTK camera that isn't
+// delivering video at the moment, whether it still answers at the
+// address go2rtc was given. go2rtc only dials when a consumer pulls
+// the stream and never reports a failed dial back to us, so without
+// this a camera that changed address mid-run would sit at "streaming"
+// with a dead URL until the next restart. A camera that answers costs
+// one ARP round trip; one that doesn't gets the full resolver ladder,
+// and only a verified different address causes the stream to be
+// re-registered — an unreachable camera is left alone so a battery
+// camera asleep in the yard doesn't flap. A camera with live video is
+// skipped outright: bytes arriving from the address prove it better
+// than ARP can.
 func (m *Manager) RecheckLanIPs(ctx context.Context) {
 	r := m.lanResolver()
 	go2rtc := m.go2rtcClient()
@@ -143,6 +146,11 @@ func (m *Manager) RecheckLanIPs(ctx context.Context) {
 			continue
 		}
 		if _, protocol := m.streamSourceFor(c); protocol != "tutk" {
+			continue
+		}
+		// Video arriving from the address right now is better proof
+		// than any ARP reply; a camera that's live is left alone.
+		if c.Snapshot().Video == VideoLive {
 			continue
 		}
 		cams = append(cams, c)

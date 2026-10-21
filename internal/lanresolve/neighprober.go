@@ -44,7 +44,7 @@ func (e *neighEngine) name() string { return "neigh" }
 // probe returns the cached MAC for ip when the kernel has one, nudging
 // the address first if the cache has nothing usable and then polling
 // until the kernel's own ARP completes or probeTimeout passes.
-func (e *neighEngine) probe(ctx context.Context, ip net.IP) (string, error) {
+func (e *neighEngine) probe(ctx context.Context, ip net.IP, _ string) (string, error) {
 	ifaces, err := e.ifaces()
 	if err != nil {
 		return "", err

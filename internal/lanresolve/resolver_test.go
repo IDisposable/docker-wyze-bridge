@@ -17,6 +17,7 @@ type fakeProber struct {
 	mu       sync.Mutex
 	at       map[string]string
 	probes   []string
+	wants    []string // the MAC each probe was told to expect
 	sweeps   [][]net.IP
 	probeErr map[string]error
 	sweepErr error
@@ -30,9 +31,10 @@ func newFakeProber(at map[string]string) *fakeProber {
 
 func (f *fakeProber) name() string { return "fake" }
 
-func (f *fakeProber) probe(ctx context.Context, ip net.IP) (string, error) {
+func (f *fakeProber) probe(ctx context.Context, ip net.IP, want string) (string, error) {
 	f.mu.Lock()
 	f.probes = append(f.probes, ip.String())
+	f.wants = append(f.wants, want)
 	err := f.probeErr[ip.String()]
 	mac := f.at[ip.String()]
 	f.mu.Unlock()
@@ -49,6 +51,8 @@ func (f *fakeProber) probe(ctx context.Context, ip net.IP) (string, error) {
 	return mac, nil
 }
 
+// sweep behaves like the unicast ARP engine: the requests are addressed
+// to mac, so only that station can answer and heard holds at most it.
 func (f *fakeProber) sweep(_ context.Context, ips []net.IP, mac string) (net.IP, map[string]net.IP, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -60,16 +64,13 @@ func (f *fakeProber) sweep(_ context.Context, ips []net.IP, mac string) (net.IP,
 		return nil, nil, f.sweepErr
 	}
 	heard := make(map[string]net.IP)
-	var found net.IP
 	for _, ip := range ips {
-		if m, ok := f.at[ip.String()]; ok {
+		if m, ok := f.at[ip.String()]; ok && m == mac {
 			heard[m] = ip
-			if m == mac && found == nil {
-				found = ip
-			}
+			return ip, heard, nil
 		}
 	}
-	return found, heard, nil
+	return nil, heard, nil
 }
 
 func (f *fakeProber) probed() []string {
@@ -112,6 +113,15 @@ func testResolver(t *testing.T, p *fakeProber, sweep bool) (*Resolver, *fakeCloc
 	r.ifaces = fakeIfaces(fakeIface(t, 1, "eth0", "10.0.0.2/24"))
 	r.cache = func() ([]neighbor, error) { return nil, nil }
 	r.now = clock.now
+	// Waiting for the LAN-wide gap moves the fake clock instead of
+	// sleeping, so tests that queue cameras behind a sweep stay fast.
+	r.sleep = func(ctx context.Context, d time.Duration) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		clock.advance(d)
+		return true
+	}
 	return r, clock
 }
 
@@ -138,6 +148,12 @@ func TestResolve_CloudIPVerified_OneProbe(t *testing.T) {
 	}
 	if p.sweepCount() != 0 {
 		t.Error("no sweep should run when the cloud IP verifies")
+	}
+	p.mu.Lock()
+	wants := append([]string(nil), p.wants...)
+	p.mu.Unlock()
+	if len(wants) != 1 || wants[0] != camNrm {
+		t.Errorf("the probe should be told which MAC to expect (unicast), got %v", wants)
 	}
 }
 
@@ -207,8 +223,9 @@ func TestResolve_NeighCacheHintWrong_FallsThroughToSweep(t *testing.T) {
 	if !res.Verified || res.IP != "10.0.0.77" || res.Source != "sweep" {
 		t.Fatalf("res = %+v", res)
 	}
-	if got := p.probed(); len(got) != 2 || got[1] != "10.0.0.140" {
-		t.Errorf("probes = %v, want cloud then the cache hint", got)
+	// cloud, the cache hint, then the seeding probe of the swept address
+	if got := p.probed(); len(got) != 3 || got[1] != "10.0.0.140" || got[2] != "10.0.0.77" {
+		t.Errorf("probes = %v, want cloud, the cache hint, then the sweep's find", got)
 	}
 	// Addresses already probed are left out of the sweep.
 	for _, ip := range p.sweeps[0] {
@@ -229,21 +246,32 @@ func TestResolve_NeighCacheError_Ignored(t *testing.T) {
 	}
 }
 
-func TestResolve_SweepRemembersEveryReply_ForOtherCameras(t *testing.T) {
-	// Two cameras moved; one sweep should serve both.
+func TestResolve_SweepIsPerCamera(t *testing.T) {
+	// Sweeps are addressed to one camera's MAC, so a second camera that
+	// moved needs a sweep of its own, after the LAN-wide gap; the first
+	// camera's result is remembered for the first camera only.
 	p := newFakeProber(map[string]string{"10.0.0.151": camNrm, "10.0.0.184": "d03f2700ca03", "10.0.0.1": "router000000"})
-	r, _ := testResolver(t, p, true)
+	r, clock := testResolver(t, p, true)
 
 	first := r.Resolve(context.Background(), target("10.0.0.123", ""))
 	if !first.Verified || first.IP != "10.0.0.151" || first.Source != "sweep" {
 		t.Fatalf("first = %+v", first)
 	}
-	second := r.Resolve(context.Background(), Target{Name: "driveway", MAC: "D03F2700CA03", CloudIP: "10.0.0.99"})
-	if !second.Verified || second.IP != "10.0.0.184" || second.Source != "recent" {
-		t.Fatalf("second = %+v", second)
+	// The second camera waits out the LAN-wide gap and then gets a
+	// sweep of its own (the fake sleep moves the clock).
+	b := Target{Name: "driveway", MAC: "D03F2700CA03", CloudIP: "10.0.0.99"}
+	before := clock.now()
+	second := r.Resolve(context.Background(), b)
+	if !second.Verified || second.IP != "10.0.0.184" || second.Source != "sweep" || p.sweepCount() != 2 {
+		t.Fatalf("second = %+v sweeps=%d", second, p.sweepCount())
 	}
-	if p.sweepCount() != 1 {
-		t.Errorf("sweeps = %d, want 1 (the second camera rode on the first sweep)", p.sweepCount())
+	if waited := clock.now().Sub(before); waited < sweepGlobalGap {
+		t.Errorf("second camera should have waited for the gap, waited %v", waited)
+	}
+	// Resolved again right away: the remembered address answers, no sweep.
+	again := r.Resolve(context.Background(), Target{Name: "driveway", MAC: "D03F2700CA03", CloudIP: "10.0.0.99"})
+	if !again.Verified || again.Source != "recent" || p.sweepCount() != 2 {
+		t.Errorf("repeat = %+v sweeps=%d", again, p.sweepCount())
 	}
 }
 
@@ -257,8 +285,8 @@ func TestResolve_RecentThatStoppedVerifyingIsForgotten(t *testing.T) {
 	if !res.Verified || res.IP != "10.0.0.177" || res.Source != "sweep" {
 		t.Fatalf("res = %+v", res)
 	}
-	if got := p.probed(); len(got) != 2 || got[1] != "10.0.0.151" {
-		t.Errorf("probes = %v, want cloud then the stale observation", got)
+	if got := p.probed(); len(got) != 3 || got[1] != "10.0.0.151" || got[2] != "10.0.0.177" {
+		t.Errorf("probes = %v, want cloud, the stale observation, then the sweep's find", got)
 	}
 	if got := r.recent(camNrm); got == nil || got.String() != "10.0.0.177" {
 		t.Errorf("observation should now point at the new address, got %v", got)
@@ -274,8 +302,8 @@ func TestResolve_SweepErrorRecordsNothing(t *testing.T) {
 	r.Resolve(context.Background(), target("10.0.0.123", ""))
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.lastSweep.IsZero() || !r.lastFull.IsZero() || len(r.camNext) != 0 {
-		t.Error("a failed sweep must not schedule backoff or mark the LAN as swept")
+	if !r.lastSweep.IsZero() || len(r.camNext) != 0 {
+		t.Error("a failed sweep must not schedule backoff or count as a sweep")
 	}
 }
 
@@ -312,8 +340,6 @@ func TestResolve_SweepThrottles(t *testing.T) {
 	// miss, and a resolve cancelled while waiting doesn't sweep at all.
 	p := newFakeProber(map[string]string{}) // nobody answers: every sweep misses
 	r, clock := testResolver(t, p, true)
-	// Cap below the subnet size so sweeps are partial and the
-	// full-sweep absence cache (tested separately) stays out of the way.
 	r.cfg.SweepMax = 100
 	a := target("10.0.0.123", "")
 	b := Target{Name: "driveway", MAC: "D03F2700CA03", CloudIP: "10.0.0.184"}
@@ -322,17 +348,14 @@ func TestResolve_SweepThrottles(t *testing.T) {
 	if p.sweepCount() != 1 {
 		t.Fatalf("first resolve should sweep, got %d", p.sweepCount())
 	}
-	// Another camera right away: blocked by the LAN-wide gap.
+	// Another camera right away waits out the LAN-wide gap, then sweeps.
+	start := clock.now()
 	r.Resolve(context.Background(), b)
-	if p.sweepCount() != 1 {
-		t.Errorf("second camera swept inside the global gap")
+	if p.sweepCount() != 2 || clock.now().Sub(start) < sweepGlobalGap {
+		t.Errorf("second camera: sweeps=%d waited=%v", p.sweepCount(), clock.now().Sub(start))
 	}
-	clock.advance(sweepGlobalGap)
-	r.Resolve(context.Background(), b)
-	if p.sweepCount() != 2 {
-		t.Errorf("second camera should sweep once the global gap passed, got %d", p.sweepCount())
-	}
-	// Camera a again after the global gap but inside its own backoff.
+	// Camera a again: its own backoff (1m after a miss) is not waited
+	// out, so no sweep.
 	clock.advance(sweepGlobalGap)
 	r.Resolve(context.Background(), a)
 	if p.sweepCount() != 2 {
@@ -354,32 +377,32 @@ func TestResolve_SweepThrottles(t *testing.T) {
 	if p.sweepCount() != 4 {
 		t.Errorf("camera a should sweep after the doubled gap, got %d", p.sweepCount())
 	}
+	// A resolve whose context ends while it waits for the gap comes
+	// back unverified and uncounted.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if res := r.Resolve(ctx, b); res.Verified || p.sweepCount() != 4 {
+		t.Errorf("cancelled wait: %+v sweeps=%d", res, p.sweepCount())
+	}
 }
 
-func TestResolve_FullSweepMarksAbsentCamerasForAWhile(t *testing.T) {
-	// One full sweep of the LAN answers "not here" for every camera
-	// that wasn't heard, so the second absent camera skips its sweep
-	// outright — until the observation ages out.
+func TestResolve_RepeatInsideBackoffDoesNotSweepAgain(t *testing.T) {
+	// A camera the sweep couldn't find is not swept for again on the
+	// very next resolve; it waits out its backoff, and the throttled
+	// resolve doesn't inflate its miss count.
 	p := newFakeProber(map[string]string{"10.0.0.1": "aabbccddeeff"})
 	r, clock := testResolver(t, p, true)
 	a := target("10.0.0.123", "")
-	b := Target{Name: "driveway", MAC: "D03F2700CA03", CloudIP: "10.0.0.184"}
-
-	if res := r.Resolve(context.Background(), a); res.Verified || p.sweepCount() != 1 {
+	if res := r.Resolve(context.Background(), a); res.Verified || p.sweepCount() != 1 || res.Misses != 1 {
 		t.Fatalf("first: %+v sweeps=%d", res, p.sweepCount())
 	}
-	clock.advance(sweepGlobalGap + time.Second) // past the global gap, so only the absence cache can stop b
-	if res := r.Resolve(context.Background(), b); res.Verified || p.sweepCount() != 1 {
-		t.Errorf("second absent camera swept again: %+v sweeps=%d", res, p.sweepCount())
+	clock.advance(sweepGlobalGap + time.Second)
+	if res := r.Resolve(context.Background(), a); res.Verified || p.sweepCount() != 1 || res.Misses != 1 {
+		t.Errorf("inside backoff: %+v sweeps=%d", res, p.sweepCount())
 	}
-	// A camera the sweep did hear still resolves without a new sweep.
-	router := Target{Name: "router", MAC: "AA:BB:CC:DD:EE:FF", CloudIP: "10.0.0.250"}
-	if res := r.Resolve(context.Background(), router); !res.Verified || res.Source != "recent" || p.sweepCount() != 1 {
-		t.Errorf("heard camera: %+v sweeps=%d", res, p.sweepCount())
-	}
-	clock.advance(seenTTL)
-	if res := r.Resolve(context.Background(), b); p.sweepCount() != 2 {
-		t.Errorf("after the observation expired b should sweep: %+v sweeps=%d", res, p.sweepCount())
+	clock.advance(sweepCamGap)
+	if res := r.Resolve(context.Background(), a); p.sweepCount() != 2 || res.Misses != 2 {
+		t.Errorf("after backoff: %+v sweeps=%d", res, p.sweepCount())
 	}
 }
 
@@ -398,11 +421,11 @@ func TestResolve_CancelledSweepIsNotCounted(t *testing.T) {
 	}
 	r.mu.Lock()
 	_, backoff := r.camNext[camNrm]
-	full := !r.lastFull.IsZero()
 	last := !r.lastSweep.IsZero()
+	misses := r.camMiss[camNrm]
 	r.mu.Unlock()
-	if backoff || full || last {
-		t.Errorf("cancelled sweep recorded backoff=%v full=%v lastSweep=%v", backoff, full, last)
+	if backoff || last || misses != 0 {
+		t.Errorf("cancelled sweep recorded backoff=%v lastSweep=%v misses=%d", backoff, last, misses)
 	}
 }
 
@@ -413,14 +436,14 @@ func TestResolve_SweepBackoffCapsAndResets(t *testing.T) {
 	p := newFakeProber(map[string]string{})
 	r, clock := testResolver(t, p, true)
 	for i := 0; i < 12; i++ {
-		r.noteSweep(camNrm, false, true)
+		r.noteSweep(camNrm, false)
 		clock.advance(time.Millisecond)
 	}
 	next := r.camNext[camNrm]
 	if gap := next.Sub(clock.now()); gap > sweepCamGapMax || gap < sweepCamGapMax-time.Second {
 		t.Errorf("gap after 12 misses = %v, want capped at %v", gap, sweepCamGapMax)
 	}
-	r.noteSweep(camNrm, true, true)
+	r.noteSweep(camNrm, true)
 	if _, ok := r.camNext[camNrm]; ok {
 		t.Error("a hit should clear the backoff")
 	}
@@ -466,8 +489,10 @@ func TestResolve_EmptyCloudIP_StillSearches(t *testing.T) {
 	if !res.Verified || res.IP != "10.0.0.151" || res.Source != "sweep" {
 		t.Fatalf("res = %+v", res)
 	}
-	if len(p.probed()) != 0 {
-		t.Errorf("nothing to probe before the sweep, got %v", p.probed())
+	// No cloud or last address to probe before the sweep; the only
+	// probe is the one that seeds the kernel with the sweep's find.
+	if got := p.probed(); len(got) != 1 || got[0] != "10.0.0.151" {
+		t.Errorf("probes = %v, want only the post-sweep seed", got)
 	}
 }
 
@@ -520,15 +545,17 @@ type tickingProber struct {
 	step  time.Duration
 }
 
-func (p *tickingProber) probe(ctx context.Context, ip net.IP) (string, error) {
+func (p *tickingProber) probe(ctx context.Context, ip net.IP, want string) (string, error) {
 	p.clock.advance(p.step)
-	return p.fakeProber.probe(ctx, ip)
+	return p.fakeProber.probe(ctx, ip, want)
 }
 
-func TestResolve_Concurrent_OneSweepServesAll(t *testing.T) {
-	// 20 cameras all moved. The first to reach the sweep runs it; the
-	// rest queue on sweepMu and pick their address up from what it
-	// heard. With the race detector on, this also checks the locking.
+func TestResolve_Concurrent_OneSweepAtATime(t *testing.T) {
+	// 20 cameras all moved at once. Sweeps are per camera and
+	// serialized LAN-wide with a gap between them, so the resolves
+	// queue up and each gets its own sweep in turn (the fake sleep
+	// moves the clock through the gaps). With the race detector on,
+	// this also checks the locking.
 	at := map[string]string{}
 	var targets []Target
 	for i := 0; i < 20; i++ {
@@ -551,13 +578,12 @@ func TestResolve_Concurrent_OneSweepServesAll(t *testing.T) {
 	}
 	wg.Wait()
 	for i, res := range results {
-		want := fmt.Sprintf("10.0.0.%d", 100+i)
-		if !res.Verified || res.IP != want {
-			t.Errorf("cam%d: %+v, want %s", i, res, want)
+		if want := fmt.Sprintf("10.0.0.%d", 100+i); !res.Verified || res.IP != want || res.Source != "sweep" {
+			t.Errorf("cam%d: %+v, want %s via sweep", i, res, want)
 		}
 	}
-	if n := p.sweepCount(); n != 1 {
-		t.Errorf("sweeps = %d, want 1", n)
+	if p.sweepCount() != 20 {
+		t.Errorf("sweeps = %d, want one per camera", p.sweepCount())
 	}
 }
 
@@ -611,11 +637,10 @@ func TestNew_NeverNil(t *testing.T) {
 	}
 }
 
-func TestResolve_MissesCountSweepsThatDidNotHearTheCamera(t *testing.T) {
-	// a is not on this LAN. Every sweep that covers the LAN without
-	// hearing it counts once: its own sweeps, and other cameras' full
-	// sweeps while they're fresh. A fast reconnect loop inside the same
-	// fresh sweep doesn't inflate the number, and verifying resets it.
+func TestResolve_MissesCountOwnSweepsOnly(t *testing.T) {
+	// a is not on this LAN. Each of its own sweeps that doesn't hear it
+	// counts once; a throttled resolve doesn't, another camera's sweep
+	// doesn't, and verifying resets everything.
 	p := newFakeProber(map[string]string{"10.0.0.1": "aabbccddeeff"})
 	r, clock := testResolver(t, p, true)
 	a := target("10.0.0.123", "")
@@ -624,22 +649,20 @@ func TestResolve_MissesCountSweepsThatDidNotHearTheCamera(t *testing.T) {
 	if res := r.Resolve(context.Background(), a); res.Verified || res.Misses != 1 {
 		t.Fatalf("after own sweep: %+v", res)
 	}
-	// Resolved again right away: the LAN was just swept, no new sweep,
-	// and the same sweep isn't counted twice.
 	if res := r.Resolve(context.Background(), a); res.Misses != 1 || p.sweepCount() != 1 {
-		t.Errorf("same fresh sweep counted again: %+v sweeps=%d", res, p.sweepCount())
+		t.Errorf("throttled resolve counted: %+v sweeps=%d", res, p.sweepCount())
 	}
-	// b sweeps (after the gaps) and doesn't hear a either: a's count
-	// grows on a's next resolve, once.
-	clock.advance(seenTTL + sweepGlobalGap)
+	clock.advance(sweepGlobalGap + time.Second)
 	if res := r.Resolve(context.Background(), b); res.Misses != 1 || p.sweepCount() != 2 {
 		t.Fatalf("b: %+v sweeps=%d", res, p.sweepCount())
 	}
-	if res := r.Resolve(context.Background(), a); res.Misses != 2 {
-		t.Errorf("a after b's full sweep: %+v", res)
+	clock.advance(sweepGlobalGap + time.Second)
+	if res := r.Resolve(context.Background(), a); res.Misses != 1 {
+		t.Errorf("b's sweep must not count against a: %+v", res)
 	}
-	if res := r.Resolve(context.Background(), a); res.Misses != 2 {
-		t.Errorf("a counted b's sweep twice: %+v", res)
+	clock.advance(sweepCamGap)
+	if res := r.Resolve(context.Background(), a); res.Misses != 2 || p.sweepCount() != 3 {
+		t.Errorf("a's second own sweep: %+v sweeps=%d", res, p.sweepCount())
 	}
 	// A camera that verifies, by any rung, starts from zero and may
 	// sweep again right away the next time it goes missing.
@@ -657,9 +680,6 @@ func TestResolve_MissesCountSweepsThatDidNotHearTheCamera(t *testing.T) {
 		t.Errorf("verify should clear the backoff and misses: backoff=%v misses=%d", backoff, miss)
 	}
 	// Never-seen camera with nothing swept yet: zero, not an error.
-	p.mu.Lock()
-	delete(p.at, "10.0.0.123")
-	p.mu.Unlock()
 	r2, _ := testResolver(t, newFakeProber(map[string]string{}), false)
 	if res := r2.Resolve(context.Background(), a); res.Misses != 0 {
 		t.Errorf("no sweeps at all: %+v", res)

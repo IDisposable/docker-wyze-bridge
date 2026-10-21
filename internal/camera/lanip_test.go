@@ -403,6 +403,25 @@ func TestRecheckLanIPs_StillAnswering_NothingHappens(t *testing.T) {
 	}
 }
 
+func TestRecheckLanIPs_LiveVideoIsNotProbed(t *testing.T) {
+	// Bytes arriving from the address beat an ARP reply, so a camera
+	// with live video is skipped even though it's streaming TUTK.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: true, Source: "cloud"}, checkOK: false}
+	mgr, _ := newLanIPTestManager(t, r)
+	cam := streamingV3(t, mgr, "side_garage", "192.168.4.151")
+	now := time.Now()
+	cam.observeFlow(true, 1, 100, now)
+	cam.observeFlow(true, 1, 200, now.Add(30*time.Second))
+	if cam.Snapshot().Video != VideoLive {
+		t.Fatalf("setup: video = %v", cam.Snapshot().Video)
+	}
+	resolves := len(r.resolveCalls())
+	mgr.RecheckLanIPs(context.Background())
+	if len(r.checkCalls()) != 0 || len(r.resolveCalls()) != resolves {
+		t.Errorf("live camera was rechecked: checks=%v resolves=%d", r.checkCalls(), len(r.resolveCalls())-resolves)
+	}
+}
+
 func TestRecheckLanIPs_Moved_ReRegistersWithNewAddress(t *testing.T) {
 	// A camera that took a new lease mid-run is re-registered with go2rtc
 	// at the new address without flapping its state, and the next
@@ -640,6 +659,17 @@ func TestLanStatus_FollowsResolverAndRecheck(t *testing.T) {
 	mgr.RestartStream(context.Background(), "side_garage")
 	if src, _, misses := cam.LanStatus(); src != "cloud" || misses != 0 {
 		t.Errorf("after return: %q %d", src, misses)
+	}
+
+	// A camera nothing ever verified that the recheck catches gets the
+	// recheck as its source, so the page doesn't say "never".
+	late := newV3("attic", "192.168.4.60")
+	late.Info.MAC = "D03F27B081F0"
+	mgr.cameras["attic"] = late
+	late.SetState(StateStreaming)
+	mgr.RecheckLanIPs(context.Background())
+	if src, at, _ := late.LanStatus(); src != "recheck" || at.IsZero() {
+		t.Errorf("recheck-only camera: %q %v", src, at)
 	}
 }
 

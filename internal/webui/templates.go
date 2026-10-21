@@ -277,6 +277,8 @@ func LanSourceLabel(source string) string {
 		return "a LAN sweep"
 	case "pinned":
 		return "the pinned address"
+	case "recheck":
+		return "the periodic recheck"
 	default:
 		return ""
 	}

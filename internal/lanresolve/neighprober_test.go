@@ -71,7 +71,7 @@ func TestNeighEngine_ProbeCachedLive_NoNudge(t *testing.T) {
 	// the cache, with no UDP nudge sent.
 	fc := &fakeCache{snapshots: [][]neighbor{{entry("10.0.0.5", cam, nudReachable)}}}
 	eng := newFakeNeighEngine(t, fc)
-	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"))
+	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"), "")
 	if err != nil || got != cam {
 		t.Fatalf("probe = %q, %v", got, err)
 	}
@@ -84,7 +84,7 @@ func TestNeighEngine_ProbeCachedStale_TrustedWithoutNudge(t *testing.T) {
 	// Documented weakness of this engine: STALE is taken at face value.
 	fc := &fakeCache{snapshots: [][]neighbor{{entry("10.0.0.5", cam, nudStale)}}}
 	eng := newFakeNeighEngine(t, fc)
-	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"))
+	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"), "")
 	if err != nil || got != cam {
 		t.Fatalf("probe = %q, %v", got, err)
 	}
@@ -102,7 +102,7 @@ func TestNeighEngine_ProbeAbsent_NudgesThenPolls(t *testing.T) {
 		{entry("10.0.0.5", cam, nudReachable)}, // answered
 	}}
 	eng := newFakeNeighEngine(t, fc)
-	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"))
+	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"), "")
 	if err != nil || got != cam {
 		t.Fatalf("probe = %q, %v", got, err)
 	}
@@ -117,7 +117,7 @@ func TestNeighEngine_ProbeAbsent_FailedEndsEarly(t *testing.T) {
 	fc := &fakeCache{snapshots: [][]neighbor{nil, {entry("10.0.0.5", "", nudFailed)}}}
 	eng := newFakeNeighEngine(t, fc)
 	start := time.Now()
-	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"))
+	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"), "")
 	if err != nil || got != "" {
 		t.Fatalf("probe = %q, %v; want \"\", nil", got, err)
 	}
@@ -132,7 +132,7 @@ func TestNeighEngine_ProbeAbsent_TimesOut(t *testing.T) {
 	fc := &fakeCache{snapshots: [][]neighbor{nil}}
 	eng := newFakeNeighEngine(t, fc)
 	start := time.Now()
-	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"))
+	got, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"), "")
 	if err != nil || got != "" {
 		t.Fatalf("probe = %q, %v; want \"\", nil", got, err)
 	}
@@ -149,7 +149,7 @@ func TestNeighEngine_ProbeAbsent_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if got, err := eng.probe(ctx, net.ParseIP("10.0.0.5")); err != nil || got != "" {
+	if got, err := eng.probe(ctx, net.ParseIP("10.0.0.5"), ""); err != nil || got != "" {
 		t.Fatalf("probe = %q, %v", got, err)
 	}
 	if time.Since(start) > 200*time.Millisecond {
@@ -161,16 +161,16 @@ func TestNeighEngine_ProbeErrors(t *testing.T) {
 	// An off-link address, a failed cache read and a failed nudge all come
 	// back as errors, since in each case the question was never asked.
 	eng := newFakeNeighEngine(t, &fakeCache{})
-	if _, err := eng.probe(context.Background(), net.ParseIP("192.0.2.1")); !errors.Is(err, errOffLink) {
+	if _, err := eng.probe(context.Background(), net.ParseIP("192.0.2.1"), ""); !errors.Is(err, errOffLink) {
 		t.Errorf("off-link: err = %v", err)
 	}
 	boom := errors.New("netlink down")
 	eng = newFakeNeighEngine(t, &fakeCache{readErr: boom})
-	if _, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5")); !errors.Is(err, boom) {
+	if _, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"), ""); !errors.Is(err, boom) {
 		t.Errorf("read error not propagated: %v", err)
 	}
 	eng = newFakeNeighEngine(t, &fakeCache{snapshots: [][]neighbor{nil}, nudgeErr: boom})
-	if _, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5")); !errors.Is(err, boom) {
+	if _, err := eng.probe(context.Background(), net.ParseIP("10.0.0.5"), ""); !errors.Is(err, boom) {
 		t.Errorf("nudge error not propagated: %v", err)
 	}
 }

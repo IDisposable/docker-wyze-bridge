@@ -484,12 +484,20 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 	defer reconnectTicker.Stop()
 
 	// LAN IP recheck is optional (LAN_IP_RECHECK=0 disables); a nil
-	// channel never fires in the select below.
-	var recheckC <-chan time.Time
+	// channel never fires in the select below. The first recheck comes
+	// early: at startup every camera is probed at once, right after the
+	// previous bridge let go of them, and a few Wi-Fi cameras miss that
+	// first probe. Twenty seconds later they answer.
+	var recheckC, firstRecheckC <-chan time.Time
 	if m.cfg.LanIPRecheck > 0 {
 		recheckTicker := time.NewTicker(m.cfg.LanIPRecheck)
 		defer recheckTicker.Stop()
 		recheckC = recheckTicker.C
+		if first := min(firstLanRecheck, m.cfg.LanIPRecheck); first < m.cfg.LanIPRecheck {
+			firstRecheck := time.NewTimer(first)
+			defer firstRecheck.Stop()
+			firstRecheckC = firstRecheck.C
+		}
 	}
 
 	for {
@@ -505,11 +513,18 @@ func (m *Manager) RunDiscoveryLoop(ctx context.Context) {
 			m.HealthCheck(ctx)
 		case <-reconnectTicker.C:
 			m.reconnectErrored(ctx)
+		case <-firstRecheckC:
+			firstRecheckC = nil
+			m.RecheckLanIPs(ctx)
 		case <-recheckC:
 			m.RecheckLanIPs(ctx)
 		}
 	}
 }
+
+// firstLanRecheck is how soon after startup the first LAN IP recheck
+// runs, ahead of the regular LAN_IP_RECHECK cadence.
+const firstLanRecheck = 20 * time.Second
 
 // registryName is the key a discovered camera gets in m.cameras: the
 // Name discovery assigned, which wyzeapi.DisambiguateNames has already
