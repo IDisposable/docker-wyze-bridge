@@ -242,8 +242,11 @@ nothing about video, because go2rtc only dials a camera when something
 pulls the stream and never reports a failed dial. The second badge is
 the honest one: `live` means bytes arrived in the last 30 seconds,
 `idle` means nobody is pulling (normal), `no video` means something
-is pulling but nothing is coming back, or go2rtc logged an error for
-that stream — hover for the reason. A `discovery timeout` on a TUTK
+is pulling but nothing is coming back, or go2rtc reported an error for
+that stream — hover for the reason. The dashboard's own players count
+as pulling, and the error go2rtc sends a player when a dial fails is
+read off on the way through, so a card you're looking at tells the
+truth within a minute even when nothing else pulls that camera. A `discovery timeout` on a TUTK
 camera also triggers an immediate LAN IP recheck (see above). The
 detail page shows when video last flowed and the last error; the
 `/metrics` event log records every drop and recovery.

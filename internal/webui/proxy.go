@@ -166,10 +166,26 @@ func (s *Server) handleWSProxy(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Debug().Str("cam", src).Msg("WS proxy established")
 
+	// The browser is pulling this stream for as long as the socket is
+	// up: that's what makes "no video" (rather than "idle") the right
+	// status when go2rtc can't deliver. And go2rtc's answer to a dial
+	// that failed goes to the player as a text frame, not to its log,
+	// so it's read off the bytes on the way through (see wssniff.go).
+	cam := s.camMgr.GetCamera(src)
+	if cam != nil {
+		cam.AddPuller(1)
+		defer cam.AddPuller(-1)
+	}
+	sniff := newWSSniffer(func(text string) {
+		if msg := go2rtcWSError(text); msg != "" {
+			s.camMgr.RecordStreamError(s.rootCtx, src, msg)
+		}
+	})
+
 	// Bidirectional copy until either side closes
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, io.TeeReader(upstream, sniff)); done <- struct{}{} }()
 	<-done
 	upstream.Close()
 	client.Close()
