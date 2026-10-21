@@ -61,6 +61,42 @@ header .discover-btn {
 }
 header .discover-btn:hover:not(:disabled) { background: var(--border); }
 header .discover-btn:disabled { opacity: 0.6; cursor: default; }
+header .lock-btn {
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--border);
+    padding: 0.35rem 0.8rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-family: inherit;
+}
+header .lock-btn:hover:not(:disabled) { background: var(--border); }
+header .lock-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* Tile arrangement. The handle only exists while the grid is in
+   arranging mode; a locked grid has nothing to grab, so a stray touch
+   on a phone can't reorder anything. */
+.drag-handle { display: none; }
+.camera-grid.arranging .drag-handle {
+    display: block;
+    position: absolute;
+    top: 0.4rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5; /* above the preview overlay link (z-index 2) */
+    padding: 0 0.5rem;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 1.1rem;
+    line-height: 1.4;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+}
+.camera-grid.arranging .camera-card { position: relative; }
+.camera-card.dragging { opacity: 0.5; outline: 2px dashed var(--accent-bright); }
 
 main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
 

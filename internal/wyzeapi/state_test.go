@@ -196,3 +196,29 @@ func TestStateFile_LoadWithoutIgnoredField(t *testing.T) {
 		t.Errorf("ignored = %+v, want empty", loaded.Ignored)
 	}
 }
+
+func TestStateFile_LayoutRoundTrip(t *testing.T) {
+	// A state file with no layout loads with a nil Layout. A saved tile
+	// order and lock come back as set, even if the caller changes its
+	// slice after SetLayout.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.Layout != nil {
+		t.Errorf("no layout saved should load as nil, got %+v", loaded.Layout)
+	}
+
+	order := []string{"driveway", "side_garage"}
+	sf.SetLayout(Layout{Order: order, Locked: true})
+	order[0] = "mutated" // SetLayout must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ = LoadState(dir, zerolog.Nop())
+	if loaded.Layout == nil || !loaded.Layout.Locked || len(loaded.Layout.Order) != 2 || loaded.Layout.Order[0] != "driveway" {
+		t.Errorf("layout = %+v", loaded.Layout)
+	}
+}

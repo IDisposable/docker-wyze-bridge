@@ -321,6 +321,101 @@
         });
     }
 
+    // Tile arrangement. The grid is either locked (default once you've
+    // locked it) or arranging: in arranging mode each card shows a ⠿
+    // handle, and dragging the handle moves the card. Pointer events
+    // rather than HTML5 drag-and-drop so it works on touch screens.
+    // The order is saved server-side (PUT /api/layout) after every
+    // drop, and the lock button saves the lock flag, so every browser
+    // sees the same grid.
+    function currentOrder() {
+        return Array.prototype.map.call(document.querySelectorAll('#camera-grid .camera-card'), function(card) {
+            return card.getAttribute('data-cam');
+        });
+    }
+
+    function saveLayout(locked) {
+        return fetch(B + '/api/layout', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ order: currentOrder(), locked: locked })
+        }).then(function(resp) {
+            if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+            return resp.json();
+        });
+    }
+
+    function wireLockButton() {
+        const btn = document.getElementById('lock-btn');
+        const grid = document.getElementById('camera-grid');
+        if (!btn || !grid) return;
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (btn.disabled) return;
+            const locked = btn.getAttribute('data-locked') !== 'true';
+            btn.disabled = true;
+            saveLayout(locked)
+                .then(function() {
+                    btn.setAttribute('data-locked', locked ? 'true' : 'false');
+                    btn.textContent = locked ? '🔒 Locked' : '🔓 Arrange';
+                    btn.title = locked ? 'Tiles are locked; click to arrange' : 'Drag the ⠿ handle to arrange; click to lock';
+                    grid.classList.toggle('locked', locked);
+                    grid.classList.toggle('arranging', !locked);
+                })
+                .catch(function(err) { console.error('Lock toggle failed:', err); })
+                .finally(function() { btn.disabled = false; });
+        });
+    }
+
+    function wireDragHandles() {
+        const grid = document.getElementById('camera-grid');
+        if (!grid) return;
+        let dragging = null;
+
+        // Find the card under the pointer, ignoring the one being dragged.
+        function cardAt(x, y) {
+            const el = document.elementFromPoint(x, y);
+            const card = el && el.closest ? el.closest('.camera-card') : null;
+            return (card && card !== dragging && card.parentNode === grid) ? card : null;
+        }
+
+        grid.addEventListener('pointerdown', function(e) {
+            const handle = e.target.closest ? e.target.closest('.drag-handle') : null;
+            if (!handle || !grid.classList.contains('arranging')) return;
+            dragging = handle.closest('.camera-card');
+            if (!dragging) return;
+            e.preventDefault();
+            dragging.classList.add('dragging');
+            handle.setPointerCapture(e.pointerId);
+        });
+
+        grid.addEventListener('pointermove', function(e) {
+            if (!dragging) return;
+            e.preventDefault();
+            const target = cardAt(e.clientX, e.clientY);
+            if (!target) return;
+            // Drop before the target when the pointer is in its first
+            // half (reading order), after it otherwise.
+            const rect = target.getBoundingClientRect();
+            const before = (e.clientY < rect.top + rect.height / 2) ||
+                (e.clientY < rect.bottom && e.clientX < rect.left + rect.width / 2);
+            if (before) {
+                grid.insertBefore(dragging, target);
+            } else {
+                grid.insertBefore(dragging, target.nextSibling);
+            }
+        });
+
+        function endDrag(e) {
+            if (!dragging) return;
+            dragging.classList.remove('dragging');
+            dragging = null;
+            saveLayout(false).catch(function(err) { console.error('Saving layout failed:', err); });
+        }
+        grid.addEventListener('pointerup', endDrag);
+        grid.addEventListener('pointercancel', endDrag);
+    }
+
     // Rediscover button: POST /api/discover to kick a Wyze API refresh.
     // The discovery pass is async on the server — camera state updates
     // arrive over SSE as cameras come online, so we just flash the
@@ -358,6 +453,8 @@
         wireRecordButtons();
         wireIgnoreButtons();
         wireRestoreButtons();
+        wireLockButton();
+        wireDragHandles();
         wireDiscoverButton();
     }
 

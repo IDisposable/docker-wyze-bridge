@@ -39,7 +39,8 @@ func (s *Server) displayHost(r *http.Request) string {
 
 // renderIndex renders the camera grid page.
 func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
-	cameras := s.camMgr.Cameras()
+	layout := s.Layout()
+	cameras := orderCameras(s.camMgr.Cameras(), layout.Order)
 	bridgeIP := s.displayHost(r)
 	basePath := ingressBasePath(r)
 
@@ -124,6 +125,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		"Version":  s.version,
 		"Cameras":  cams,
 		"Ignored":  ignored,
+		"Locked":   layout.Locked,
 		"Uptime":   int(time.Since(s.startTime).Seconds()),
 		"BasePath": basePath,
 	}
@@ -256,12 +258,14 @@ const indexHTML = `<!DOCTYPE html>
         <nav class="header-nav">
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
         </nav>
+        <button type="button" id="lock-btn" class="lock-btn" data-locked="{{.Locked}}" title="{{if .Locked}}Tiles are locked; click to arrange{{else}}Drag the ⠿ handle to arrange; click to lock{{end}}">{{if .Locked}}🔒 Locked{{else}}🔓 Arrange{{end}}</button>
         <button type="button" id="discover-btn" class="discover-btn" title="Re-poll Wyze API for added/removed cameras">↻ Rediscover</button>
     </header>
     <main>
-        <div class="camera-grid" id="camera-grid">
+        <div class="camera-grid {{if .Locked}}locked{{else}}arranging{{end}}" id="camera-grid">
         {{range .Cameras}}
             <div class="camera-card" data-cam="{{.Name}}" data-state="{{.State}}">
+                <span class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
                 <div class="camera-preview">
                     {{if eq .State "streaming"}}
                     <video-rtc src="{{.Go2RTCURL}}" data-poster="{{.SnapshotURL}}" muted></video-rtc>
