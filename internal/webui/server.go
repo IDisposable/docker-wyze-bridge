@@ -34,6 +34,15 @@ type SnapshotRequester func(ctx context.Context, camName string)
 // decoupled from camera.Manager.
 type DiscoverRequester func(ctx context.Context)
 
+// PropertySetObserver hears about a camera property the WebUI set
+// (flip, night vision...) so main.go can mirror it to MQTT.
+type PropertySetObserver func(camName, property, value string)
+
+// OnPropertySet registers the observer for WebUI property changes.
+func (s *Server) OnPropertySet(fn PropertySetObserver) {
+	s.onPropertySet = fn
+}
+
 // Server is the WebUI HTTP server.
 //
 // go2rtcAPI is late-bound: NewServer accepts nil so the WebUI can come
@@ -58,6 +67,8 @@ type Server struct {
 	onSnapReq     SnapshotRequester
 	onDiscoverReq DiscoverRequester
 	mars          MarsTokenMinter
+	cloud         CloudCommander
+	onPropertySet PropertySetObserver
 	// layouts holds the dashboard tile order + lock; see layout.go.
 	layouts layoutStore
 	kvs           KVSStreamProvider
@@ -128,6 +139,15 @@ type Options struct {
 	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
 	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
 	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
+	Cloud       CloudCommander       // optional; nil → camera property/reboot endpoints return 503
+}
+
+// CloudCommander is the slice of the Wyze API client the camera
+// controls need: set a property by friendly name, run an action.
+// Satisfied by *wyzeapi.Client; an interface so tests can fake it.
+type CloudCommander interface {
+	SetNamedProperty(cam wyzeapi.CameraInfo, property, raw string) (publishValue string, err error)
+	RunAction(cam wyzeapi.CameraInfo, action string) error
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics
@@ -144,6 +164,7 @@ func NewServer(opts Options) *Server {
 		rootCtx:     opts.RootCtx,
 		issues:      opts.Issues,
 		mars:        opts.Mars,
+		cloud:       opts.Cloud,
 		kvs:         opts.KVS,
 		authPhoneID: opts.AuthPhoneID,
 	}

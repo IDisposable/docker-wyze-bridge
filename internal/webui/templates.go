@@ -381,11 +381,26 @@ const cameraHTML = `<!DOCTYPE html>
                 <code class="copy-btn" data-url="{{.HLSURL}}" title="Click to copy">{{.HLSURL}}</code>
             </div>
             <div class="actions">
-                <button onclick="restartStream('{{.Name}}')">Restart Stream</button>
+                <button onclick="restartStream('{{.Name}}')" title="Delete and re-add the go2rtc stream">Restart Stream</button>
                 <button onclick="setQuality('{{.Name}}', 'hd')">HD</button>
                 <button onclick="setQuality('{{.Name}}', 'sd')">SD</button>
                 <button type="button" class="snap-btn" data-cam="{{.Name}}" title="Take snapshot (saves to SNAPSHOT_PATH)">📷 Snapshot</button>
                 <button type="button" class="record-btn {{if .Recording}}on{{end}}" data-cam="{{.Name}}" data-recording="{{.Recording}}">{{if .Recording}}⏹ Stop Recording{{else}}⏺ Start Recording{{end}}</button>
+            </div>
+            <h3 class="controls-title">Camera <small>(settings on the camera itself, via Wyze)</small></h3>
+            <div class="actions camera-controls">
+                <span class="control-label">Flip horizontal</span>
+                <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="hor_flip" data-value="on">On</button>
+                <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="hor_flip" data-value="off">Off</button>
+                <span class="control-label">Flip vertical</span>
+                <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="ver_flip" data-value="on">On</button>
+                <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="ver_flip" data-value="off">Off</button>
+                <span class="control-label">Night vision</span>
+                <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="night_vision" data-value="auto">Auto</button>
+                <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="night_vision" data-value="on">On</button>
+                <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="night_vision" data-value="off">Off</button>
+                <span class="control-label"></span>
+                <button type="button" class="reboot-btn danger" data-cam="{{.Name}}" data-nickname="{{.Nickname}}" title="Reboot the camera itself (takes a minute to come back)">⟲ Reboot camera</button>
             </div>
         </div>
     </main>

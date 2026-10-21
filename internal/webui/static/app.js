@@ -143,6 +143,68 @@
             .catch(function(err) { console.error('Quality change failed:', err); });
     };
 
+    // Camera-side controls on the detail page. Each button POSTs one
+    // property; the server replies with the value Wyze accepted. There
+    // is no readback from Wyze for these, so the buttons are stateless
+    // and just flash green (sent) or red (failed).
+    function wirePropertyButtons() {
+        document.querySelectorAll('.prop-btn').forEach(function(btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (btn.disabled) return;
+                const cam = btn.getAttribute('data-cam');
+                btn.disabled = true;
+                fetch(B + '/api/cameras/' + cam + '/property', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ property: btn.getAttribute('data-property'), value: btn.getAttribute('data-value') })
+                })
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        btn.classList.add('sent');
+                    })
+                    .catch(function(err) {
+                        console.error('Property change failed:', err);
+                        btn.classList.add('failed');
+                    })
+                    .finally(function() {
+                        setTimeout(function() {
+                            btn.classList.remove('sent', 'failed');
+                            btn.disabled = false;
+                        }, 1500);
+                    });
+            });
+        });
+    }
+
+    // Reboot the camera itself (Wyze cloud restart), after a confirm.
+    function wireRebootButtons() {
+        document.querySelectorAll('.reboot-btn').forEach(function(btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (btn.disabled) return;
+                const cam = btn.getAttribute('data-cam');
+                const nick = btn.getAttribute('data-nickname') || cam;
+                if (!confirm('Reboot "' + nick + '"?\n\nThe camera itself restarts and the stream drops for about a minute.')) return;
+                btn.disabled = true;
+                const original = btn.textContent;
+                btn.textContent = '⟲ Rebooting…';
+                fetch(B + '/api/cameras/' + cam + '/reboot', { method: 'POST' })
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        updateCameraState(cam, 'connecting');
+                    })
+                    .catch(function(err) {
+                        console.error('Reboot failed:', err);
+                        btn.textContent = '⚠ Failed';
+                    })
+                    .finally(function() {
+                        setTimeout(function() { btn.textContent = original; btn.disabled = false; }, 3000);
+                    });
+            });
+        });
+    }
+
     // Click-to-copy for RTSP and other unsupported URL schemes.
     // Browsers can't navigate to rtsp://, so we copy to clipboard for VLC/ffmpeg use.
     function wireCopyButtons() {
@@ -528,6 +590,8 @@
         wireRecordButtons();
         wireIgnoreButtons();
         wireRestoreButtons();
+        wirePropertyButtons();
+        wireRebootButtons();
         wireLockButton();
         wireDragHandles();
         wireRotateButtons();

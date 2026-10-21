@@ -489,6 +489,19 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; }
 .actions button:hover { background: var(--bg-hover); border-color: var(--accent-bright); }
 .actions .snap-btn.snapped { background: var(--success); color: #fff; }
 
+/* Camera-side controls (flip, night vision, reboot): label + buttons
+   per row. These go through the Wyze cloud and change the camera, not
+   just this page. */
+.controls-title { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-top: 1.25rem; }
+.controls-title small { text-transform: none; letter-spacing: 0; font-weight: normal; }
+.camera-controls { display: grid; grid-template-columns: max-content repeat(3, max-content); gap: 0.4rem 0.5rem; align-items: center; margin-top: 0.5rem; }
+.camera-controls .control-label { font-size: 0.82rem; color: var(--text-dim); grid-column: 1; }
+.camera-controls .prop-btn.sent { background: var(--success); color: #fff; }
+.camera-controls .prop-btn.failed { background: var(--error); color: #fff; }
+.camera-controls .reboot-btn { grid-column: 2 / -1; justify-self: start; }
+.actions button.danger:hover { background: var(--error); color: #fff; border-color: transparent; }
+.actions button:disabled { opacity: 0.6; cursor: wait; }
+
 @media (max-width: 900px) {
     .camera-detail { grid-template-columns: 1fr; }
 }
