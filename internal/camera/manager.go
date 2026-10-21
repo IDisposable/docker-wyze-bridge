@@ -53,6 +53,10 @@ type Manager struct {
 	// pins are operator-pinned addresses by MAC; see pin.go.
 	pins        map[string]string
 	onPinChange func(pins map[string]string)
+	// qualities are the operator's saved HD/SD choices by MAC; see
+	// quality.go.
+	qualities       map[string]string
+	onQualityChange func(cam *Camera, quality string, saved map[string]string)
 	// rules are the Settings page's runtime camera rules, excluded the
 	// cameras they dropped at the last Discover; see rules.go.
 	rules         *rulesState
@@ -230,6 +234,7 @@ func (m *Manager) Discover(ctx context.Context) error {
 				m.cfg.CamRecord(name),
 			)
 			m.applyPinLocked(cam)
+			m.applyQualityLocked(cam)
 			m.cameras[name] = cam
 			added = append(added, cam)
 			m.log.Info().
@@ -648,24 +653,6 @@ func (m *Manager) reconnectErrored(ctx context.Context) {
 		}(cam)
 	}
 	wg.Wait()
-}
-
-// SetQuality changes a camera's quality and reconnects.
-func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
-	cam := m.GetCamera(name)
-	if cam == nil {
-		return nil
-	}
-
-	cam.SetQuality(quality)
-
-	go2rtc := m.go2rtcClient()
-	if go2rtc == nil {
-		return nil
-	}
-	// Remove and re-add in go2rtc with new URL
-	_ = go2rtc.DeleteStream(ctx, name)
-	return go2rtc.AddStream(ctx, name, cam.StreamURL())
 }
 
 // RestartStream forces a camera reconnect.

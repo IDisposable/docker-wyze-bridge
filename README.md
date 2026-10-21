@@ -271,10 +271,15 @@ docker run -p 5080:5080 -p 8554:8554 -p 8888:8888 -p 8889:8889 -p 8189:8189/udp 
   -e WYZE_PASSWORD=yourpass \
   -e WYZE_API_ID=your-api-id \
   -e WYZE_API_KEY=your-api-key \
+  -v "$PWD/config:/config" \
   idisposablegithub365/wyze-bridge:latest
 ```
 
-Then open `http://localhost:5080` for the WebUI.
+Then open `http://localhost:5080` for the WebUI. Keep the `/config`
+mount: the state file there holds the Wyze login and everything you
+set in the WebUI (ignore list, Settings rules, pinned addresses,
+video quality, tile layout), and without it all of that is lost each
+time the container is recreated.
 
 > [!TIP]
 > **TUTK / older doorbell users:** if streams fail with `discovery
@@ -386,7 +391,9 @@ discovery.
 Auto-created entities per camera:
 
 - `camera.<mac>` — live stream + snapshot
-- `switch.<mac>_audio`, `switch.<mac>_quality` — runtime controls
+- `select.<mac>_quality` (HD / SD, saved like the Settings page
+  choice and kept in step with it), `switch.<mac>_audio` — runtime
+  controls
 - `binary_sensor.<mac>_recording` — flips with the record button
 
 Bridge-wide entities:
@@ -426,6 +433,18 @@ QUALITY_FRONT_DOOR=sd      # hd (default) or sd
 AUDIO_BACKYARD=false       # audio off for this camera
 RECORD_GARAGE=true         # recording on for just this camera
 ```
+
+Quality can also be set per camera at runtime: the **Video quality**
+table on the Settings page, the HD / SD buttons on a camera's page,
+the MQTT `quality` select, or `POST /api/cameras/{name}/quality` with
+`{"quality":"sd"}` (`""` goes back to the default). The choice is
+saved in the state file by MAC and beats `QUALITY_<CAM>` and
+`QUALITY`; changing it restarts that camera's stream once. HD is the
+camera's best (1080p on a V3, 2K on the 2K models), SD is 360p at a
+much lower bitrate, which helps a camera on weak Wi-Fi. There's one
+stream per camera, so the dashboard, Home Assistant, RTSP clients and
+recordings all get the same one. Doorbells and Gwell cameras pick
+their own and aren't listed.
 
 ### Camera Filtering
 

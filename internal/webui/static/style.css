@@ -577,6 +577,24 @@ main.settings { max-width: 960px; }
 .excluded-table code { font-family: var(--mono); font-size: 0.8rem; }
 .excluded-table tr.empty td { color: var(--text-dim); }
 .ignored.excluded summary small a { color: var(--accent-bright); }
+.quality-all { font-size: 0.85rem; color: var(--text-dim); display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+.quality-all button, .quality-table select {
+    padding: 0.25rem 0.6rem;
+    font: inherit;
+    font-size: 0.82rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+.quality-all button:hover { border-color: var(--accent-bright); }
+.quality-table select:focus { outline: none; border-color: var(--accent-bright); }
+.quality-table td { vertical-align: middle; }
+.quality-na { color: var(--text-dim); font-size: 0.82rem; }
+.quality-status { font-size: 0.8rem; color: var(--text-dim); }
+.quality-status.ok { color: var(--success); }
+.quality-status.failed { color: var(--error); }
 @media (max-width: 720px) {
     .settings-grid { grid-template-columns: 1fr; }
 }

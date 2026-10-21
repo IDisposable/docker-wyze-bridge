@@ -117,15 +117,18 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		if body.Quality != "hd" && body.Quality != "sd" {
-			writeJSONError(w, http.StatusBadRequest, "quality must be 'hd' or 'sd'")
+		// "" goes back to the default (QUALITY_<CAM> / QUALITY). The
+		// choice is saved by MAC; see camera/quality.go.
+		effective, err := s.camMgr.SetQuality(reqCtx, name, body.Quality)
+		switch {
+		case errors.Is(err, camera.ErrBadQuality), errors.Is(err, camera.ErrQualityNotTUTK):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
-		}
-		if err := s.camMgr.SetQuality(reqCtx, name, body.Quality); err != nil {
+		case err != nil:
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, map[string]string{"status": "ok", "quality": body.Quality})
+		writeJSON(w, map[string]string{"status": "ok", "quality": effective, "saved": strings.ToLower(strings.TrimSpace(body.Quality))})
 
 	case action == "audio" && r.Method == "POST":
 		var body struct {

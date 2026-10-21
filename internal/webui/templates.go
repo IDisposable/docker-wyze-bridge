@@ -579,6 +579,22 @@ const settingsHTML = `<!DOCTYPE html>
             </div>
         </form>
 
+        <section class="settings-card" id="quality-card">
+            <h2>Video quality</h2>
+            <p class="settings-intro">HD is the camera's best picture: 1080p on a V3, 2K on the 2K models. SD is 360p at a much lower bitrate, which is easier on a camera with weak Wi-Fi. Each camera has one stream, so this is what the dashboard, Home Assistant, RTSP and recordings all get. A change is saved and applied right away, and that camera's stream restarts once. <b>Default</b> follows <code>QUALITY</code> / <code>QUALITY_&lt;CAM&gt;</code> from the environment.</p>
+            <p class="quality-all">Every camera: <button type="button" data-all="hd">HD</button> <button type="button" data-all="sd">SD</button> <button type="button" data-all="">Default</button></p>
+            <table class="excluded-table quality-table" id="quality-table">
+                <thead><tr><th>Camera</th><th>Model</th><th>Quality</th><th></th></tr></thead>
+                <tbody>
+                {{range .Quality}}
+                <tr><td>{{.Nickname}}</td><td>{{.Model}}</td><td>{{if .TUTK}}<select class="quality-select" data-cam="{{.Name}}" aria-label="Quality for {{.Nickname}}"><option value=""{{if eq .Saved ""}} selected{{end}}>Default ({{.Default}})</option><option value="hd"{{if eq .Saved "hd"}} selected{{end}}>HD</option><option value="sd"{{if eq .Saved "sd"}} selected{{end}}>SD</option></select>{{else}}<span class="quality-na">set by the camera</span>{{end}}</td><td class="quality-status" aria-live="polite"></td></tr>
+                {{else}}
+                <tr class="empty"><td colspan="4">No cameras discovered yet.</td></tr>
+                {{end}}
+                </tbody>
+            </table>
+        </section>
+
         <section class="settings-card">
             <h2>Excluded right now <small>by these rules, as of the last discovery</small></h2>
             <table class="excluded-table" id="excluded-table">

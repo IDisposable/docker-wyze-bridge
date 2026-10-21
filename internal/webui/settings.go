@@ -137,6 +137,7 @@ func (s *Server) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
 		"Detected":   strings.Join(detected, ", "),
 		"EnvFilters": env,
 		"Excluded":   excludedRows(s.camMgr.Excluded()),
+		"Quality":    s.camMgr.QualityRows(),
 	}
 	tmpl, err := template.New("settings").Funcs(templateFuncs).Parse(settingsHTML)
 	if err != nil {

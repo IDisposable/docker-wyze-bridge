@@ -381,6 +381,8 @@ The tile order and lock flag are server-side (`StateFile.Layout`), not a browser
 
 `CAM_OPTIONS` in config.yml or env vars `RECORD_{CAM_NAME}`, `QUALITY_{CAM_NAME}`, `AUDIO_{CAM_NAME}` override global defaults per camera. Names are normalized (uppercase, spaces→underscores) to match env var conventions.
 
+**Saved quality (`quality.go`):** `Manager.SetQuality` (Settings page table, detail page buttons, MQTT `set/quality`, `POST /api/cameras/{name}/quality`) stores the operator's `hd` / `sd` by MAC, persisted as `qualities` in the state file through `OnQualityChange` and installed with `SetSavedQualities` before the first discovery; `""` deletes the entry and the camera falls back to `CamQuality` (`QUALITY_<CAM>`, then `QUALITY`). Only TUTK cameras take it (`ErrQualityNotTUTK` otherwise; the `subtype` in the `wyze://` URL is the only knob, and go2rtc maps `hd` to the model's best frame size and `sd` to 360p at a low bitrate). A change that alters the effective quality of a streaming camera re-registers it (`registerStream`, no delete) and fires `OnStreamRestart` with the reason, so its players reconnect to the new stream.
+
 ### 5.4 MQTT (`internal/mqtt/`)
 
 #### 5.4.1 Connection
