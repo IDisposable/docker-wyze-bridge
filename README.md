@@ -429,6 +429,30 @@ The note goes away by itself the moment the camera verifies (or video
 flows), so a camera that was just rebooting doesn't get flagged for
 long. `/api/cameras` reports the verdict as `lan_absent`.
 
+**Camera rules (Settings page, 4.6+).** For the account-wide version of
+the same problem, open **Settings** in the header. The **network
+scope** switch has two positions: *any address* (the default, every
+camera the cloud lists) and *local subnets only*, which skips cameras
+whose address isn't on one of the bridge's own subnets, i.e. what
+another house's cameras look like. There's a box for extra CIDRs that
+should count as local (a camera VLAN the container doesn't sit on) and
+the page shows the subnets it detected. Below that are lists by
+nickname (one per line, `*` matches anything, case doesn't matter),
+MAC and model, with a block-or-allow switch exactly like
+`FILTER_BLOCKS`. Rules are saved in the state file and applied on the
+spot: a camera they drop leaves go2rtc and the dashboard like an
+ignored one (and comes back as soon as the rules let it), and the
+**Excluded by rules** strip at the bottom of the dashboard lists each
+one with the reason. The `FILTER_*` env vars still run first, and the
+🚫 ignore list still applies on top. A camera the cloud has no address
+for can't fail the scope check, so a camera that's merely unplugged
+stays on the dashboard, and if the bridge can't tell what's local at
+all (no LAN interface and no CIDRs listed) the scope excludes nothing
+and the log says so. Note that eero's default LAN is
+`192.168.4.0/22`, so if the other household is also on eero its
+cameras look local by address and need a name rule or the 🚫 instead.
+REST: `GET`/`PUT /api/settings`, `GET /api/excluded`.
+
 ### Snapshots
 
 JPEG frames grabbed periodically or on sunrise/sunset events via go2rtc's

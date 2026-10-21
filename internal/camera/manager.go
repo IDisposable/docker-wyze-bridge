@@ -3,6 +3,7 @@ package camera
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,12 @@ type Manager struct {
 	// pins are operator-pinned addresses by MAC; see pin.go.
 	pins        map[string]string
 	onPinChange func(pins map[string]string)
+	// rules are the Settings page's runtime camera rules, excluded the
+	// cameras they dropped at the last Discover; see rules.go.
+	rules         *rulesState
+	onRulesChange func(wyzeapi.CameraRules)
+	localSubnets  func() ([]*net.IPNet, error)
+	excluded      []Excluded
 	// ignored is the operator's runtime ignore list keyed by MAC; see
 	// ignore.go. onAdded / onRemoved fire when a camera enters or
 	// leaves the registry so the WebUI, MQTT and recording can follow.
@@ -189,15 +196,17 @@ func (m *Manager) Discover(ctx context.Context) error {
 		supported = append(supported, cam)
 	}
 
-	filtered := m.dropIgnored(m.filter.Apply(supported))
+	filtered, dropped := m.applyRules(m.dropIgnored(m.filter.Apply(supported)))
 
 	m.log.Info().
 		Int("discovered", len(cameras)).
 		Int("supported", len(supported)).
 		Int("filtered", len(filtered)).
+		Int("excluded_by_rules", len(dropped)).
 		Msg("camera discovery complete")
 
 	m.mu.Lock()
+	m.excluded = dropped
 
 	// Track which existing cameras are still present
 	seen := make(map[string]bool)
@@ -230,7 +239,8 @@ func (m *Manager) Discover(ctx context.Context) error {
 		}
 	}
 
-	removed := m.reapRenameOrphans(ctx, filtered)
+	renamed := m.reapRenameOrphans(ctx, filtered)
+	excluded := m.dropExcludedLocked(ctx, dropped)
 
 	// Mark cameras not in discovery as offline
 	for name, cam := range m.cameras {
@@ -243,9 +253,14 @@ func (m *Manager) Discover(ctx context.Context) error {
 	m.mu.Unlock()
 
 	// Observers run outside the lock: they enumerate Cameras().
-	for _, cam := range removed {
+	for _, cam := range renamed {
 		if m.onRemoved != nil {
 			m.onRemoved(cam, "renamed")
+		}
+	}
+	for _, cam := range excluded {
+		if m.onRemoved != nil {
+			m.onRemoved(cam, "excluded")
 		}
 	}
 	for _, cam := range added {

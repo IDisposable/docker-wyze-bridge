@@ -324,6 +324,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Pages
 	mux.HandleFunc("/", s.auth.Wrap(s.handleIndex))
 	mux.HandleFunc("/camera/", s.auth.Wrap(s.handleCameraPage))
+	mux.HandleFunc("/settings", s.auth.Wrap(s.handleSettingsPage))
 
 	// Favicon (served from embedded icon.png, no auth required)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
@@ -337,6 +338,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ignored", s.auth.Wrap(s.handleAPIIgnored))
 	mux.HandleFunc("/api/ignored/", s.auth.Wrap(s.handleAPIIgnoredAction))
 	mux.HandleFunc("/api/layout", s.auth.Wrap(s.handleAPILayout))
+	mux.HandleFunc("/api/settings", s.auth.Wrap(s.handleAPISettings))
+	mux.HandleFunc("/api/excluded", s.auth.Wrap(s.handleAPIExcluded))
 	mux.HandleFunc("/api/snapshot/", s.auth.Wrap(s.handleSnapshot))
 	mux.HandleFunc("/api/streams", s.auth.Wrap(s.handleStreamsM3U8))
 	mux.HandleFunc("/api/streams/", s.auth.Wrap(s.handleStreamM3U8))

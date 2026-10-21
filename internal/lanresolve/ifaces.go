@@ -187,3 +187,25 @@ func ipToUint32(ip net.IP) uint32 {
 func uint32ToIP(a uint32) net.IP {
 	return net.IPv4(byte(a>>24), byte(a>>16), byte(a>>8), byte(a)).To4()
 }
+
+// LocalSubnets returns the IPv4 subnets of the host's LAN-facing
+// interfaces (see listInterfaces), deduplicated. The camera manager's
+// "local subnets only" rule uses it to decide which cameras on a Wyze
+// account are reachable from here at all.
+func LocalSubnets() ([]*net.IPNet, error) {
+	ifaces, err := listInterfaces()
+	if err != nil {
+		return nil, err
+	}
+	var out []*net.IPNet
+	seen := make(map[string]bool)
+	for _, ifi := range ifaces {
+		key := ifi.Net.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ifi.Net)
+	}
+	return out, nil
+}

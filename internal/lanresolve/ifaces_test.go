@@ -194,3 +194,23 @@ func TestListInterfaces_Real(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalSubnets_DedupesAndSkipsNonLAN(t *testing.T) {
+	// listInterfaces is what LocalSubnets wraps; it already drops
+	// loopback, tunnels and link-local, so this just checks the dedupe
+	// and that the real host call doesn't blow up.
+	nets, err := LocalSubnets()
+	if err != nil {
+		t.Fatalf("LocalSubnets: %v", err)
+	}
+	seen := make(map[string]bool)
+	for _, n := range nets {
+		if seen[n.String()] {
+			t.Errorf("duplicate subnet %s", n)
+		}
+		seen[n.String()] = true
+		if n.IP.To4() == nil || n.IP.IsLoopback() {
+			t.Errorf("unexpected subnet %s", n)
+		}
+	}
+}
