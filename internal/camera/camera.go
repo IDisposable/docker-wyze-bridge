@@ -62,6 +62,14 @@ type Camera struct {
 	// can't put the stale address back; the resolver clears it when
 	// the cloud catches up. See internal/lanresolve.
 	lanIP string
+	// How the resolver last did with this camera, for the detail page
+	// and /api/cameras: lanSource is the rung that verified the current
+	// address ("" until one has), lanVerifiedAt when it last verified
+	// (resolve or recheck), lanMisses how many LAN sweeps in a row
+	// failed to hear the camera's MAC (0 while it verifies).
+	lanSource     string
+	lanVerifiedAt time.Time
+	lanMisses     int
 	// Video flow bookkeeping; see video.go. video/lastBytes/stalledPolls
 	// are poll-to-poll state reset whenever the camera leaves
 	// StateStreaming. lastVideo, lastError and lastErrorAt are history.
@@ -243,6 +251,37 @@ func (c *Camera) SetLanIP(ip string) bool {
 	return c.info().LanIP != before
 }
 
+// LanStatus returns the resolver's history for this camera: the rung
+// that verified its address ("" if none ever has), when it last
+// verified, and the sweeps in a row that failed to hear it.
+func (c *Camera) LanStatus() (source string, verifiedAt time.Time, misses int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lanSource, c.lanVerifiedAt, c.lanMisses
+}
+
+// noteLanVerified records a successful verification by source, or by
+// the periodic recheck when source is "" (the rung stays as it was).
+func (c *Camera) noteLanVerified(source string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if source != "" {
+		c.lanSource = source
+	}
+	c.lanVerifiedAt = time.Now()
+	c.lanMisses = 0
+}
+
+// noteLanMisses records that the resolver couldn't verify the camera
+// and how many sweeps have now failed to find it. The source and
+// verified-at history stay: "last verified 3h ago via sweep" is useful
+// context for a camera that is missing now.
+func (c *Camera) noteLanMisses(misses int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lanMisses = misses
+}
+
 // GetQuality returns the current quality setting under RLock.
 func (c *Camera) GetQuality() string {
 	c.mu.RLock()
@@ -302,6 +341,11 @@ type Snapshot struct {
 	LastVideo   time.Time
 	LastError   string
 	LastErrorAt time.Time
+	// LanSource / LanVerifiedAt / LanMisses are the LAN resolver's
+	// history for the camera; see Camera.LanStatus.
+	LanSource     string
+	LanVerifiedAt time.Time
+	LanMisses     int
 }
 
 // Snapshot returns a consistent view of the camera under RLock.
@@ -309,19 +353,22 @@ func (c *Camera) Snapshot() Snapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return Snapshot{
-		Info:        c.info(),
-		State:       c.State,
-		Quality:     c.Quality,
-		AudioOn:     c.AudioOn,
-		Record:      c.Record,
-		ErrorCount:  c.ErrorCount,
-		ConnectedAt: c.ConnectedAt,
-		LastSeen:    c.LastSeen,
-		ForceWebRTC: c.forceWebRTC,
-		Video:       c.video,
-		LastVideo:   c.lastVideo,
-		LastError:   c.lastError,
-		LastErrorAt: c.lastErrorAt,
+		Info:          c.info(),
+		State:         c.State,
+		Quality:       c.Quality,
+		AudioOn:       c.AudioOn,
+		Record:        c.Record,
+		ErrorCount:    c.ErrorCount,
+		ConnectedAt:   c.ConnectedAt,
+		LastSeen:      c.LastSeen,
+		ForceWebRTC:   c.forceWebRTC,
+		Video:         c.video,
+		LastVideo:     c.lastVideo,
+		LastError:     c.lastError,
+		LastErrorAt:   c.lastErrorAt,
+		LanSource:     c.lanSource,
+		LanVerifiedAt: c.lanVerifiedAt,
+		LanMisses:     c.lanMisses,
 	}
 }
 
@@ -349,5 +396,10 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 		"last_video":    c.lastVideo,
 		"last_error":    c.lastError,
 		"last_error_at": c.lastErrorAt,
+		// LAN resolver history: which rung verified the address, when it
+		// last verified, and how many sweeps in a row missed the camera.
+		"lan_ip_source":      c.lanSource,
+		"lan_ip_verified_at": c.lanVerifiedAt,
+		"lan_sweep_misses":   c.lanMisses,
 	}
 }

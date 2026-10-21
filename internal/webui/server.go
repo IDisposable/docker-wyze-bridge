@@ -69,6 +69,7 @@ type Server struct {
 	mars          MarsTokenMinter
 	cloud         CloudCommander
 	onPropertySet PropertySetObserver
+	lanResolver   LanResolverInfo
 	// layouts holds the dashboard tile order + lock; see layout.go.
 	layouts layoutStore
 	kvs           KVSStreamProvider
@@ -140,6 +141,19 @@ type Options struct {
 	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
 	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
 	Cloud       CloudCommander       // optional; nil → camera property/reboot endpoints return 503
+}
+
+// LanResolverInfo is what the detail page's Network box shows about
+// the LAN IP resolver: which engine it's running on. Satisfied by
+// *lanresolve.Resolver.
+type LanResolverInfo interface {
+	Engine() string
+}
+
+// SetLanResolver tells the detail page which resolver engine is
+// running. Not set (or LAN_IP_RESOLVE=false) renders as "off".
+func (s *Server) SetLanResolver(r LanResolverInfo) {
+	s.lanResolver = r
 }
 
 // CloudCommander is the slice of the Wyze API client the camera

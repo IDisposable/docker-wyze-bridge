@@ -85,6 +85,11 @@ type Result struct {
 	// "sweep" — or "unverified" when none did.
 	Source  string
 	Elapsed time.Duration
+	// Misses counts the sweeps in a row that covered the LAN without
+	// hearing this MAC, this camera's own and other cameras' full ones
+	// alike. 0 whenever the address verified. Two or more is the
+	// WebUI's cue that the camera probably isn't on this LAN at all.
+	Misses int
 }
 
 // Resolver is safe for concurrent use; the manager calls Resolve for
@@ -104,6 +109,7 @@ type Resolver struct {
 	lastFull  time.Time            // last sweep that covered every local address
 	camNext   map[string]time.Time // earliest next sweep per MAC
 	camMiss   map[string]int       // consecutive sweep misses per MAC
+	camMissAt map[string]time.Time // the full sweep each MAC's last miss was counted against
 	seen      map[string]seenAddr  // MAC -> address a sweep heard from
 	sweepMu   sync.Mutex           // one sweep at a time, LAN-wide
 }
@@ -135,14 +141,15 @@ func newResolver(cfg Config, log zerolog.Logger) *Resolver {
 		cfg.SweepMax = defaultMax
 	}
 	return &Resolver{
-		cfg:     cfg,
-		log:     log,
-		ifaces:  listInterfaces,
-		cache:   readNeighbors,
-		now:     time.Now,
-		camNext: make(map[string]time.Time),
-		camMiss: make(map[string]int),
-		seen:    make(map[string]seenAddr),
+		cfg:       cfg,
+		log:       log,
+		ifaces:    listInterfaces,
+		cache:     readNeighbors,
+		now:       time.Now,
+		camNext:   make(map[string]time.Time),
+		camMiss:   make(map[string]int),
+		camMissAt: make(map[string]time.Time),
+		seen:      make(map[string]seenAddr),
 	}
 }
 
@@ -159,12 +166,20 @@ func (r *Resolver) Engine() string {
 func (r *Resolver) Resolve(ctx context.Context, t Target) Result {
 	start := r.now()
 	res := Result{IP: t.CloudIP, Source: "unverified"}
+	mac := NormalizeMAC(t.MAC)
+	// finish stamps the elapsed time and the miss count: a verified
+	// address wipes the camera's slate, an unverified one reports how
+	// many sweeps have now failed to find it.
 	finish := func(res Result) Result {
 		res.Elapsed = r.now().Sub(start)
+		if res.Verified {
+			r.clearMisses(mac)
+		} else {
+			res.Misses = r.misses(mac)
+		}
 		return res
 	}
 
-	mac := NormalizeMAC(t.MAC)
 	log := r.log.With().Str("cam", t.Name).Str("mac", mac).Str("cloud_ip", t.CloudIP).Logger()
 	if mac == "" || r.engine == nil {
 		log.Debug().Msg("lan resolve skipped: no MAC or no engine")
@@ -258,6 +273,9 @@ func (r *Resolver) Resolve(ctx context.Context, t Target) Result {
 					}
 					r.forget(mac)
 				case r.sweptRecently():
+					// Another camera's full sweep would have heard this
+					// MAC too; count it as a miss, once per sweep.
+					r.noteAbsent(mac)
 					r.sweepMu.Unlock()
 					log.Debug().Msg("lan resolve: LAN swept recently and the camera was not on it")
 				case !r.sweepAllowed(mac):
@@ -379,11 +397,15 @@ func (r *Resolver) noteSweep(mac string, hit, full bool) {
 	}
 	if hit {
 		delete(r.camMiss, mac)
+		delete(r.camMissAt, mac)
 		delete(r.camNext, mac)
 		return
 	}
 	misses := r.camMiss[mac] + 1
 	r.camMiss[mac] = misses
+	if full {
+		r.camMissAt[mac] = now
+	}
 	gap := sweepCamGap
 	for i := 1; i < misses && gap < sweepCamGapMax; i++ {
 		gap *= 2
@@ -392,6 +414,40 @@ func (r *Resolver) noteSweep(mac string, hit, full bool) {
 		gap = sweepCamGapMax
 	}
 	r.camNext[mac] = now.Add(gap)
+}
+
+// noteAbsent counts a full sweep run for some other camera that didn't
+// hear mac either. Each full sweep is counted once per MAC no matter
+// how many times the camera is resolved while that sweep is fresh, so
+// a fast reconnect loop can't inflate the number. Call with sweepMu
+// held (lastFull is read under r.mu, but the caller's sweptRecently
+// check must still be current).
+func (r *Resolver) noteAbsent(mac string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.camMissAt[mac].Equal(r.lastFull) {
+		return
+	}
+	r.camMissAt[mac] = r.lastFull
+	r.camMiss[mac]++
+}
+
+// misses returns the consecutive sweep misses recorded for mac.
+func (r *Resolver) misses(mac string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.camMiss[mac]
+}
+
+// clearMisses forgets the miss history, and the sweep backoff that came
+// with it, once the camera verified by any rung: a camera that is on
+// the LAN right now has earned a prompt sweep the next time it moves.
+func (r *Resolver) clearMisses(mac string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.camMiss, mac)
+	delete(r.camMissAt, mac)
+	delete(r.camNext, mac)
 }
 
 // without filters addresses already probed out of a sweep list.

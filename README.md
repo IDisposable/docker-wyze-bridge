@@ -165,6 +165,14 @@ the bridge falls back to reading the kernel's neighbor cache, which
 can trail a moved camera by a minute or so. The startup log says
 which engine is active (`LAN IP resolver ready engine=arp`).
 
+To see the resolver at work, open a camera's detail page: the
+**Network** box shows the address the cloud reported, when the bridge
+last verified the camera and by which route (cloud address, last
+known address, neighbor cache, LAN sweep), how many sweeps in a row
+missed it, and which engine is running. The same fields are in
+`/api/cameras` as `lan_ip_source`, `lan_ip_verified_at` and
+`lan_sweep_misses`.
+
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | `LAN_IP_RESOLVE` | `true` | Verify TUTK cameras' LAN addresses by MAC before go2rtc dials them |

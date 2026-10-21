@@ -157,6 +157,7 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		recording = s.recMgr.IsRecording(name)
 	}
 	snap := cam.Snapshot()
+	cloudIP, _ := cam.LanIPs()
 	data := map[string]interface{}{
 		"Version":    s.version,
 		"BasePath":   basePath,
@@ -180,6 +181,15 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"HLSURL":     fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
 		"Go2RTCURL":  fmt.Sprintf("%s/ws?src=%s", basePath, name),
 		"BridgeIP":   bridgeIP,
+		// Network box: how the LAN resolver found (or didn't find) the
+		// camera. Only TUTK cameras are dialed on the LAN; the others
+		// stream through Wyze's servers or the gwell sidecar.
+		"LanDialed":   protocolFor(snap.Info, snap.ForceWebRTC) == "tutk",
+		"CloudIP":     cloudIP,
+		"LanSource":   LanSourceLabel(snap.LanSource),
+		"LanVerified": formatWhen(snap.LanVerifiedAt),
+		"LanMisses":   snap.LanMisses,
+		"LanResolver": s.lanResolverLabel(),
 	}
 
 	tmpl, err := template.New("camera").Funcs(templateFuncs).Parse(cameraHTML)
@@ -243,6 +253,63 @@ func formatWhen(t time.Time) string {
 	default:
 		return t.Local().Format("2006-01-02 15:04")
 	}
+}
+
+// LanSourceLabel spells out a lanresolve.Result.Source for the page
+// and for the camera_ip SSE event main.go sends.
+func LanSourceLabel(source string) string {
+	switch source {
+	case "cloud":
+		return "the address the Wyze cloud reported"
+	case "last":
+		return "its last known address"
+	case "recent":
+		return "an earlier LAN sweep"
+	case "neigh":
+		return "the kernel's neighbor cache"
+	case "sweep":
+		return "a LAN sweep"
+	default:
+		return ""
+	}
+}
+
+// lanResolverLabel is the one-line resolver summary on the detail page.
+func (s *Server) lanResolverLabel() string {
+	if !s.cfg.LanIPResolve || s.lanResolver == nil {
+		return "off (LAN_IP_RESOLVE=false)"
+	}
+	var engine string
+	switch s.lanResolver.Engine() {
+	case "arp":
+		engine = "ARP engine"
+	case "neigh":
+		engine = "neighbor-cache engine (no CAP_NET_RAW, so ARP isn't available)"
+	default:
+		return "no usable engine; cloud addresses are used as-is"
+	}
+	sweep := "sweep on"
+	if !s.cfg.LanIPSweep {
+		sweep = "sweep off"
+	}
+	recheck := "recheck off"
+	if s.cfg.LanIPRecheck > 0 {
+		recheck = "recheck every " + shortDuration(s.cfg.LanIPRecheck)
+	}
+	return engine + ", " + sweep + ", " + recheck
+}
+
+// shortDuration is time.Duration.String without the zero tail: "2m"
+// rather than "2m0s", "1h" rather than "1h0m0s".
+func shortDuration(d time.Duration) string {
+	out := d.String()
+	if strings.HasSuffix(out, "m0s") {
+		out = strings.TrimSuffix(out, "0s")
+	}
+	if strings.HasSuffix(out, "h0m") {
+		out = strings.TrimSuffix(out, "0m")
+	}
+	return out
 }
 
 // formatError renders the last stream error with its age, or "none".
@@ -374,6 +441,16 @@ const cameraHTML = `<!DOCTYPE html>
                 <tr><td>IP</td><td class="cam-ip" data-cam="{{.Name}}">{{.IP}}</td></tr>
                 <tr><td>MAC</td><td>{{.MAC}}</td></tr>
                 <tr><td>Firmware</td><td>{{.FWVersion}}</td></tr>
+            </table>
+            <h3 class="controls-title">Network <small>(where the bridge thinks this camera is)</small></h3>
+            <table class="network-box" data-cam="{{.Name}}">
+                {{if .LanDialed}}
+                <tr><td>Cloud says</td><td class="cam-cloud-ip">{{if .CloudIP}}{{.CloudIP}}{{else}}no address{{end}}</td></tr>
+                <tr><td>Verified</td><td class="cam-lan-status">{{if .LanSource}}{{.LanVerified}} via {{.LanSource}}{{else}}never{{end}}{{if gt .LanMisses 0}}; {{.LanMisses}} LAN sweep{{if gt .LanMisses 1}}s{{end}} in a row didn't hear it{{end}}</td></tr>
+                <tr><td>Resolver</td><td>{{.LanResolver}}</td></tr>
+                {{else}}
+                <tr><td>Resolver</td><td>not used: this camera isn't dialed on the LAN</td></tr>
+                {{end}}
             </table>
             <div class="stream-urls">
                 <h3>Stream URLs <small>(click to copy)</small></h3>

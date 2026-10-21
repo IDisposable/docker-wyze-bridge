@@ -610,3 +610,58 @@ func TestNew_NeverNil(t *testing.T) {
 		t.Errorf("SweepMax default = %d", r.cfg.SweepMax)
 	}
 }
+
+func TestResolve_MissesCountSweepsThatDidNotHearTheCamera(t *testing.T) {
+	// a is not on this LAN. Every sweep that covers the LAN without
+	// hearing it counts once: its own sweeps, and other cameras' full
+	// sweeps while they're fresh. A fast reconnect loop inside the same
+	// fresh sweep doesn't inflate the number, and verifying resets it.
+	p := newFakeProber(map[string]string{"10.0.0.1": "aabbccddeeff"})
+	r, clock := testResolver(t, p, true)
+	a := target("10.0.0.123", "")
+	b := Target{Name: "driveway", MAC: "D03F2700CA03", CloudIP: "10.0.0.184"}
+
+	if res := r.Resolve(context.Background(), a); res.Verified || res.Misses != 1 {
+		t.Fatalf("after own sweep: %+v", res)
+	}
+	// Resolved again right away: the LAN was just swept, no new sweep,
+	// and the same sweep isn't counted twice.
+	if res := r.Resolve(context.Background(), a); res.Misses != 1 || p.sweepCount() != 1 {
+		t.Errorf("same fresh sweep counted again: %+v sweeps=%d", res, p.sweepCount())
+	}
+	// b sweeps (after the gaps) and doesn't hear a either: a's count
+	// grows on a's next resolve, once.
+	clock.advance(seenTTL + sweepGlobalGap)
+	if res := r.Resolve(context.Background(), b); res.Misses != 1 || p.sweepCount() != 2 {
+		t.Fatalf("b: %+v sweeps=%d", res, p.sweepCount())
+	}
+	if res := r.Resolve(context.Background(), a); res.Misses != 2 {
+		t.Errorf("a after b's full sweep: %+v", res)
+	}
+	if res := r.Resolve(context.Background(), a); res.Misses != 2 {
+		t.Errorf("a counted b's sweep twice: %+v", res)
+	}
+	// A camera that verifies, by any rung, starts from zero and may
+	// sweep again right away the next time it goes missing.
+	p.mu.Lock()
+	p.at["10.0.0.123"] = camNrm
+	p.mu.Unlock()
+	if res := r.Resolve(context.Background(), a); !res.Verified || res.Misses != 0 {
+		t.Fatalf("verified: %+v", res)
+	}
+	r.mu.Lock()
+	_, backoff := r.camNext[camNrm]
+	miss := r.camMiss[camNrm]
+	r.mu.Unlock()
+	if backoff || miss != 0 {
+		t.Errorf("verify should clear the backoff and misses: backoff=%v misses=%d", backoff, miss)
+	}
+	// Never-seen camera with nothing swept yet: zero, not an error.
+	p.mu.Lock()
+	delete(p.at, "10.0.0.123")
+	p.mu.Unlock()
+	r2, _ := testResolver(t, newFakeProber(map[string]string{}), false)
+	if res := r2.Resolve(context.Background(), a); res.Misses != 0 {
+		t.Errorf("no sweeps at all: %+v", res)
+	}
+}
