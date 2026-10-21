@@ -79,6 +79,9 @@ schema:
   camera:
     quality: list(hd|sd)?
     audio: bool?
+    lan_ip_resolve: bool?
+    lan_ip_sweep: bool?
+    lan_ip_recheck: 'match(^\d+[smhd]?$)?'
     options:
       - cam_name: str?
         quality: list(hd|sd)?

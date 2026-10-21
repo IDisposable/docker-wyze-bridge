@@ -64,6 +64,23 @@ configuration:
   camera.audio:
     name: Enable Audio
     description: Enable audio streaming by default
+  camera.lan_ip_resolve:
+    name: Verify LAN IPs
+    description: >-
+      Check where each TUTK camera's MAC really answers (ARP) before
+      go2rtc dials it, instead of trusting the IP the Wyze cloud last
+      saw. Default on.
+  camera.lan_ip_sweep:
+    name: Allow LAN Sweep
+    description: >-
+      When a camera isn't at any known address, sweep the local subnet
+      for its MAC (paced, capped at a /22, backed off per camera).
+      Default on.
+  camera.lan_ip_recheck:
+    name: LAN IP Recheck Interval
+    description: >-
+      How often streaming cameras are re-verified, e.g. 2m or 90s.
+      0 disables. Default 2m.
   camera.options:
     name: Per-Camera Overrides
     description: >-
