@@ -348,3 +348,48 @@ func TestMacSuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePropertyValue(t *testing.T) {
+	// Friendly values like on, off and auto map to the pvalue Wyze wants
+	// and the value to publish back on MQTT. Bad values and unknown names
+	// are refused, and every supported property has a cloud ID.
+	cases := []struct {
+		prop, raw, pvalue, publish string
+		ok                         bool
+	}{
+		{"hor_flip", "on", "1", "1", true},
+		{"hor_flip", "OFF", "2", "2", true},
+		{"ver_flip", "true", "1", "1", true},
+		{"night_vision", "auto", "3", "auto", true},
+		{"night_vision", "on", "1", "on", true},
+		{"night_vision", "off", "2", "off", true},
+		{"night_vision", "sometimes", "", "", false},
+		{"bitrate", "120", "120", "120", true},
+		{"fps", "x", "", "", false},
+		{"unknown", "on", "", "", false},
+	}
+	for _, c := range cases {
+		pv, pub, ok := ParsePropertyValue(c.prop, c.raw)
+		if pv != c.pvalue || pub != c.publish || ok != c.ok {
+			t.Errorf("ParsePropertyValue(%q, %q) = (%q, %q, %v), want (%q, %q, %v)", c.prop, c.raw, pv, pub, ok, c.pvalue, c.publish, c.ok)
+		}
+	}
+	for _, name := range []string{"hor_flip", "ver_flip", "night_vision", "irled", "status_light", "motion_detection", "motion_tagging", "bitrate", "fps"} {
+		if _, ok := CloudProperties[name]; !ok {
+			t.Errorf("CloudProperties lacks %s", name)
+		}
+	}
+}
+
+func TestSetNamedProperty_Validation(t *testing.T) {
+	// An unknown property or a bad value is rejected before anything is
+	// sent to Wyze.
+	c := NewClient(Credentials{}, "test", zerolog.Nop())
+	cam := CameraInfo{Name: "kitchen", MAC: "AABB"}
+	if _, err := c.SetNamedProperty(cam, "nope", "on"); err == nil {
+		t.Error("unknown property should fail before any network call")
+	}
+	if _, err := c.SetNamedProperty(cam, "hor_flip", "sideways"); err == nil {
+		t.Error("invalid value should fail before any network call")
+	}
+}

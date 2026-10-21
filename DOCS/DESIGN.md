@@ -486,6 +486,8 @@ POST /api/cameras/{name}/quality body: {"quality":"hd"|"sd"}
 POST /api/cameras/{name}/audio   body: {"enabled":true|false}
 POST /api/cameras/{name}/record  body: {"action":"start"|"stop"} — toggles ffmpeg recorder
 POST /api/cameras/{name}/snapshot Force capture to SNAPSHOT_PATH
+POST /api/cameras/{name}/property body: {"property":"hor_flip","value":"on"} — camera-side setting via Wyze cloud (wyzeapi.CloudProperties, same table as MQTT set topics); mirrored to the MQTT state topic
+POST /api/cameras/{name}/reboot   Reboot the camera itself (Wyze run_action "restart"), then re-register the stream
 POST /api/cameras/{name}/ignore   Drop the camera + remember its MAC (persisted; see 5.3.2)
 GET  /api/ignored                JSON: the ignore list
 POST /api/ignored/{mac}/restore  Take a MAC off the ignore list + rediscover (async)

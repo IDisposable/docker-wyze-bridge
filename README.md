@@ -193,6 +193,22 @@ with the layout, but the stream the camera sends (RTSP, HLS, Home
 Assistant) is untouched. To flip the stream itself use the camera's
 own flip settings (see the detail page).
 
+### Camera controls
+
+The detail page has a **Camera** row for settings that live on the
+camera itself and go through the Wyze cloud: flip horizontal, flip
+vertical, night vision (auto / on / off) and **⟲ Reboot camera**.
+These are the same properties the MQTT `set` topics drive, so a
+change made here is mirrored to the camera's MQTT state topic and
+Home Assistant stays in step. Wyze doesn't report these values back,
+so the buttons are stateless: green means Wyze accepted it, red means
+it didn't. Reboot asks first, restarts the camera (the stream drops
+for about a minute) and re-registers the go2rtc stream so it dials
+the camera fresh when it's back; **Restart Stream** next to it only
+re-registers the stream. REST: `POST /api/cameras/{name}/property`
+with `{"property":"hor_flip","value":"on"}` (any name from the MQTT
+set table), `POST /api/cameras/{name}/reboot`.
+
 ### What the badges mean
 
 The green `streaming` badge means go2rtc accepted the stream; it says

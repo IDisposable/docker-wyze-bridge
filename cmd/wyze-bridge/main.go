@@ -179,6 +179,7 @@ func main() {
 		Issues:    issueReg,
 		Mars:      apiClient,
 		KVS:       kvsAdapter{api: apiClient},
+		Cloud:     apiClient,
 		AuthPhoneID: func() string {
 			if a := apiClient.Auth(); a != nil {
 				return a.PhoneID
@@ -235,6 +236,14 @@ func main() {
 
 	mqttClient := setupMQTT(ctx, cfg, camMgr, apiClient)
 	webhookClient := setupWebhooks(cfg)
+
+	// A property set from the WebUI (flip, night vision) is mirrored to
+	// the MQTT state topic so HA's switches don't show the old value.
+	webServer.OnPropertySet(func(camName, property, value string) {
+		if mqttClient != nil {
+			mqttClient.PublishProperty(camName, property, value)
+		}
+	})
 	// Recording manager owns the per-camera ffmpeg supervisors. Needs
 	// to exist before wireCameraStateChanges so state-change callbacks
 	// can start/stop recorders on transitions.

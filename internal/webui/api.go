@@ -175,6 +175,63 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			"recording": s.recMgr.IsRecording(name),
 		})
 
+	case action == "property" && r.Method == "POST":
+		// Camera-side settings via the Wyze cloud: body
+		// {"property":"hor_flip","value":"on"}. Same table MQTT's
+		// set topics use (wyzeapi.CloudProperties).
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		var body struct {
+			Property string `json:"property"`
+			Value    string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if _, known := wyzeapi.CloudProperties[body.Property]; !known {
+			writeJSONError(w, http.StatusBadRequest, "unknown property")
+			return
+		}
+		if _, _, ok := wyzeapi.ParsePropertyValue(body.Property, body.Value); !ok {
+			writeJSONError(w, http.StatusBadRequest, "invalid value for "+body.Property)
+			return
+		}
+		published, err := s.cloud.SetNamedProperty(cam.GetInfo(), body.Property, body.Value)
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: body.Property + " = " + body.Value})
+		}
+		if s.onPropertySet != nil {
+			go s.onPropertySet(name, body.Property, published)
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "property": body.Property, "value": published})
+
+	case action == "reboot" && r.Method == "POST":
+		// Reboot the camera itself through the Wyze cloud (the "restart"
+		// run_action), then re-register the stream so go2rtc dials the
+		// camera fresh when it's back. Distinct from "restart", which
+		// only re-registers the stream.
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		if err := s.cloud.RunAction(cam.GetInfo(), "restart"); err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: "reboot requested"})
+		}
+		// rootCtx: the reconnect outlives this request.
+		go s.camMgr.RestartStream(s.rootCtx, name)
+		writeJSON(w, map[string]string{"status": "ok"})
+
 	case action == "ignore" && r.Method == "POST":
 		// Drops the camera from the registry for good (persisted by
 		// MAC); /api/ignored/<mac>/restore brings it back.
