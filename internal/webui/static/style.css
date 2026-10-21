@@ -489,6 +489,33 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; }
 .actions button:hover { background: var(--bg-hover); border-color: var(--accent-bright); }
 .actions .snap-btn.snapped { background: var(--success); color: #fff; }
 
+/* "Not on this LAN?" hint on a card, shown once the LAN sweeps have
+   given up on the camera. Sits between the name and the action row;
+   the button is the same ignore action as the 🚫. */
+.lan-hint {
+    margin: 0 0.9rem 0.6rem;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: var(--text);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+    border-radius: calc(var(--radius) - 4px);
+}
+.lan-hint[hidden] { display: none; }
+.lan-hint .ignore-btn.hint {
+    margin-left: 0.3rem;
+    padding: 0.1rem 0.5rem;
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+}
+.lan-hint .ignore-btn.hint:hover { background: var(--bg-hover); border-color: var(--warning); }
+
 /* Network box on the detail page: same table styling as the main
    one, with room for the longer "verified ... via ..." sentence. */
 .network-box td:last-child { white-space: normal; line-height: 1.4; }

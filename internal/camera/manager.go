@@ -45,9 +45,10 @@ type Manager struct {
 	onProtocolFallback func(camName string, oldProtocol, newProtocol string, failStreak int)
 	// resolver verifies TUTK cameras' LAN addresses before go2rtc dials
 	// them; nil disables. onLanIPChange fires when a camera's effective
-	// address changes. See lanip.go.
+	// address changes, onLanStatus after every resolve. See lanip.go.
 	resolver      LANResolver
 	onLanIPChange func(cam *Camera, oldIP, newIP, source string)
+	onLanStatus   func(cam *Camera)
 	// ignored is the operator's runtime ignore list keyed by MAC; see
 	// ignore.go. onAdded / onRemoved fire when a camera enters or
 	// leaves the registry so the WebUI, MQTT and recording can follow.

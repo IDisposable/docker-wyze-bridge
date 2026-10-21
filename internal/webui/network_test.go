@@ -153,3 +153,48 @@ func between(s, a, b string) string {
 	}
 	return s
 }
+
+func TestRenderIndex_LanHint(t *testing.T) {
+	// The not-on-this-LAN hint stays hidden until two sweeps miss the
+	// camera, then shows the count and an ignore button, and /api/cameras
+	// reports lan_absent. Grid players also ask for MSE with a buffer.
+	srv, _ := testServer(t)
+	injectStreamingCamera(srv, "garage")
+
+	// Every card carries the hint, hidden until the sweeps give up.
+	w := httptest.NewRecorder()
+	srv.handleIndex(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, `class="lan-hint" data-cam="garage" hidden>`) {
+		t.Fatalf("hint should be rendered hidden:\n%s", between(body, `class="lan-hint"`, "</p>"))
+	}
+
+	// Two sweeps missed it: the hint shows with the count and an ignore
+	// button that reuses the normal ignore action.
+	srv.camMgr.SetLANResolver(fixedResolver{res: lanresolve.Result{Verified: false, Source: "unverified", Misses: 2}})
+	srv.camMgr.RestartStream(context.Background(), "garage")
+	w = httptest.NewRecorder()
+	srv.handleIndex(w, httptest.NewRequest("GET", "/", nil))
+	body = w.Body.String()
+	if !strings.Contains(body, `class="lan-hint" data-cam="garage">Not on this LAN? <span class="lan-hint-misses">2</span> sweeps didn't hear it.`) {
+		t.Errorf("hint should be visible with the count:\n%s", between(body, `class="lan-hint"`, "</p>"))
+	}
+	if !strings.Contains(body, `class="ignore-btn hint" data-cam="garage"`) {
+		t.Error("hint lacks its ignore button")
+	}
+	// /api/cameras carries the same verdict.
+	w = httptest.NewRecorder()
+	srv.handleAPICameras(w, httptest.NewRequest("GET", "/api/cameras", nil))
+	if !strings.Contains(w.Body.String(), `"lan_absent":true`) {
+		t.Errorf("/api/cameras should report lan_absent: %s", w.Body.String())
+	}
+
+	// One miss only: hidden again.
+	srv.camMgr.SetLANResolver(fixedResolver{res: lanresolve.Result{Verified: false, Source: "unverified", Misses: 1}})
+	srv.camMgr.RestartStream(context.Background(), "garage")
+	w = httptest.NewRecorder()
+	srv.handleIndex(w, httptest.NewRequest("GET", "/", nil))
+	if !strings.Contains(w.Body.String(), `class="lan-hint" data-cam="garage" hidden>`) {
+		t.Error("one miss should not show the hint")
+	}
+}

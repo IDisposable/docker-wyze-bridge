@@ -52,6 +52,8 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		State       string
 		Video       string // live | idle | no_video | unknown (see camera.Video)
 		VideoTitle  string // tooltip: last error / last video time
+		LanAbsent   bool   // enough LAN sweeps missed it to suggest ignoring it
+		LanMisses   int    // how many, for the hint's text
 		Rotation    int    // view rotation in degrees from the layout
 		Quality     string
 		IP          string
@@ -86,6 +88,8 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 			State:      snap.State.String(),
 			Video:      snap.Video.String(),
 			VideoTitle: videoTitle(snap),
+			LanAbsent:  snap.LanAbsent && snap.Video != camera.VideoLive,
+			LanMisses:  snap.LanMisses,
 			Rotation:   layout.Rotation[name],
 			Quality:    snap.Quality,
 			IP:         snap.Info.LanIP,
@@ -369,6 +373,7 @@ const indexHTML = `<!DOCTYPE html>
                     <h3>{{.Nickname}}</h3>
                     <p>{{.ModelName}} &middot; {{.Quality}}{{if .IP}} &middot; <span class="cam-ip">{{.IP}}</span>{{end}}</p>
                 </a>
+                <p class="lan-hint" data-cam="{{.Name}}"{{if not .LanAbsent}} hidden{{end}}>Not on this LAN? <span class="lan-hint-misses">{{.LanMisses}}</span> sweeps didn't hear it. <button type="button" class="ignore-btn hint" data-cam="{{.Name}}" data-nickname="{{.Nickname}}" title="Stop connecting to it and hide it; restore from the list below">Ignore it</button></p>
                 <div class="camera-links">
                     <button type="button" class="copy-btn" data-url="{{.RTSPURL}}" title="Click to copy RTSP URL (paste into VLC or ffmpeg)">RTSP</button>
                     <button type="button" class="copy-btn" data-url="{{.HLSURL}}" title="Click to copy HLS URL (paste into VLC or an HLS player — Chrome/Firefox can't play HLS natively)">HLS</button>
