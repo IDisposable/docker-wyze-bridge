@@ -251,6 +251,18 @@ func (c *Camera) SetLanIP(ip string) bool {
 	return c.info().LanIP != before
 }
 
+// lanAbsentAfter is how many LAN sweeps in a row have to miss a camera
+// before the dashboard suggests it isn't on this LAN at all. One miss
+// can be a camera rebooting; two full sweeps a few minutes apart with
+// no answer means it's somewhere else (another house on the same Wyze
+// account, typically).
+const lanAbsentAfter = 2
+
+// lanAbsent is the "probably not on this LAN" verdict; see lanAbsentAfter.
+func (c *Camera) lanAbsent() bool {
+	return c.lanMisses >= lanAbsentAfter
+}
+
 // LanStatus returns the resolver's history for this camera: the rung
 // that verified its address ("" if none ever has), when it last
 // verified, and the sweeps in a row that failed to hear it.
@@ -346,6 +358,9 @@ type Snapshot struct {
 	LanSource     string
 	LanVerifiedAt time.Time
 	LanMisses     int
+	// LanAbsent is true once enough sweeps in a row missed the camera
+	// that it's probably not on this LAN (see lanAbsentAfter).
+	LanAbsent bool
 }
 
 // Snapshot returns a consistent view of the camera under RLock.
@@ -369,6 +384,7 @@ func (c *Camera) Snapshot() Snapshot {
 		LanSource:     c.lanSource,
 		LanVerifiedAt: c.lanVerifiedAt,
 		LanMisses:     c.lanMisses,
+		LanAbsent:     c.lanAbsent(),
 	}
 }
 
@@ -401,5 +417,6 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 		"lan_ip_source":      c.lanSource,
 		"lan_ip_verified_at": c.lanVerifiedAt,
 		"lan_sweep_misses":   c.lanMisses,
+		"lan_absent":         c.lanAbsent(),
 	}
 }

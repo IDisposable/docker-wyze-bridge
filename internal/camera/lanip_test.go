@@ -3,6 +3,7 @@ package camera
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -639,5 +640,39 @@ func TestLanStatus_FollowsResolverAndRecheck(t *testing.T) {
 	mgr.RestartStream(context.Background(), "side_garage")
 	if src, _, misses := cam.LanStatus(); src != "cloud" || misses != 0 {
 		t.Errorf("after return: %q %d", src, misses)
+	}
+}
+
+func TestLanAbsent_AfterTwoMissesAndStatusHookFires(t *testing.T) {
+	// A camera never verified this run reads as not on this LAN after two
+	// sweep misses (not one) and clears once found. OnLanStatus fires on
+	// every outcome so the dashboard hint follows along.
+	r := &scriptedResolver{result: lanresolve.Result{Verified: false, Source: "unverified", Misses: 1}}
+	mgr, _ := newLanIPTestManager(t, r)
+	cam := newV3("attic", "192.168.4.60")
+	mgr.cameras[cam.Name()] = cam
+	var fired []string
+	mgr.OnLanStatus(func(c *Camera) {
+		snap := c.Snapshot()
+		fired = append(fired, fmt.Sprintf("%s:%d:%v", c.Name(), snap.LanMisses, snap.LanAbsent))
+	})
+
+	mgr.connectCamera(context.Background(), cam)
+	if cam.Snapshot().LanAbsent || cam.StatusJSON()["lan_absent"] != false {
+		t.Error("one miss is not absent yet")
+	}
+	r.setResult(lanresolve.Result{Verified: false, Source: "unverified", Misses: 2}, false)
+	mgr.RestartStream(context.Background(), "attic")
+	if !cam.Snapshot().LanAbsent || cam.StatusJSON()["lan_absent"] != true {
+		t.Error("two misses should read as absent")
+	}
+	// Found again: the verdict clears and the hook says so.
+	r.setResult(lanresolve.Result{IP: "192.168.4.60", Verified: true, Source: "cloud"}, true)
+	mgr.RestartStream(context.Background(), "attic")
+	if cam.Snapshot().LanAbsent {
+		t.Error("a verified camera is not absent")
+	}
+	if want := "attic:1:false,attic:2:true,attic:0:false"; strings.Join(fired, ",") != want {
+		t.Errorf("status hook fired %v, want %s", fired, want)
 	}
 }

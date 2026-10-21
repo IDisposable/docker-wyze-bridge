@@ -414,6 +414,13 @@ away. The env filters above still apply first. REST: `GET
 /api/ignored`, `POST /api/cameras/{name}/ignore`, `POST
 /api/ignored/{mac}/restore`.
 
+You usually don't have to go looking for them: once two LAN sweeps in
+a row have failed to hear a camera's MAC, its card grows a "Not on
+this LAN?" note with an **Ignore it** button that does the same thing.
+The note goes away by itself the moment the camera verifies (or video
+flows), so a camera that was just rebooting doesn't get flagged for
+long. `/api/cameras` reports the verdict as `lan_absent`.
+
 ### Snapshots
 
 JPEG frames grabbed periodically or on sunrise/sunset events via go2rtc's

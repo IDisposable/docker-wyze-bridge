@@ -34,6 +34,14 @@ func (m *Manager) OnLanIPChange(fn func(cam *Camera, oldIP, newIP, source string
 	m.onLanIPChange = fn
 }
 
+// OnLanStatus registers a callback for every resolver outcome, verified
+// or not, so the dashboard can show (and clear) its "not on this LAN?"
+// hint as the sweep misses add up. Fires after the camera already
+// reports the new status, so callbacks may read cam.Snapshot().
+func (m *Manager) OnLanStatus(fn func(cam *Camera)) {
+	m.onLanStatus = fn
+}
+
 func (m *Manager) lanResolver() LANResolver {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -69,9 +77,15 @@ func (m *Manager) resolveLanIP(ctx context.Context, cam *Camera) bool {
 	if !res.Verified {
 		cam.noteLanMisses(res.Misses)
 		log.Warn().Str("using", info.LanIP).Int("sweep_misses", res.Misses).Msg("camera not found on LAN, using last known address")
+		if m.onLanStatus != nil {
+			m.onLanStatus(cam)
+		}
 		return false
 	}
 	cam.noteLanVerified(res.Source)
+	if m.onLanStatus != nil {
+		m.onLanStatus(cam)
+	}
 	before := info.LanIP
 	if !cam.SetLanIP(res.IP) {
 		log.Debug().Str("ip", res.IP).Msg("camera LAN IP verified")

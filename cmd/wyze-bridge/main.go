@@ -578,6 +578,18 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 		})
 		go publishStateMQTT(mqttClient, cam)
 	})
+	// Every resolver outcome drives the dashboard's "not on this LAN?"
+	// hint (shown after a couple of sweeps in a row missed the camera,
+	// cleared the moment it verifies again).
+	camMgr.OnLanStatus(func(cam *camera.Camera) {
+		snap := cam.Snapshot()
+		go webServer.SSE().SendJSON("camera_lan", map[string]interface{}{
+			"name":         cam.Name(),
+			"absent":       snap.LanAbsent,
+			"sweep_misses": snap.LanMisses,
+			"source":       snap.LanSource,
+		})
+	})
 }
 
 func autoToggleRecording(ctx context.Context, recMgr *recording.Manager, webServer *webui.Server, name string, newState camera.State) {

@@ -65,6 +65,14 @@
             refreshChips();
         });
 
+        eventSource.addEventListener('camera_lan', function(e) {
+            // Resolver outcome for a camera: show the "not on this LAN?"
+            // hint once the sweeps have given up on it, clear it when
+            // it's found again.
+            const data = JSON.parse(e.data);
+            updateLanHint(data.name, data.absent, data.sweep_misses);
+        });
+
         eventSource.addEventListener('camera_ip', function(e) {
             // The LAN resolver corrected a camera's address; the grid
             // and the detail page both show it via .cam-ip, and the
@@ -102,6 +110,22 @@
         if (err) err.textContent = data.last_error ? data.last_error + ' (just now)' : 'none';
         const lv = document.querySelector('.cam-last-video[data-cam="' + data.name + '"]');
         if (lv && data.video === 'live') lv.textContent = 'just now';
+        if (data.video === 'live') {
+            const hint = document.querySelector('.lan-hint[data-cam="' + data.name + '"]');
+            if (hint) hint.hidden = true;
+        }
+    }
+
+    // The hint stays hidden while video is flowing even if the resolver
+    // can't see the camera (a VLAN'd camera that streams fine, say).
+    function updateLanHint(name, absent, misses) {
+        const hint = document.querySelector('.lan-hint[data-cam="' + name + '"]');
+        if (!hint) return;
+        const badge = document.querySelector('.video-badge[data-cam="' + name + '"]');
+        const live = badge && badge.classList.contains('live');
+        const n = hint.querySelector('.lan-hint-misses');
+        if (n && typeof misses === 'number') n.textContent = misses;
+        hint.hidden = !(absent && !live);
     }
 
     function updateCameraState(name, state, quality) {
