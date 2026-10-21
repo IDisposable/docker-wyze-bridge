@@ -57,6 +57,12 @@
             updateRecordingUI(data.name, data.recording);
         });
 
+        eventSource.addEventListener('camera_video', function(e) {
+            // Whether frames are actually arriving: live / idle / no video.
+            const data = JSON.parse(e.data);
+            updateVideoUI(data);
+        });
+
         eventSource.addEventListener('camera_ip', function(e) {
             // The LAN resolver corrected a camera's address; the grid
             // and the detail page both show it via .cam-ip.
@@ -70,6 +76,22 @@
             // Reconnect after a delay
             setTimeout(connectSSE, 5000);
         };
+    }
+
+    // Video badge (grid + detail page) and the detail page's last video
+    // / last error rows. The server sends the same shape /api/cameras
+    // exposes: video, last_video, last_error, last_error_at.
+    function updateVideoUI(data) {
+        const labels = { live: 'live', idle: 'idle', no_video: 'no video' };
+        document.querySelectorAll('.video-badge[data-cam="' + data.name + '"]').forEach(function(el) {
+            el.className = 'video-badge ' + data.video;
+            el.textContent = labels[data.video] || '';
+            el.title = data.last_error ? data.last_error : '';
+        });
+        const err = document.querySelector('.cam-last-error[data-cam="' + data.name + '"]');
+        if (err) err.textContent = data.last_error ? data.last_error + ' (just now)' : 'none';
+        const lv = document.querySelector('.cam-last-video[data-cam="' + data.name + '"]');
+        if (lv && data.video === 'live') lv.textContent = 'just now';
     }
 
     function updateCameraState(name, state, quality) {

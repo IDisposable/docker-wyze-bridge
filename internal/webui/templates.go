@@ -49,6 +49,8 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		Model       string
 		ModelName   string
 		State       string
+		Video       string // live | idle | no_video | unknown (see camera.Video)
+		VideoTitle  string // tooltip: last error / last video time
 		Quality     string
 		IP          string
 		Recording   bool
@@ -68,15 +70,17 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		snap := cam.Snapshot()
 		cams = append(cams, camData{
-			Name:      name,
-			Nickname:  snap.Info.Nickname,
-			Model:     snap.Info.Model,
-			ModelName: snap.Info.ModelName(),
-			State:     snap.State.String(),
-			Quality:   snap.Quality,
-			IP:        snap.Info.LanIP,
-			Recording: recording,
-			RTSPURL:   template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
+			Name:       name,
+			Nickname:   snap.Info.Nickname,
+			Model:      snap.Info.Model,
+			ModelName:  snap.Info.ModelName(),
+			State:      snap.State.String(),
+			Video:      snap.Video.String(),
+			VideoTitle: videoTitle(snap),
+			Quality:    snap.Quality,
+			IP:         snap.Info.LanIP,
+			Recording:  recording,
+			RTSPURL:    template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
 			// Absolute URL through our bridge so it's usable when copied into
 			// an external HLS player. Relative paths work in-browser too but
 			// break when pasted elsewhere.
@@ -87,7 +91,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	tmpl, err := template.New("index").Parse(indexHTML)
+	tmpl, err := template.New("index").Funcs(templateFuncs).Parse(indexHTML)
 	if err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		s.log.Error().Err(err).Msg("index template parse error")
@@ -141,26 +145,30 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 	}
 	snap := cam.Snapshot()
 	data := map[string]interface{}{
-		"Version":   s.version,
-		"BasePath":  basePath,
-		"Name":      name,
-		"Nickname":  snap.Info.Nickname,
-		"Model":     snap.Info.Model,
-		"ModelName": snap.Info.ModelName(),
-		"State":     snap.State.String(),
-		"Quality":   snap.Quality,
-		"Audio":     snap.AudioOn,
-		"Recording": recording,
-		"IP":        snap.Info.LanIP,
-		"MAC":       snap.Info.MAC,
-		"FWVersion": snap.Info.FWVersion,
-		"RTSPURL":   template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
-		"HLSURL":    fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
-		"Go2RTCURL": fmt.Sprintf("%s/ws?src=%s", basePath, name),
-		"BridgeIP":  bridgeIP,
+		"Version":    s.version,
+		"BasePath":   basePath,
+		"Name":       name,
+		"Nickname":   snap.Info.Nickname,
+		"Model":      snap.Info.Model,
+		"ModelName":  snap.Info.ModelName(),
+		"State":      snap.State.String(),
+		"Video":      snap.Video.String(),
+		"VideoTitle": videoTitle(snap),
+		"LastVideo":  formatWhen(snap.LastVideo),
+		"LastError":  formatError(snap),
+		"Quality":    snap.Quality,
+		"Audio":      snap.AudioOn,
+		"Recording":  recording,
+		"IP":         snap.Info.LanIP,
+		"MAC":        snap.Info.MAC,
+		"FWVersion":  snap.Info.FWVersion,
+		"RTSPURL":    template.URL(fmt.Sprintf("rtsp://%s:8554/%s", bridgeIP, name)),
+		"HLSURL":     fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
+		"Go2RTCURL":  fmt.Sprintf("%s/ws?src=%s", basePath, name),
+		"BridgeIP":   bridgeIP,
 	}
 
-	tmpl, err := template.New("camera").Parse(cameraHTML)
+	tmpl, err := template.New("camera").Funcs(templateFuncs).Parse(cameraHTML)
 	if err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
@@ -168,6 +176,67 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	tmpl.Execute(w, data)
+}
+
+// templateFuncs are the helpers the embedded pages use.
+var templateFuncs = template.FuncMap{
+	"videoLabel": videoLabel,
+}
+
+// videoLabel is the badge text for a camera.Video string. "unknown"
+// renders empty so cameras that aren't streaming show no second badge.
+func videoLabel(video string) string {
+	switch video {
+	case "live":
+		return "live"
+	case "idle":
+		return "idle"
+	case "no_video":
+		return "no video"
+	default:
+		return ""
+	}
+}
+
+// videoTitle is the tooltip behind the video badge: the last go2rtc
+// error with its age, or when video last flowed.
+func videoTitle(snap camera.Snapshot) string {
+	switch {
+	case snap.LastError != "":
+		return formatError(snap)
+	case !snap.LastVideo.IsZero():
+		return "last video " + formatWhen(snap.LastVideo)
+	case snap.Video == camera.VideoIdle:
+		return "nobody is pulling this stream"
+	default:
+		return ""
+	}
+}
+
+// formatWhen renders a timestamp as a short relative age, or "never".
+func formatWhen(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	d := time.Since(t).Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return t.Local().Format("2006-01-02 15:04")
+	}
+}
+
+// formatError renders the last stream error with its age, or "none".
+func formatError(snap camera.Snapshot) string {
+	if snap.LastError == "" {
+		return "none"
+	}
+	return snap.LastError + " (" + formatWhen(snap.LastErrorAt) + ")"
 }
 
 const indexHTML = `<!DOCTYPE html>
@@ -201,6 +270,7 @@ const indexHTML = `<!DOCTYPE html>
                          onerror="this.style.display='none'">
                     {{end}}
                     <span class="state-badge {{.State}}">{{.State}}</span>
+                    <span class="video-badge {{.Video}}" data-cam="{{.Name}}" title="{{.VideoTitle}}">{{videoLabel .Video}}</span>
                     <a class="camera-preview-overlay" href="{{$.BasePath}}/camera/{{.Name}}" aria-label="{{.Nickname}} details"></a>
                 </div>
                 <a href="{{$.BasePath}}/camera/{{.Name}}" class="camera-info">
@@ -269,7 +339,9 @@ const cameraHTML = `<!DOCTYPE html>
         <div class="camera-meta">
             <table>
                 <tr><td>Model</td><td>{{.ModelName}} ({{.Model}})</td></tr>
-                <tr><td>State</td><td><span class="state-badge {{.State}}">{{.State}}</span></td></tr>
+                <tr><td>State</td><td><span class="state-badge {{.State}}">{{.State}}</span> <span class="video-badge {{.Video}}" data-cam="{{.Name}}" title="{{.VideoTitle}}">{{videoLabel .Video}}</span></td></tr>
+                <tr><td>Last video</td><td class="cam-last-video" data-cam="{{.Name}}">{{.LastVideo}}</td></tr>
+                <tr><td>Last error</td><td class="cam-last-error" data-cam="{{.Name}}">{{.LastError}}</td></tr>
                 <tr><td>Quality</td><td id="quality">{{.Quality}}</td></tr>
                 <tr><td>Audio</td><td>{{.Audio}}</td></tr>
                 <tr><td>IP</td><td class="cam-ip" data-cam="{{.Name}}">{{.IP}}</td></tr>

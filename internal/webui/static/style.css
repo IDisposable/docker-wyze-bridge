@@ -129,6 +129,27 @@ main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
 .state-badge.offline, .state-badge.error { background: var(--error); color: #fff; }
 .state-badge.discovering { background: var(--accent-bright); color: #fff; }
 
+/* Video badge: is video actually flowing? Sits next to the state badge.
+   live = bytes arriving; idle = nobody pulling (normal); no video =
+   pulled but nothing arrives, or go2rtc reported a stream error (the
+   tooltip carries the reason). Unknown renders empty and is hidden. */
+.video-badge {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.video-badge.unknown, .video-badge:empty { display: none; }
+.video-badge.live { background: var(--success); color: #fff; }
+.video-badge.idle { background: var(--border); color: var(--text-dim); }
+.video-badge.no_video { background: var(--warning); color: #1a1a2e; }
+.camera-meta .video-badge { position: static; margin-left: 0.4rem; }
+
 .camera-info { padding: 0.8rem 1rem; }
 .camera-info h3 { font-size: 1rem; margin-bottom: 0.2rem; }
 .camera-info p { font-size: 0.8rem; color: var(--text-dim); }
