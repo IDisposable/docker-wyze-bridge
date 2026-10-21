@@ -120,6 +120,12 @@ func main() {
 	if len(state.Ignored) > 0 {
 		log.Info().Int("count", len(state.Ignored)).Msg("restored ignore list from state file")
 	}
+	// Operator-pinned addresses go in before discovery too, so a pinned
+	// camera is never dialed at the cloud's address even once.
+	camMgr.SetPinnedIPs(state.PinnedIPs)
+	if len(state.PinnedIPs) > 0 {
+		log.Info().Int("count", len(state.PinnedIPs)).Msg("restored pinned addresses from state file")
+	}
 	var lanResolver *lanresolve.Resolver
 	if cfg.LanIPResolve {
 		// Verifies TUTK cameras' LAN addresses by MAC before go2rtc
@@ -494,6 +500,10 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 	// and the next state save would otherwise bring the camera back.
 	camMgr.OnIgnoreChange(func(list []wyzeapi.IgnoredCamera) {
 		state.SetIgnored(list)
+		persistState(state, apiClient, cfg.StateDir)
+	})
+	camMgr.OnPinChange(func(pins map[string]string) {
+		state.SetPinnedIPs(pins)
 		persistState(state, apiClient, cfg.StateDir)
 	})
 

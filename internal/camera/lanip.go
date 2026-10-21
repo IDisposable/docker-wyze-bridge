@@ -62,6 +62,23 @@ func (m *Manager) resolveLanIP(ctx context.Context, cam *Camera) bool {
 	}
 	cloud, resolved := cam.LanIPs()
 	info := cam.GetInfo()
+	if pin := cam.PinnedIP(); pin != "" {
+		// The operator said where the camera is; the ladder stays out
+		// of it. One probe just keeps the "verified" line honest, and a
+		// camera that doesn't answer at its pin isn't counted as absent
+		// — that's the operator's call, and the pin may be for a
+		// network ARP can't see.
+		if ok, err := r.Check(ctx, pin, info.MAC); err == nil && ok {
+			cam.noteLanVerified("pinned")
+		} else {
+			cam.noteLanMisses(0)
+			m.log.Debug().Err(err).Str("cam", cam.Name()).Str("ip", pin).Msg("pinned address didn't answer an ARP probe (using it anyway)")
+		}
+		if m.onLanStatus != nil {
+			m.onLanStatus(cam)
+		}
+		return false
+	}
 	res := r.Resolve(ctx, lanresolve.Target{
 		Name:    cam.Name(),
 		MAC:     info.MAC,
@@ -122,7 +139,7 @@ func (m *Manager) RecheckLanIPs(ctx context.Context) {
 	m.mu.RLock()
 	var cams []*Camera
 	for _, c := range m.cameras {
-		if c.GetState() != StateStreaming {
+		if c.GetState() != StateStreaming || c.PinnedIP() != "" {
 			continue
 		}
 		if _, protocol := m.streamSourceFor(c); protocol != "tutk" {

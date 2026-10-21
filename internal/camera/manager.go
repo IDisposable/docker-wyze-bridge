@@ -49,6 +49,9 @@ type Manager struct {
 	resolver      LANResolver
 	onLanIPChange func(cam *Camera, oldIP, newIP, source string)
 	onLanStatus   func(cam *Camera)
+	// pins are operator-pinned addresses by MAC; see pin.go.
+	pins        map[string]string
+	onPinChange func(pins map[string]string)
 	// ignored is the operator's runtime ignore list keyed by MAC; see
 	// ignore.go. onAdded / onRemoved fire when a camera enters or
 	// leaves the registry so the WebUI, MQTT and recording can follow.
@@ -216,12 +219,13 @@ func (m *Manager) Discover(ctx context.Context) error {
 				m.cfg.CamAudio(name),
 				m.cfg.CamRecord(name),
 			)
+			m.applyPinLocked(cam)
 			m.cameras[name] = cam
 			added = append(added, cam)
 			m.log.Info().
 				Str("cam", name).
 				Str("model", info.ModelName()).
-				Str("ip", info.LanIP).
+				Str("ip", cam.GetInfo().LanIP).
 				Msg("new camera added")
 		}
 	}

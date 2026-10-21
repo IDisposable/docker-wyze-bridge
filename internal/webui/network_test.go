@@ -2,6 +2,8 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -196,5 +198,76 @@ func TestRenderIndex_LanHint(t *testing.T) {
 	srv.handleIndex(w, httptest.NewRequest("GET", "/", nil))
 	if !strings.Contains(w.Body.String(), `class="lan-hint" data-cam="garage" hidden>`) {
 		t.Error("one miss should not show the hint")
+	}
+}
+
+func TestHandleAPICameraAction_Pin(t *testing.T) {
+	// Pinning an IP applies it, persists it, logs it and shows it on the
+	// detail page; bad bodies change nothing and an empty IP unpins it.
+	// Cameras that aren't dialed on the LAN can't be pinned.
+	srv, _ := testServer(t)
+	srv.SetMetricsSources(nil, nil, nil, NewEventLog(10))
+	cam := injectStreamingCamera(srv, "garage")
+	var saved []map[string]string
+	srv.camMgr.OnPinChange(func(pins map[string]string) { saved = append(saved, pins) })
+
+	post := func(body string) (*httptest.ResponseRecorder, map[string]interface{}) {
+		w := httptest.NewRecorder()
+		srv.handleAPICameraAction(w, httptest.NewRequest("POST", "/api/cameras/garage/pin", strings.NewReader(body)))
+		var out map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w, out
+	}
+
+	w, out := post(`{"ip":"10.0.0.200"}`)
+	if w.Code != http.StatusOK || out["ip"] != "10.0.0.200" || out["pinned_ip"] != "10.0.0.200" {
+		t.Fatalf("pin: %d %s", w.Code, w.Body.String())
+	}
+	if cam.GetInfo().LanIP != "10.0.0.200" || len(saved) != 1 {
+		t.Errorf("pin not applied/persisted: ip=%s saved=%v", cam.GetInfo().LanIP, saved)
+	}
+	if ev := srv.Events().Snapshot(); len(ev) == 0 || ev[0].Kind != "lan_ip" || !strings.Contains(ev[0].Message, "pinned to 10.0.0.200") {
+		t.Errorf("event log: %+v", ev)
+	}
+
+	// The detail page shows the pin in the form with the Clear button.
+	w = httptest.NewRecorder()
+	srv.handleCameraPage(w, httptest.NewRequest("GET", "/camera/garage", nil))
+	body := w.Body.String()
+	for _, want := range []string{`class="pin-form" data-cam="garage"`, `class="pin-ip" name="ip" value="10.0.0.200"`, `class="unpin-btn">Clear`, `class="cam-ip" data-cam="garage">10.0.0.200<`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail page missing %q", want)
+		}
+	}
+
+	for _, bad := range []string{`{"ip":"garage"}`, `{"ip":"fe80::1"}`, `not json`} {
+		if w, _ := post(bad); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", bad, w.Code)
+		}
+	}
+	if cam.GetInfo().LanIP != "10.0.0.200" || len(saved) != 1 {
+		t.Error("rejected bodies must not change the pin")
+	}
+
+	// Clear.
+	w, out = post(`{"ip":""}`)
+	if w.Code != http.StatusOK || out["ip"] != "10.0.0.1" || out["pinned_ip"] != "" {
+		t.Fatalf("unpin: %d %s", w.Code, w.Body.String())
+	}
+	if len(saved) != 2 || len(saved[1]) != 0 {
+		t.Errorf("unpin persist: %v", saved)
+	}
+	w = httptest.NewRecorder()
+	srv.handleCameraPage(w, httptest.NewRequest("GET", "/camera/garage", nil))
+	if !strings.Contains(w.Body.String(), `class="unpin-btn" hidden>Clear`) {
+		t.Error("Clear button should be hidden without a pin")
+	}
+
+	// Not a LAN camera: refused.
+	srv.camMgr.InjectCamera("doorbell", camera.NewCamera(wyzeapi.CameraInfo{Name: "doorbell", Model: "GW_BE1", MAC: "AABBCCDD001122", LanIP: "10.0.0.9"}, "hd", true, false))
+	w = httptest.NewRecorder()
+	srv.handleAPICameraAction(w, httptest.NewRequest("POST", "/api/cameras/doorbell/pin", strings.NewReader(`{"ip":"10.0.0.10"}`)))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "TUTK") {
+		t.Errorf("doorbell pin: %d %s", w.Code, w.Body.String())
 	}
 }

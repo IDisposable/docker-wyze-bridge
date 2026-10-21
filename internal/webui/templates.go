@@ -194,6 +194,7 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"LanVerified": formatWhen(snap.LanVerifiedAt),
 		"LanMisses":   snap.LanMisses,
 		"LanResolver": s.lanResolverLabel(),
+		"PinnedIP":    snap.PinnedIP,
 	}
 
 	tmpl, err := template.New("camera").Funcs(templateFuncs).Parse(cameraHTML)
@@ -273,6 +274,8 @@ func LanSourceLabel(source string) string {
 		return "the kernel's neighbor cache"
 	case "sweep":
 		return "a LAN sweep"
+	case "pinned":
+		return "the pinned address"
 	default:
 		return ""
 	}
@@ -453,6 +456,14 @@ const cameraHTML = `<!DOCTYPE html>
                 <tr><td>Cloud says</td><td class="cam-cloud-ip">{{if .CloudIP}}{{.CloudIP}}{{else}}no address{{end}}</td></tr>
                 <tr><td>Verified</td><td class="cam-lan-status">{{if .LanSource}}{{.LanVerified}} via {{.LanSource}}{{else}}never{{end}}{{if gt .LanMisses 0}}; {{.LanMisses}} LAN sweep{{if gt .LanMisses 1}}s{{end}} in a row didn't hear it{{end}}</td></tr>
                 <tr><td>Resolver</td><td>{{.LanResolver}}</td></tr>
+                <tr><td>Pinned</td><td>
+                    <form class="pin-form" data-cam="{{.Name}}" autocomplete="off">
+                        <input type="text" class="pin-ip" name="ip" value="{{.PinnedIP}}" placeholder="e.g. 192.168.4.151" inputmode="decimal" spellcheck="false" aria-label="Pinned address">
+                        <button type="submit" class="pin-btn">Pin</button>
+                        <button type="button" class="unpin-btn"{{if not .PinnedIP}} hidden{{end}}>Clear</button>
+                        <small>Use this address no matter what the cloud or the resolver say (for a camera ARP can't reach).</small>
+                    </form>
+                </td></tr>
                 {{else}}
                 <tr><td>Resolver</td><td>not used: this camera isn't dialed on the LAN</td></tr>
                 {{end}}

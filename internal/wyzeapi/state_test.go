@@ -3,6 +3,7 @@ package wyzeapi
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -242,5 +243,41 @@ func TestStateFile_LayoutRotationRoundTrip(t *testing.T) {
 	sf.SetLayout(Layout{Order: []string{"garage"}})
 	if sf.Layout.Rotation != nil {
 		t.Error("empty rotation should be stored as nil")
+	}
+}
+
+func TestStateFile_PinnedIPsRoundTrip(t *testing.T) {
+	// Pinned LAN IPs are saved under pinned_ips and load back as set, even
+	// if the caller edits its map afterwards. Clearing the last pin drops
+	// the field from the file.
+	dir := t.TempDir()
+	sf := &StateFile{Cameras: map[string]CameraInfo{}}
+	pins := map[string]string{"D03F27B081EF": "192.168.4.200"}
+	sf.SetPinnedIPs(pins)
+	pins["D03F27B081EF"] = "mutated" // SetPinnedIPs must have copied
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadState(dir, zerolog.Nop())
+	if loaded.PinnedIPs["D03F27B081EF"] != "192.168.4.200" {
+		t.Errorf("pinned_ips = %v", loaded.PinnedIPs)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "wyze-bridge.state.json"))
+	if !strings.Contains(string(data), `"pinned_ips"`) {
+		t.Error("pins should be in the file under pinned_ips")
+	}
+
+	// Clearing the last pin drops the field from the file entirely.
+	sf.SetPinnedIPs(nil)
+	if err := sf.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(filepath.Join(dir, "wyze-bridge.state.json"))
+	if strings.Contains(string(data), `"pinned_ips"`) {
+		t.Error("an empty pin map should be omitted from the file")
+	}
+	loaded, _ = LoadState(dir, zerolog.Nop())
+	if len(loaded.PinnedIPs) != 0 {
+		t.Errorf("after clear: %v", loaded.PinnedIPs)
 	}
 }

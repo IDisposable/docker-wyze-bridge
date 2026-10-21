@@ -173,6 +173,14 @@ missed it, and which engine is running. The same fields are in
 `/api/cameras` as `lan_ip_source`, `lan_ip_verified_at` and
 `lan_sweep_misses`.
 
+For the odd camera ARP can't reach (on a VLAN the container doesn't sit
+on, say) the same box has a **Pinned** field: type the address, click
+**Pin**, and the bridge uses it no matter what the cloud or the
+resolver say, across restarts, until you **Clear** it. Pins are kept by
+MAC in the state file and only make sense for cameras the bridge dials
+directly (TUTK); doorbells and OG cameras are refused. REST: `POST
+/api/cameras/{name}/pin` with `{"ip":"192.168.4.151"}`, empty to unpin.
+
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | `LAN_IP_RESOLVE` | `true` | Verify TUTK cameras' LAN addresses by MAC before go2rtc dials them |

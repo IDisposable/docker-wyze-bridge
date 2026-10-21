@@ -62,6 +62,10 @@ type Camera struct {
 	// can't put the stale address back; the resolver clears it when
 	// the cloud catches up. See internal/lanresolve.
 	lanIP string
+	// pinnedIP is an operator-set address (detail page / state file)
+	// that beats both the cloud's and the resolver's. For cameras the
+	// resolver can't reach, e.g. on a VLAN ARP doesn't cross.
+	pinnedIP string
 	// How the resolver last did with this camera, for the detail page
 	// and /api/cameras: lanSource is the rung that verified the current
 	// address ("" until one has), lanVerifiedAt when it last verified
@@ -220,12 +224,36 @@ func (c *Camera) GetInfo() wyzeapi.CameraInfo {
 }
 
 // info is GetInfo without the lock, for callers that already hold it.
+// Address precedence: pinned by the operator, then resolver-verified,
+// then whatever the cloud said.
 func (c *Camera) info() wyzeapi.CameraInfo {
 	info := c.Info
-	if c.lanIP != "" {
+	switch {
+	case c.pinnedIP != "":
+		info.LanIP = c.pinnedIP
+	case c.lanIP != "":
 		info.LanIP = c.lanIP
 	}
 	return info
+}
+
+// PinnedIP returns the operator-pinned address, "" when none.
+func (c *Camera) PinnedIP() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.pinnedIP
+}
+
+// SetPinnedIP pins (or with "" unpins) the camera's address. Returns
+// true when the effective address — what GetInfo and StreamURL report
+// — actually changed. The resolver's override is kept underneath so
+// unpinning falls back to it, not to the cloud's possibly stale value.
+func (c *Camera) SetPinnedIP(ip string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	before := c.info().LanIP
+	c.pinnedIP = ip
+	return c.info().LanIP != before
 }
 
 // LanIPs returns the address the Wyze cloud reports and the one the
@@ -361,6 +389,9 @@ type Snapshot struct {
 	// LanAbsent is true once enough sweeps in a row missed the camera
 	// that it's probably not on this LAN (see lanAbsentAfter).
 	LanAbsent bool
+	// PinnedIP is the operator-set address, "" when none; Info.LanIP
+	// already reflects it.
+	PinnedIP string
 }
 
 // Snapshot returns a consistent view of the camera under RLock.
@@ -385,6 +416,7 @@ func (c *Camera) Snapshot() Snapshot {
 		LanVerifiedAt: c.lanVerifiedAt,
 		LanMisses:     c.lanMisses,
 		LanAbsent:     c.lanAbsent(),
+		PinnedIP:      c.pinnedIP,
 	}
 }
 
@@ -418,5 +450,6 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 		"lan_ip_verified_at": c.lanVerifiedAt,
 		"lan_sweep_misses":   c.lanMisses,
 		"lan_absent":         c.lanAbsent(),
+		"pinned_ip":          c.pinnedIP,
 	}
 }
