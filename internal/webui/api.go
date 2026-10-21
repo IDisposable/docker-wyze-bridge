@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
 // handleFavicon serves the embedded icon.png as the tab favicon.
@@ -173,9 +175,66 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			"recording": s.recMgr.IsRecording(name),
 		})
 
+	case action == "ignore" && r.Method == "POST":
+		// Drops the camera from the registry for good (persisted by
+		// MAC); /api/ignored/<mac>/restore brings it back.
+		entry, err := s.camMgr.Ignore(reqCtx, name)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "ignore", Camera: name, Message: "ignored (" + entry.MAC + ")"})
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "ignored": entry})
+
 	default:
 		writeJSONError(w, http.StatusNotFound, "not found")
 	}
+}
+
+// handleAPIIgnored lists the operator's ignore list.
+func (s *Server) handleAPIIgnored(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	list := s.camMgr.Ignored()
+	if list == nil {
+		list = []wyzeapi.IgnoredCamera{}
+	}
+	writeJSON(w, list)
+}
+
+// handleAPIIgnoredAction handles POST /api/ignored/{mac}/restore: takes
+// the MAC off the list and kicks a rediscovery so the camera comes
+// back without waiting for the next refresh. The discovery runs
+// asynchronously like the Rediscover button's; the camera_added SSE
+// event tells the dashboard when the card is back.
+func (s *Server) handleAPIIgnoredAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/ignored/")
+	parts := strings.SplitN(path, "/", 2)
+	mac := parts[0]
+	if mac == "" || len(parts) < 2 || parts[1] != "restore" {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	entry, err := s.camMgr.Unignore(mac)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if evLog := s.Events(); evLog != nil {
+		evLog.Record(Event{Kind: "ignore", Camera: entry.Nickname, Message: "restored (" + entry.MAC + ")"})
+	}
+	if s.onDiscoverReq != nil {
+		go s.onDiscoverReq(s.rootCtx)
+	}
+	writeJSON(w, map[string]interface{}{"status": "ok", "restored": entry})
 }
 
 // recordingController is satisfied by recording.Manager. Kept as an

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
 // ingressBasePath returns the HA ingress path prefix from the
@@ -93,9 +94,32 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ignored cameras get their own strip under the grid so an
+	// accidental click is one "Restore" away from undone.
+	type ignoredData struct {
+		MAC      string
+		Nickname string
+		Model    string
+		Since    string
+	}
+	var ignored []ignoredData
+	for _, ic := range s.camMgr.Ignored() {
+		nick := ic.Nickname
+		if nick == "" {
+			nick = ic.MAC
+		}
+		ignored = append(ignored, ignoredData{
+			MAC:      ic.MAC,
+			Nickname: nick,
+			Model:    wyzeapi.CameraInfo{Model: ic.Model}.ModelName(),
+			Since:    ic.Since.Local().Format("2006-01-02 15:04"),
+		})
+	}
+
 	data := map[string]interface{}{
 		"Version":  s.version,
 		"Cameras":  cams,
+		"Ignored":  ignored,
 		"Uptime":   int(time.Since(s.startTime).Seconds()),
 		"BasePath": basePath,
 	}
@@ -188,6 +212,7 @@ const indexHTML = `<!DOCTYPE html>
                     <button type="button" class="copy-btn" data-url="{{.HLSURL}}" title="Click to copy HLS URL (paste into VLC or an HLS player — Chrome/Firefox can't play HLS natively)">HLS</button>
                     <button type="button" class="snap-btn" data-cam="{{.Name}}" title="Take snapshot (saves to SNAPSHOT_PATH)" aria-label="Take snapshot">📷</button>
                     <button type="button" class="record-btn {{if .Recording}}on{{end}}" data-cam="{{.Name}}" data-recording="{{.Recording}}" title="{{if .Recording}}Stop recording{{else}}Start recording{{end}}" aria-label="{{if .Recording}}Stop recording{{else}}Start recording{{end}}">{{if .Recording}}⏹{{else}}⏺{{end}}</button>
+                    <button type="button" class="ignore-btn" data-cam="{{.Name}}" data-nickname="{{.Nickname}}" title="Ignore this camera (stops reconnecting, hides it; restore from the list below)" aria-label="Ignore camera">🚫</button>
                 </div>
             </div>
         {{else}}
@@ -196,6 +221,23 @@ const indexHTML = `<!DOCTYPE html>
             </div>
         {{end}}
         </div>
+        {{if .Ignored}}
+        <section class="ignored" id="ignored">
+            <h2>Ignored cameras <small>not connected, not shown, not retried</small></h2>
+            <table>
+                <tr><th>Camera</th><th>Model</th><th>MAC</th><th>Since</th><th></th></tr>
+                {{range .Ignored}}
+                <tr data-mac="{{.MAC}}">
+                    <td>{{.Nickname}}</td>
+                    <td>{{.Model}}</td>
+                    <td><code>{{.MAC}}</code></td>
+                    <td>{{.Since}}</td>
+                    <td><button type="button" class="restore-btn" data-mac="{{.MAC}}" title="Stop ignoring and rediscover">Restore</button></td>
+                </tr>
+                {{end}}
+            </table>
+        </section>
+        {{end}}
     </main>
     <script src="{{.BasePath}}/static/app.js"></script>
 </body>

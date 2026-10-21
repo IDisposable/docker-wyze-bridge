@@ -44,6 +44,7 @@ image: idisposablegithub365/wyze-bridge:go
 | **Gwell / WebRTC support** | OG-family Gwell cameras (GW_GC1/GC2) + Doorbell lineage (GW_BE1 / GW_DBD) now work end-to-end. See [Gwell Cameras Now Supported](#new-gwell-cameras-now-supported). |
 | **Record start/stop in the UI** | Every camera card has a record button. Click starts per-camera `ffmpeg -f segment`; click again stops it. Also flipped via MQTT or `POST /api/cameras/<name>/record`. |
 | **Observability surfaces** | `/metrics` HTML dashboard, `/metrics.prom` Prometheus exposition, `/api/metrics` JSON, expanded `/api/health`, auto-generated `/dashboard.yaml` for Home Assistant. |
+| **Ignore list in the WebUI (4.6)** | Each camera card has a 🚫 button; ignored cameras are dropped from go2rtc, hidden, never retried, remembered by MAC in the state file, and restorable from a strip at the bottom of the dashboard. `GET /api/ignored`, `POST /api/cameras/{name}/ignore`, `POST /api/ignored/{mac}/restore`. |
 | **MQTT metric topics** | Bridge-wide gauges at `<topic>/bridge/*` (uptime, camera counts, config errors, recordings size) + per-camera `<topic>/<cam>/recording`. All auto-created via HA discovery. See [DOCS/MQTT_SPEC.md](DOCS/MQTT_SPEC.md) for complete details |
 
 ## Breaking Changes

@@ -344,6 +344,17 @@ FILTER_MODELS=WYZECP1_JEF           # By model code (comma-separated)
 FILTER_MACS=AA:BB:CC:DD:EE:FF       # By MAC
 ```
 
+**Ignore list (4.6+).** Every camera card on the dashboard has a 🚫
+button. Ignoring a camera drops it from go2rtc, hides it, stops the
+reconnect attempts and LAN sweeps for it, and remembers its MAC in
+the state file so it stays gone across restarts — handy for cameras
+on your Wyze account that aren't on this LAN (a relative's house, a
+shared camera). Ignored cameras are listed at the bottom of the
+dashboard with a **Restore** button; restoring rediscovers right
+away. The env filters above still apply first. REST: `GET
+/api/ignored`, `POST /api/cameras/{name}/ignore`, `POST
+/api/ignored/{mac}/restore`.
+
 ### Snapshots
 
 JPEG frames grabbed periodically or on sunrise/sunset events via go2rtc's

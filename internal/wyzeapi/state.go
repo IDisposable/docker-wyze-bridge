@@ -17,9 +17,31 @@ import (
 type StateFile struct {
 	Auth    *AuthState            `json:"auth,omitempty"`
 	Cameras map[string]CameraInfo `json:"cameras"` // keyed by MAC
-	Updated time.Time             `json:"updated"`
+	// Ignored is the operator's WebUI ignore list. Lives here rather
+	// than in config because it's edited at runtime and must survive
+	// restarts without a redeploy. See camera.Manager.Ignore.
+	Ignored []IgnoredCamera `json:"ignored,omitempty"`
+	Updated time.Time       `json:"updated"`
 
 	writeMu sync.Mutex
+}
+
+// IgnoredCamera is a camera the operator told the bridge to leave
+// alone. Keyed by MAC because nicknames change; the nickname and model
+// are carried only so the ignored list in the WebUI reads well.
+type IgnoredCamera struct {
+	MAC      string    `json:"mac"`
+	Nickname string    `json:"nickname,omitempty"`
+	Model    string    `json:"model,omitempty"`
+	Since    time.Time `json:"since"`
+}
+
+// SetIgnored replaces the ignore list under the same lock Save uses,
+// so a save racing the edit never marshals a half-written slice.
+func (sf *StateFile) SetIgnored(list []IgnoredCamera) {
+	sf.writeMu.Lock()
+	sf.Ignored = append([]IgnoredCamera(nil), list...)
+	sf.writeMu.Unlock()
 }
 
 // LoadState reads the state file from disk.
