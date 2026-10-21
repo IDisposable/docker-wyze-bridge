@@ -342,6 +342,10 @@ type Camera struct {
 
 **IP refresh:** On connection failure, re-query Wyze API for current device IP before next attempt. DHCP assigns can change.
 
+**LAN IP resolution (`internal/lanresolve/`, 4.6+):** The cloud's IP is a hint, not the truth — it can lag a DHCP change by hours. Before a TUTK camera's `wyze://` URL is handed to go2rtc, `Manager.resolveLanIP` asks the resolver where the camera's MAC is actually answering: (1) probe the cloud IP and the last verified IP over ARP; (2) try addresses an earlier sweep or the kernel's neighbor cache (netlink `RTM_GETNEIGH`) already associate with the MAC; (3) a paced ARP sweep of the camera's `/24`, then the rest of the local subnet (capped at a `/22`, one sweep at a time LAN-wide, per-camera backoff doubling to 1h, every reply remembered so one sweep serves every camera); (4) give up and keep the address the camera already had. A verified address that differs from the cloud's is stored on the `Camera` as an override that `GetInfo` / `Snapshot` / `StreamURL` / `StatusJSON` all apply, so the stream URL, WebUI, MQTT and webhooks agree, and that survives the 30-minute cloud refresh. The ARP engine needs `CAP_NET_RAW` (Docker default); otherwise a neighbor-cache engine nudges the kernel with a UDP datagram and reads its cache, which trusts STALE entries and so can trail a moved camera by about a minute. Env: `LAN_IP_RESOLVE`, `LAN_IP_SWEEP`, `LAN_IP_RECHECK`.
+
+**LAN IP recheck:** Every `LAN_IP_RECHECK` (default 2m) `Manager.RecheckLanIPs` probes each streaming TUTK camera at its current address (one ARP round trip). A camera that no longer answers gets the full resolver; only a *verified, different* address triggers a go2rtc re-register (`DeleteStream` + `AddStream`), so an unreachable or sleeping camera never flaps. go2rtc only dials when a consumer pulls and never reports a failed dial back, which is why this runs on a timer rather than on an error.
+
 **Health polling:** Every 30s, `GET /api/streams` from go2rtc API. Any camera expected to be streaming but showing no active producer transitions to reconnecting.
 
 #### 5.3.2 Camera Filter
@@ -494,7 +498,7 @@ GET  /metrics.prom               Prometheus text exposition (unauthenticated by 
 GET  /dashboard.yaml             Auto-generated Lovelace YAML referencing MQTT entities
 
 GET  /events                     SSE stream: camera_state, camera_added, camera_removed,
-                                  snapshot_ready, bridge_status, recording_state
+                                  snapshot_ready, bridge_status, recording_state, camera_ip
 ```
 
 #### 5.5.3 WebRTC Player
@@ -807,6 +811,11 @@ FILTER_BLOCKS       bool     invert: listed cameras are excluded
 QUALITY             string   "hd" | "sd", default "hd"
 AUDIO               bool     default true
 OFFLINE_TIME        int      seconds before marked offline, default 30
+
+# ── LAN IP resolution (TUTK cameras; see 5.3.1) ───────────────────────────────
+LAN_IP_RESOLVE      bool     verify LAN IPs by MAC over ARP before go2rtc dials, default true
+LAN_IP_SWEEP        bool     allow the last-resort ARP sweep of the local subnet, default true
+LAN_IP_RECHECK      string   re-verify streaming cameras this often, "0" disables, default "2m"
 
 # ── Recording ────────────────────────────────────────────────────────────────
 RECORD_ALL          bool     enable recording for all cameras

@@ -219,6 +219,29 @@ Tracked in [#117](https://github.com/IDisposable/docker-wyze-bridge/issues/117),
 [#87](https://github.com/IDisposable/docker-wyze-bridge/issues/87).
 Design + testing notes in `DOCS/TUTK_WEBRTC_FALLBACK_DESIGN.md`.
 
+### Stale LAN IP after a DHCP change (`discovery timeout`)
+
+The Wyze cloud's idea of a camera's LAN IP can lag a DHCP lease
+change by hours. The old bridge took the cloud's word for it, so a
+camera that moved kept being dialed at its old address and every
+pull failed with `wyze: connect failed: discovery timeout` while the
+UI still said `streaming`.
+
+**4.6+ resolves the address on the LAN.** Before a TUTK camera is
+registered with go2rtc the bridge verifies, by MAC over ARP, that
+the cloud IP really is the camera; if not it finds where the MAC
+is answering from (neighbor cache, then a paced ARP sweep) and uses
+that. Streaming cameras are re-verified every `LAN_IP_RECHECK`
+(default `2m`) and re-registered with go2rtc when they move. The
+corrected address is what the WebUI, MQTT and `/api/cameras` show
+(`cloud_ip` keeps the cloud's value) and each correction is a
+`lan_ip` event on `/metrics`. Set `LAN_IP_RESOLVE=false` to get the
+old behavior, `LAN_IP_SWEEP=false` to keep the verification but
+never sweep. Needs `network_mode: host` (TUTK already does) and the
+default `CAP_NET_RAW`; without raw sockets the bridge reads the
+kernel's neighbor cache instead, which can trail a moved camera by
+a minute or so. See README → *Cameras whose LAN IP changed*.
+
 ## Default Behavior Changes (4.0)
 
 The rewrite is a good opportunity to pick sensible defaults. If you
@@ -248,6 +271,9 @@ rely on an earlier behavior, set the env var explicitly.
 | `STUN_SERVER` | `stun:stun.l.google.com:19302` | STUN server for WebRTC |
 | `BRIDGE_API_TOKEN` | — | Bearer token for REST API access (renamed from `WB_API` in 4.0) |
 | `FORCE_IOTC_DETAIL` | `false` | Verbose TUTK/go2rtc logging |
+| `LAN_IP_RESOLVE` | `true` | Verify TUTK cameras' LAN IPs by MAC (ARP) before go2rtc dials them (4.6) |
+| `LAN_IP_SWEEP` | `true` | Allow the last-resort ARP sweep when a camera moved (4.6) |
+| `LAN_IP_RECHECK` | `2m` | Re-verify streaming cameras' addresses this often; `0` disables (4.6) |
 
 ### Ignored Variables (silently dropped)
 

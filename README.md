@@ -139,6 +139,38 @@ Registry → Model Overrides** → `model=HL_CAM4, is_webrtc=true`). To
 disable the auto-fallback entirely, set `TUTK_FALLBACK_THRESHOLD=0` —
 the chronic-error hint still points at the manual override.
 
+### Cameras whose LAN IP changed (`discovery timeout`)
+
+The Wyze cloud reports each camera's LAN IP, but only as of the last
+time the camera phoned home. After a DHCP lease change the cloud can
+lag for hours, and go2rtc keeps dialing the old address: the camera
+shows `streaming` in the UI while every pull ends in
+`wyze: connect failed: discovery timeout`.
+
+**4.6+ checks the LAN itself.** Before a TUTK camera is handed to
+go2rtc, and every `LAN_IP_RECHECK` (default `2m`) while it streams,
+the bridge asks the LAN which address the camera's MAC is answering
+from: first the cloud IP (one ARP round trip, a few milliseconds),
+then any address the kernel's neighbor cache or an earlier sweep
+already associates with that MAC, and as a last resort an ARP sweep
+of the camera's `/24` and the rest of the local subnet. The verified
+address goes into the stream URL, the dashboard, MQTT and
+`/api/cameras` (`cloud_ip` keeps the cloud's value), and shows up as
+a `lan_ip` event on `/metrics`. A camera the bridge can't find keeps
+whatever address it had, so nothing is ever worse than before.
+
+Requirements: `network_mode: host` (TUTK needs it anyway) and
+`CAP_NET_RAW`, which Docker grants by default. Without raw sockets
+the bridge falls back to reading the kernel's neighbor cache, which
+can trail a moved camera by a minute or so. The startup log says
+which engine is active (`LAN IP resolver ready engine=arp`).
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `LAN_IP_RESOLVE` | `true` | Verify TUTK cameras' LAN addresses by MAC before go2rtc dials them |
+| `LAN_IP_SWEEP` | `true` | Allow the last-resort ARP sweep (paced, capped at a `/22`, throttled so an absent camera can't flood the LAN) |
+| `LAN_IP_RECHECK` | `2m` | How often streaming cameras are re-verified; `0` disables |
+
 ## Quick Start
 
 ```bash
