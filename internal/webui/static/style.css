@@ -1,78 +1,326 @@
-/* Wyze Bridge WebUI */
+/* Wyze Bridge WebUI
+   Dark by default, light when the OS asks for it or the ◐ button is
+   used (persisted in localStorage as wb-theme). Everything is driven
+   by the tokens below; no external fonts or scripts. */
 :root {
-    --bg: #1a1a2e;
-    --bg-card: #16213e;
-    --bg-hover: #1a2744;
-    --text: #e0e0e0;
-    --text-dim: #8899aa;
-    --accent: #0f3460;
-    --accent-bright: #5390d9;
-    --success: #4caf50;
-    --warning: #ff9800;
-    --error: #f44336;
-    --border: #2a3a5c;
-    --radius: 8px;
+    color-scheme: dark;
+    --bg: #0e1118;
+    --bg-elev: #141925;
+    --bg-card: #171d2b;
+    --bg-hover: #1d2535;
+    --text: #e8ebf1;
+    --text-dim: #8d97a9;
+    --accent: #223055;
+    --accent-bright: #7aa7ff;
+    --success: #35c76f;
+    --warning: #f2b23c;
+    --error: #ff5c5c;
+    --border: #263044;
+    --ring: rgba(122, 167, 255, 0.45);
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    --radius: 12px;
+    --radius-sm: 6px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+        color-scheme: light;
+        --bg: #f3f5f9;
+        --bg-elev: #ffffff;
+        --bg-card: #ffffff;
+        --bg-hover: #f0f3f8;
+        --text: #182030;
+        --text-dim: #5d6879;
+        --accent: #e9eef8;
+        --accent-bright: #2f6bff;
+        --success: #1f9d55;
+        --warning: #d98a00;
+        --error: #d93636;
+        --border: #dde3ee;
+        --ring: rgba(47, 107, 255, 0.35);
+        --shadow: 0 6px 18px rgba(20, 30, 50, 0.08);
+    }
+}
+:root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f3f5f9;
+    --bg-elev: #ffffff;
+    --bg-card: #ffffff;
+    --bg-hover: #f0f3f8;
+    --text: #182030;
+    --text-dim: #5d6879;
+    --accent: #e9eef8;
+    --accent-bright: #2f6bff;
+    --success: #1f9d55;
+    --warning: #d98a00;
+    --error: #d93636;
+    --border: #dde3ee;
+    --ring: rgba(47, 107, 255, 0.35);
+    --shadow: 0 6px 18px rgba(20, 30, 50, 0.08);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
 }
 
 a { color: var(--accent-bright); text-decoration: none; }
 a:hover { text-decoration: underline; }
+code { font-family: var(--mono); font-size: 0.85em; }
 
+button { font-family: inherit; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* ── Header ─────────────────────────────────────────────────────── */
 header {
-    background: var(--accent);
-    padding: 1rem 2rem;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    padding: 0.7rem 1.5rem;
     display: flex;
     align-items: center;
     gap: 1rem;
-    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
 }
+header h1 { font-size: 1.15rem; font-weight: 650; letter-spacing: -0.01em; }
+header .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    color: inherit;
+}
+header .brand:hover { text-decoration: none; }
+header .brand svg { width: 26px; height: 26px; color: var(--accent-bright); flex: none; }
+header .version {
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--text-dim);
+    background: var(--accent);
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+}
+header .back { color: var(--text-dim); font-size: 0.9rem; }
+header .back:hover { color: var(--text); text-decoration: none; }
 
-header h1 { font-size: 1.3rem; font-weight: 600; }
-header .version { font-weight: 300; color: var(--text-dim); font-size: 0.8rem; }
-header .back { font-size: 1.1rem; }
+/* Summary chips: camera count, live, no video, ignored. app.js keeps
+   them current from the badges on the page. */
+.chips { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.chip {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    background: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.2rem 0.65rem;
+    white-space: nowrap;
+}
+.chip b { color: var(--text); font-weight: 650; margin-right: 0.2rem; }
+.chip.live b { color: var(--success); }
+.chip.warn b { color: var(--warning); }
+.chip.zero { opacity: 0.55; }
+
+.search { margin-left: auto; }
+.search input {
+    width: 190px;
+    max-width: 50vw;
+    padding: 0.4rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+}
+.search input::placeholder { color: var(--text-dim); }
+
 header .header-nav {
-    margin-left: auto;
     display: flex;
-    gap: 1rem;
-    font-size: 0.9rem;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
 }
 header .header-nav a {
-    color: inherit;
-    text-decoration: none;
-    opacity: 0.85;
+    color: var(--text-dim);
+    padding: 0.35rem 0.6rem;
+    border-radius: var(--radius-sm);
 }
-header .header-nav a:hover { opacity: 1; text-decoration: underline; }
-header .discover-btn {
+header .header-nav a:hover { color: var(--text); background: var(--bg-hover); text-decoration: none; }
+header .discover-btn,
+header .lock-btn,
+header .theme-btn {
     background: transparent;
-    color: inherit;
+    color: var(--text);
     border: 1px solid var(--border);
-    padding: 0.35rem 0.8rem;
-    border-radius: 4px;
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
+    line-height: 1.2;
+    white-space: nowrap;
 }
-header .discover-btn:hover:not(:disabled) { background: var(--border); }
-header .discover-btn:disabled { opacity: 0.6; cursor: default; }
-header .lock-btn {
-    background: transparent;
-    color: inherit;
-    border: 1px solid var(--border);
-    padding: 0.35rem 0.8rem;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.9rem;
-    font-family: inherit;
-}
-header .lock-btn:hover:not(:disabled) { background: var(--border); }
+header .theme-btn { padding: 0.35rem 0.5rem; display: inline-flex; align-items: center; }
+header .theme-btn svg { display: block; }
+header .discover-btn:hover:not(:disabled),
+header .lock-btn:hover:not(:disabled),
+header .theme-btn:hover { background: var(--bg-hover); border-color: var(--accent-bright); }
+header .discover-btn:disabled,
 header .lock-btn:disabled { opacity: 0.6; cursor: default; }
+header .lock-btn[data-locked="false"] { border-color: var(--accent-bright); color: var(--accent-bright); }
+
+main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; }
+
+/* ── Camera grid ────────────────────────────────────────────────── */
+.camera-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.25rem;
+}
+
+.camera-card {
+    position: relative;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.camera-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: var(--accent-bright); }
+.camera-card[hidden] { display: none; }
+
+.camera-preview {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    overflow: hidden;
+}
+.camera-preview video-rtc,
+.camera-preview img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+/* Overlay link above the player so a click anywhere on the preview
+   opens the detail page; the badges and the drag handle sit above it. */
+.camera-preview-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+}
+
+/* Badges. State (right) is what go2rtc accepted; video (left) is
+   whether frames are actually arriving. */
+.state-badge,
+.video-badge {
+    position: absolute;
+    top: 0.55rem;
+    z-index: 3;
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+}
+.state-badge { right: 0.55rem; }
+.video-badge { left: 0.55rem; }
+.state-badge.streaming { background: rgba(53, 199, 111, 0.18); color: var(--success); border: 1px solid rgba(53, 199, 111, 0.5); }
+.state-badge.connecting,
+.state-badge.discovering { background: rgba(122, 167, 255, 0.18); color: var(--accent-bright); border: 1px solid rgba(122, 167, 255, 0.5); }
+.state-badge.offline { background: rgba(141, 151, 169, 0.18); color: var(--text-dim); border: 1px solid rgba(141, 151, 169, 0.5); }
+.state-badge.error { background: rgba(255, 92, 92, 0.18); color: var(--error); border: 1px solid rgba(255, 92, 92, 0.5); }
+
+.video-badge::before {
+    content: "";
+    display: inline-block;
+    width: 0.45em;
+    height: 0.45em;
+    border-radius: 50%;
+    background: currentColor;
+    margin-right: 0.4em;
+    vertical-align: 0.08em;
+}
+.video-badge.unknown, .video-badge:empty { display: none; }
+.video-badge.live { background: rgba(0, 0, 0, 0.55); color: var(--success); pointer-events: auto; }
+.video-badge.live::before { box-shadow: 0 0 0 0 currentColor; animation: live-pulse 2s ease-out infinite; }
+.video-badge.idle { background: rgba(0, 0, 0, 0.55); color: #c6cdd8; pointer-events: auto; }
+.video-badge.no_video { background: var(--warning); color: #1a1407; pointer-events: auto; }
+@keyframes live-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(53, 199, 111, 0.6); }
+    100% { box-shadow: 0 0 0 6px rgba(53, 199, 111, 0); }
+}
+.camera-meta .state-badge,
+.camera-meta .video-badge { position: static; display: inline-block; backdrop-filter: none; pointer-events: auto; }
+.camera-meta .video-badge { margin-left: 0.4rem; }
+
+.camera-info { padding: 0.8rem 1rem 0.4rem; color: inherit; }
+.camera-info:hover { text-decoration: none; }
+.camera-info h3 { font-size: 1rem; font-weight: 650; margin-bottom: 0.15rem; }
+.camera-info p { font-size: 0.78rem; color: var(--text-dim); }
+.camera-info .cam-ip { font-family: var(--mono); }
+
+/* Action bar: copy pills on the left, icon buttons on the right. */
+.camera-links {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.75rem 0.75rem;
+    margin-top: auto;
+}
+.camera-links .copy-btn,
+.camera-links .snap-btn,
+.camera-links .record-btn,
+.camera-links .ignore-btn {
+    font-size: 0.72rem;
+    line-height: 1;
+    padding: 0.4rem 0.6rem;
+    background: var(--accent);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.camera-links .copy-btn { font-weight: 650; letter-spacing: 0.03em; }
+.camera-links .copy-btn:hover,
+.camera-links .snap-btn:hover,
+.camera-links .record-btn:hover,
+.camera-links .ignore-btn:hover { color: var(--text); background: var(--bg-hover); border-color: var(--border); }
+.camera-links .copy-btn.copied,
+.camera-links .snap-btn.snapped { background: var(--success); color: #fff; }
+.camera-links .snap-btn { margin-left: auto; }
+.camera-links .snap-btn,
+.camera-links .record-btn,
+.camera-links .ignore-btn { font-size: 0.9rem; padding: 0.3rem 0.5rem; }
+.camera-links .ignore-btn:hover { background: var(--error); color: #fff; }
+.snap-btn:disabled, .ignore-btn:disabled { opacity: 0.6; cursor: wait; }
+
+/* Record button: the `.on` modifier (set by app.js) goes red and
+   pulses so an active recording is unmissable anywhere on the page. */
+.record-btn.on {
+    background: var(--error) !important;
+    color: #fff !important;
+    border-color: transparent !important;
+    animation: record-pulse 2s ease-in-out infinite;
+}
+@keyframes record-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.65; }
+}
 
 /* Tile arrangement. The handle only exists while the grid is in
    arranging mode; a locked grid has nothing to grab, so a stray touch
@@ -84,256 +332,141 @@ header .lock-btn:disabled { opacity: 0.6; cursor: default; }
     top: 0.4rem;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 5; /* above the preview overlay link (z-index 2) */
-    padding: 0 0.5rem;
-    border-radius: 4px;
-    background: rgba(0, 0, 0, 0.55);
+    z-index: 5; /* above the preview overlay link and the badges */
+    padding: 0 0.55rem;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.6);
     color: #fff;
     font-size: 1.1rem;
-    line-height: 1.4;
+    line-height: 1.5;
     cursor: grab;
     touch-action: none;
     user-select: none;
 }
-.camera-grid.arranging .camera-card { position: relative; }
+.camera-grid.arranging .camera-card { outline: 1px dashed var(--border); outline-offset: 3px; }
 .camera-card.dragging { opacity: 0.5; outline: 2px dashed var(--accent-bright); }
-
-main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
-
-/* Camera Grid */
-.camera-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 1rem;
-}
-
-.camera-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    transition: border-color 0.2s;
-}
-.camera-card:hover { border-color: var(--accent-bright); }
-.camera-card a { color: inherit; text-decoration: none; }
-
-.camera-preview {
-    position: relative;
-    background: #000;
-    aspect-ratio: 16/9;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-}
-.camera-preview img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-.camera-preview video-rtc {
-    display: block;
-    width: 100%;
-    height: 100%;
-}
-.camera-preview video-rtc video {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    background: #000;
-}
-/* Invisible click-through overlay so the whole tile navigates to detail
-   EXCEPT the bottom ~32px where the native <video> controls live. */
-.camera-preview-overlay {
-    position: absolute;
-    inset: 0 0 32px 0;
-    z-index: 2;
-}
-
-.state-badge {
-    position: absolute;
-    top: 0.5rem;
-    right: 0.5rem;
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-}
-.state-badge.streaming { background: var(--success); color: #fff; }
-.state-badge.connecting { background: var(--warning); color: #000; }
-.state-badge.offline, .state-badge.error { background: var(--error); color: #fff; }
-.state-badge.discovering { background: var(--accent-bright); color: #fff; }
-
-/* Video badge: is video actually flowing? Sits next to the state badge.
-   live = bytes arriving; idle = nobody pulling (normal); no video =
-   pulled but nothing arrives, or go2rtc reported a stream error (the
-   tooltip carries the reason). Unknown renders empty and is hidden. */
-.video-badge {
-    position: absolute;
-    top: 0.5rem;
-    left: 0.5rem;
-    padding: 0.15rem 0.5rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-.video-badge.unknown, .video-badge:empty { display: none; }
-.video-badge.live { background: var(--success); color: #fff; }
-.video-badge.idle { background: var(--border); color: var(--text-dim); }
-.video-badge.no_video { background: var(--warning); color: #1a1a2e; }
-.camera-meta .video-badge { position: static; margin-left: 0.4rem; }
-
-.camera-info { padding: 0.8rem 1rem; }
-.camera-info h3 { font-size: 1rem; margin-bottom: 0.2rem; }
-.camera-info p { font-size: 0.8rem; color: var(--text-dim); }
-
-.camera-links {
-    display: flex;
-    gap: 0.5rem;
-    padding: 0 1rem 0.8rem;
-}
-.camera-links a,
-.camera-links .copy-btn,
-.camera-links .snap-btn,
-.camera-links .ignore-btn {
-    font-size: 0.7rem;
-    padding: 0.2rem 0.6rem;
-    background: var(--accent);
-    border: none;
-    border-radius: 4px;
-    color: var(--text-dim);
-    cursor: pointer;
-    font-family: inherit;
-}
-.camera-links a:hover,
-.camera-links .copy-btn:hover,
-.camera-links .snap-btn:hover,
-.camera-links .ignore-btn:hover { color: var(--text); text-decoration: none; }
-.camera-links .copy-btn.copied,
-.camera-links .snap-btn.snapped { background: var(--success); color: #fff; }
-/* Push the snapshot icon to the right edge so RTSP/HLS stay grouped. */
-.camera-links .snap-btn { margin-left: auto; padding: 0.15rem 0.4rem; }
-.snap-btn:disabled { opacity: 0.6; cursor: wait; }
-.camera-links .ignore-btn { padding: 0.15rem 0.4rem; }
-.camera-links .ignore-btn:hover { background: var(--error); color: #fff; }
-.ignore-btn:disabled { opacity: 0.6; cursor: wait; }
-
-/* Ignored cameras strip under the grid: the undo for the ignore
-   button, so it lives on the same page rather than behind a menu. */
-.ignored { margin-top: 2rem; color: var(--text-dim); }
-.ignored h2 { font-size: 1rem; color: var(--text); margin-bottom: 0.5rem; }
-.ignored h2 small { font-weight: normal; color: var(--text-dim); margin-left: 0.5rem; }
-.ignored table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
-.ignored th, .ignored td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--border); }
-.ignored th { font-weight: 600; color: var(--text); }
-.ignored .restore-btn {
-    font-size: 0.75rem;
-    padding: 0.2rem 0.6rem;
-    background: var(--accent);
-    border: none;
-    border-radius: 4px;
-    color: var(--text);
-    cursor: pointer;
-    font-family: inherit;
-}
-.ignored .restore-btn:hover:not(:disabled) { background: var(--success); color: #fff; }
-.ignored .restore-btn:disabled { opacity: 0.6; cursor: wait; }
-.actions .snap-btn.snapped { background: var(--success); color: #fff; }
 
 .no-cameras {
     grid-column: 1 / -1;
     text-align: center;
     padding: 3rem;
     color: var(--text-dim);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
 }
 
-/* Camera Detail */
+/* ── Ignored cameras strip ──────────────────────────────────────── */
+.ignored { margin-top: 2rem; color: var(--text-dim); }
+.ignored summary {
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 650;
+    color: var(--text);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.ignored summary::-webkit-details-marker { display: none; }
+.ignored summary::before { content: "▸"; color: var(--text-dim); transition: transform 0.15s ease; }
+.ignored[open] summary::before { transform: rotate(90deg); }
+.ignored summary small { font-weight: normal; color: var(--text-dim); }
+.ignored table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.85rem;
+    margin-top: 0.6rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+.ignored th, .ignored td { text-align: left; padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border); }
+.ignored tr:last-child td { border-bottom: none; }
+.ignored th { font-weight: 600; color: var(--text); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.ignored .restore-btn {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.7rem;
+    background: var(--accent);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    cursor: pointer;
+}
+.ignored .restore-btn:hover:not(:disabled) { background: var(--success); color: #fff; }
+.ignored .restore-btn:disabled { opacity: 0.6; cursor: wait; }
+
+/* ── Camera detail ──────────────────────────────────────────────── */
 .camera-detail {
     display: grid;
-    grid-template-columns: 1fr 350px;
+    grid-template-columns: 1fr 360px;
     gap: 1.5rem;
     align-items: start;
 }
-
 .player-container {
     background: #000;
     border-radius: var(--radius);
     overflow: hidden;
-    aspect-ratio: 16/9;
+    aspect-ratio: 16 / 9;
+    border: 1px solid var(--border);
 }
-.player-container video-rtc {
-    display: block;
-    width: 100%;
-    height: 100%;
-}
+.player-container video-rtc { width: 100%; height: 100%; display: block; }
 
 .camera-meta {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 1rem;
+    padding: 1rem 1.25rem;
 }
-.camera-meta table { width: 100%; border-collapse: collapse; }
-.camera-meta td {
-    padding: 0.4rem 0;
-    font-size: 0.85rem;
-    border-bottom: 1px solid var(--border);
-}
-.camera-meta td:first-child { color: var(--text-dim); width: 40%; }
+.camera-meta table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.camera-meta td { padding: 0.45rem 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.camera-meta tr:last-child td { border-bottom: none; }
+.camera-meta td:first-child { color: var(--text-dim); width: 34%; }
+.camera-meta .cam-ip { font-family: var(--mono); }
 
-.stream-urls { margin-top: 1rem; }
-.stream-urls h3 { font-size: 0.9rem; margin-bottom: 0.5rem; }
+.stream-urls { margin-top: 1.25rem; }
+.stream-urls h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 0.5rem; }
+.stream-urls h3 small { text-transform: none; letter-spacing: 0; font-weight: normal; }
 .stream-urls code {
     display: block;
     background: var(--bg);
-    padding: 0.4rem 0.6rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    margin-bottom: 0.3rem;
+    border: 1px solid var(--border);
+    padding: 0.5rem 0.7rem;
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.4rem;
+    cursor: pointer;
     word-break: break-all;
-    color: var(--text-dim);
+    font-size: 0.78rem;
 }
-.stream-urls code.copy-btn { cursor: pointer; border: 1px solid transparent; }
-.stream-urls code.copy-btn:hover { color: var(--text); border-color: var(--border); }
-.stream-urls code.copy-btn.copied { background: var(--success); color: #fff; }
-.stream-urls h3 small { color: var(--text-dim); font-weight: 300; font-size: 0.75rem; }
+.stream-urls code:hover { border-color: var(--accent-bright); }
+.stream-urls code.copied { border-color: var(--success); color: var(--success); }
 
 .actions {
-    margin-top: 1rem;
     display: flex;
     gap: 0.5rem;
+    margin-top: 1.25rem;
     flex-wrap: wrap;
 }
 .actions button {
-    padding: 0.4rem 1rem;
+    padding: 0.45rem 0.9rem;
     background: var(--accent);
     color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
 }
 .actions button:hover { background: var(--bg-hover); border-color: var(--accent-bright); }
+.actions .snap-btn.snapped { background: var(--success); color: #fff; }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
     .camera-detail { grid-template-columns: 1fr; }
-    .camera-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+}
+@media (max-width: 768px) {
+    header { padding: 0.6rem 1rem; gap: 0.6rem; }
+    .chips { order: 3; width: 100%; }
+    .search { margin-left: 0; }
+    .search input { width: 100%; max-width: none; }
+    .camera-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
     main { padding: 1rem; }
-}
-
-/* Record button — pill in the grid, labeled button in the detail view.
-   The `.on` modifier (added by app.js when recording is active) uses a
-   red tint so it is visually unmissable across the dashboard. */
-.record-btn.on {
-    background: #c0392b;
-    color: #fff;
-    border-color: #a93226;
-    animation: record-pulse 2s ease-in-out infinite;
-}
-@keyframes record-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(192, 57, 43, 0.5); }
-    50%      { box-shadow: 0 0 0 4px rgba(192, 57, 43, 0.0); }
 }

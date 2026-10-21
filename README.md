@@ -171,6 +171,13 @@ which engine is active (`LAN IP resolver ready engine=arp`).
 | `LAN_IP_SWEEP` | `true` | Allow the last-resort ARP sweep (paced, capped at a `/22`, throttled so an absent camera can't flood the LAN) |
 | `LAN_IP_RECHECK` | `2m` | How often streaming cameras are re-verified; `0` disables |
 
+### Dashboard
+
+The dashboard follows your OS light/dark setting; the ◐ button in
+the header overrides it (remembered per browser). The chips count
+cameras, live streams, streams with no video and ignored cameras,
+and the filter box narrows the grid by name, model or IP.
+
 ### Arranging the dashboard
 
 Click **🔓 Arrange** in the header, drag tiles by the ⠿ handle into
