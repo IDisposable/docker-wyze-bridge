@@ -308,3 +308,114 @@ func TestObserveVideo_BrowserPullerCountsAsConsumer(t *testing.T) {
 		t.Errorf("socket gone: %v, want idle", cam.Video())
 	}
 }
+
+func TestObserveVideo_LeavesPulledDeadStreamAlone(t *testing.T) {
+	// A browser waiting on a stream whose dial failed is the player's
+	// problem to retry (video-stream.js restarts it). The health poll
+	// must not replace the stream under it while go2rtc is still
+	// dialing: doing that every minute only churned the cameras.
+	var mu sync.Mutex
+	writes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PUT" || r.Method == "DELETE" {
+			mu.Lock()
+			writes++
+			mu.Unlock()
+		}
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(srv.Close)
+	mgr, _ := newLanIPTestManager(t, nil)
+	mgr.SetGo2RTCAPI(go2rtcmgr.NewAPIClient(srv.URL, zerolog.Nop()))
+	cam := newV3("side_yard", "192.168.4.139")
+	dead := &go2rtcmgr.StreamInfo{Producers: []go2rtcmgr.ProducerInfo{{URL: cam.StreamURL()}}}
+	cam.AddPuller(1)
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		mgr.observeVideo(cam, dead, now.Add(time.Duration(i)*30*time.Second))
+	}
+	if cam.Video() != VideoNoVideo {
+		t.Errorf("video = %v, want no_video", cam.Video())
+	}
+	time.Sleep(50 * time.Millisecond) // anything async would have landed
+	mu.Lock()
+	defer mu.Unlock()
+	if writes != 0 {
+		t.Errorf("health poll wrote to go2rtc %d times, want 0", writes)
+	}
+}
+
+func TestRecordStreamError_IgnoresConsumerSideErrors(t *testing.T) {
+	// A snapshot asking for JPEG gets "codecs not matched" from go2rtc,
+	// which says nothing about the camera. That must not mark a live
+	// camera no_video, while a real camera-side error still does.
+	mgr, _ := newLanIPTestManager(t, nil)
+	cam := streamingV3(t, mgr, "pet_cam", "192.168.4.140")
+	now := time.Now()
+	cam.observeFlow(true, 1, 100, now)
+	cam.observeFlow(true, 1, 200, now.Add(30*time.Second))
+	mgr.RecordStreamError(context.Background(), "pet_cam", "codecs not matched: video:H264, audio:S16L => video:JPEG, video:RAW")
+	if cam.Video() != VideoLive || cam.Snapshot().LastError != "" {
+		t.Errorf("a snapshot's codec complaint must not mark a live camera: video=%v err=%q", cam.Video(), cam.Snapshot().LastError)
+	}
+	mgr.RecordStreamError(context.Background(), "pet_cam", "wyze: connect failed: discovery timeout")
+	if cam.Video() != VideoNoVideo {
+		t.Error("a camera-side error should still flip the badge")
+	}
+}
+
+func TestRestartIfFrozen_ReplacesSilentConnectedStream(t *testing.T) {
+	// Pet Cam on the NAS: go2rtc held a connected producer whose byte
+	// counters stopped while two players waited, and stayed that way.
+	// Two quiet polls with someone pulling → the stream is put back
+	// once (a PUT, never a DELETE) and OnStreamRestart fires so the
+	// players reconnect; a second quiet poll inside the gap does nothing.
+	var mu sync.Mutex
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method)
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(srv.Close)
+	mgr, _ := newLanIPTestManager(t, nil)
+	mgr.SetGo2RTCAPI(go2rtcmgr.NewAPIClient(srv.URL, zerolog.Nop()))
+	cam := newV3("pet_cam", "192.168.4.140")
+	mgr.cameras["pet_cam"] = cam
+	cam.SetState(StateStreaming)
+	restarted := make(chan string, 4)
+	mgr.OnStreamRestart(func(c *Camera, _ string) { restarted <- c.Name() })
+
+	frozen := &go2rtcmgr.StreamInfo{
+		Producers: []go2rtcmgr.ProducerInfo{{
+			URL:        cam.StreamURL(),
+			RemoteAddr: "192.168.4.140:51772",
+			Receivers:  []go2rtcmgr.ReceiverInfo{{Bytes: 1336414}},
+		}},
+		Consumers: []go2rtcmgr.ConsumerInfo{{}, {}},
+	}
+	now := time.Now()
+	for i := range 3 {
+		mgr.observeVideo(cam, frozen, now.Add(time.Duration(i)*30*time.Second))
+	}
+	select {
+	case name := <-restarted:
+		if name != "pet_cam" {
+			t.Errorf("restarted %q", name)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("silent stream was not restarted")
+	}
+	mgr.observeVideo(cam, frozen, now.Add(100*time.Second))
+	select {
+	case <-restarted:
+		t.Error("restarted twice inside frozenRestartGap")
+	case <-time.After(100 * time.Millisecond):
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 || calls[0] != "PUT" {
+		t.Errorf("go2rtc calls = %v, want one PUT", calls)
+	}
+}

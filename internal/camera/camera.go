@@ -89,6 +89,7 @@ type Camera struct {
 	lastError        string
 	lastErrorAt      time.Time
 	lastErrorRecheck time.Time
+	lastRestart      time.Time // last frozen-stream restart; see video.go
 	mu               sync.RWMutex
 }
 
@@ -291,9 +292,12 @@ func (c *Camera) SetLanIP(ip string) bool {
 // account, typically).
 const lanAbsentAfter = 2
 
-// lanAbsent is the "probably not on this LAN" verdict; see lanAbsentAfter.
+// lanAbsent is the "probably not on this LAN" verdict; see
+// lanAbsentAfter. A camera that verified on this LAN at any point in
+// this run doesn't qualify: a Wi-Fi camera dozing in power save can
+// miss a couple of sweeps and still be in the next room.
 func (c *Camera) lanAbsent() bool {
-	return c.lanMisses >= lanAbsentAfter
+	return c.lanMisses >= lanAbsentAfter && c.lanVerifiedAt.IsZero()
 }
 
 // LanStatus returns the resolver's history for this camera: the rung

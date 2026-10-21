@@ -246,7 +246,19 @@ is pulling but nothing is coming back, or go2rtc reported an error for
 that stream — hover for the reason. The dashboard's own players count
 as pulling, and the error go2rtc sends a player when a dial fails is
 read off on the way through, so a card you're looking at tells the
-truth within a minute even when nothing else pulls that camera. A `discovery timeout` on a TUTK
+truth within a minute even when nothing else pulls that camera. If a
+camera's connection is up but has gone silent while something is
+pulling it (a V3 that drops off Wi-Fi mid-stream leaves go2rtc holding
+a dead session, and every new viewer joins it), the bridge restarts
+the stream on its own, at most once every two minutes, and sends the
+dashboard's players to reconnect; that's what the Restart Stream
+button does by hand. The dashboard's
+players also start a moment apart instead of all at once, and any
+player whose picture stops moving for 20 seconds reconnects by itself
+(backing off for a camera that keeps failing), and each tile asks for
+a single MSE stream rather than WebRTC and MSE at once. go2rtc's player waits
+forever after a failed dial, which is why a card could spin while the
+same camera opened instantly on its detail page. A `discovery timeout` on a TUTK
 camera also triggers an immediate LAN IP recheck (see above). The
 detail page shows when video last flowed and the last error; the
 `/metrics` event log records every drop and recovery.
@@ -436,7 +448,8 @@ away. The env filters above still apply first. REST: `GET
 /api/ignored/{mac}/restore`.
 
 You usually don't have to go looking for them: once two LAN sweeps in
-a row have failed to hear a camera's MAC, its card grows a "Not on
+a row have failed to hear a camera's MAC, and it hasn't verified on
+the LAN at all since the bridge started, its card grows a "Not on
 this LAN?" note with an **Ignore it** button that does the same thing.
 The note goes away by itself the moment the camera verifies (or video
 flows), so a camera that was just rebooting doesn't get flagged for

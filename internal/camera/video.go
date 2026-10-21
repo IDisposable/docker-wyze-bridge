@@ -123,6 +123,14 @@ func (m *Manager) OnVideoChange(fn func(cam *Camera, old, cur Video)) {
 	m.onVideoChange = fn
 }
 
+// OnStreamRestart registers a callback for the bridge having replaced a
+// camera's go2rtc stream, with the reason (its connection went silent,
+// say). Whoever is still attached to the old stream has to reconnect to
+// reach the new one; the WebUI drops its players' sockets so they do.
+func (m *Manager) OnStreamRestart(fn func(cam *Camera, reason string)) {
+	m.onStreamRestart = fn
+}
+
 // OnStreamError registers a callback for go2rtc reporting an error on
 // a camera's stream, after the camera has recorded it.
 func (m *Manager) OnStreamError(fn func(cam *Camera, msg string)) {
@@ -144,6 +152,7 @@ func (m *Manager) observeVideo(cam *Camera, info *go2rtcmgr.StreamInfo, now time
 		consumers = p
 	}
 	old, cur := cam.observeFlow(connected, consumers, bytes, now)
+	m.restartIfFrozen(cam, cur, connected, consumers, now)
 	if old == cur {
 		return
 	}
@@ -164,6 +173,59 @@ func (m *Manager) observeVideo(cam *Camera, info *go2rtcmgr.StreamInfo, now time
 // few seconds, and one ARP probe a minute is plenty to catch a move.
 const errorRecheckGap = time.Minute
 
+// frozenRestartGap is the least time between two restarts of the same
+// camera's stream, so a camera that keeps going silent is retried every
+// couple of minutes rather than on every poll.
+const frozenRestartGap = 2 * time.Minute
+
+// restartIfFrozen replaces a TUTK stream whose connection to the camera
+// is up but has carried nothing for two polls while someone waits on
+// it. go2rtc keeps such a session open indefinitely: a V3 that drops
+// off Wi-Fi mid-stream leaves a producer with a remote address and
+// frozen byte counters, every new viewer joins that same dead producer,
+// and only Restart Stream brings the picture back. This does the same,
+// at most once per frozenRestartGap.
+//
+// A stream that is pulled but not yet connected is left alone: go2rtc
+// is still dialing it, and replacing streams mid-dial is churn the
+// cameras don't need.
+func (m *Manager) restartIfFrozen(cam *Camera, cur Video, connected bool, consumers int, now time.Time) {
+	if cur != VideoNoVideo || !connected || consumers == 0 {
+		return
+	}
+	if _, protocol := m.streamSourceFor(cam); protocol != "tutk" {
+		return
+	}
+	go2rtc := m.go2rtcClient()
+	if go2rtc == nil {
+		return
+	}
+	cam.mu.Lock()
+	due := cam.lastRestart.IsZero() || now.Sub(cam.lastRestart) >= frozenRestartGap
+	if due {
+		cam.lastRestart = now
+	}
+	cam.mu.Unlock()
+	if !due {
+		return
+	}
+	m.log.Warn().Str("cam", cam.Name()).Int("consumers", consumers).
+		Msg("stream connected but silent; restarting it")
+	go func() {
+		m.registerStream(context.Background(), go2rtc, cam)
+		if cam.GetState() == StateStreaming && m.onStreamRestart != nil {
+			m.onStreamRestart(cam, "connected but silent")
+		}
+	}()
+}
+
+// consumerSideError reports go2rtc errors about what a consumer asked
+// for rather than about the camera (a snapshot wanting JPEG from an
+// H264 stream, say). They don't say anything about video arriving.
+func consumerSideError(msg string) bool {
+	return strings.Contains(msg, "codecs not matched")
+}
+
 // RecordStreamError attributes a go2rtc stream error to a camera: it
 // lands on the card and the detail page, flips the video status to
 // no_video, and — for a TUTK camera whose discovery timed out — kicks
@@ -172,6 +234,10 @@ const errorRecheckGap = time.Minute
 func (m *Manager) RecordStreamError(ctx context.Context, name, msg string) {
 	cam := m.GetCamera(name)
 	if cam == nil {
+		return
+	}
+	if consumerSideError(msg) {
+		m.log.Debug().Str("cam", name).Str("error", msg).Msg("go2rtc consumer error (not the camera's)")
 		return
 	}
 	now := time.Now()

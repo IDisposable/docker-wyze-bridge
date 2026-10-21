@@ -706,3 +706,18 @@ func TestLanAbsent_AfterTwoMissesAndStatusHookFires(t *testing.T) {
 		t.Errorf("status hook fired %v, want %s", fired, want)
 	}
 }
+
+func TestLanAbsent_NotForACameraThatVerifiedThisRun(t *testing.T) {
+	// Side Garage on the NAS: verified at startup, then missed two
+	// sweeps while dozing. It's not at another house.
+	r := &scriptedResolver{result: lanresolve.Result{IP: "192.168.4.151", Verified: true, Source: "cloud"}}
+	mgr, _ := newLanIPTestManager(t, r)
+	cam := newV3("side_garage", "192.168.4.151")
+	mgr.cameras[cam.Name()] = cam
+	mgr.connectCamera(context.Background(), cam)
+	r.setResult(lanresolve.Result{Verified: false, Source: "unverified", Misses: 3}, false)
+	mgr.RestartStream(context.Background(), "side_garage")
+	if snap := cam.Snapshot(); snap.LanMisses != 3 || snap.LanAbsent {
+		t.Errorf("verified-then-missing camera: misses=%d absent=%v, want 3 and false", snap.LanMisses, snap.LanAbsent)
+	}
+}

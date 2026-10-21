@@ -72,6 +72,8 @@ type Server struct {
 	lanResolver   LanResolverInfo
 	// layouts holds the dashboard tile order + lock; see layout.go.
 	layouts layoutStore
+	// sockets holds the open /ws proxy connections by camera; see proxy.go.
+	sockets wsSockets
 	kvs           KVSStreamProvider
 	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup

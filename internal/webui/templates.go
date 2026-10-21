@@ -232,6 +232,9 @@ func videoLabel(video string) string {
 // error with its age, or when video last flowed.
 func videoTitle(snap camera.Snapshot) string {
 	switch {
+	case snap.Video == camera.VideoLive:
+		// Video is flowing; an old error isn't news.
+		return "last video " + formatWhen(snap.LastVideo)
 	case snap.LastError != "":
 		return formatError(snap)
 	case !snap.LastVideo.IsZero():
@@ -367,7 +370,7 @@ const indexHTML = `<!DOCTYPE html>
                 <button type="button" class="rotate-btn" data-cam="{{.Name}}" title="Rotate the picture a quarter turn (this page only)" aria-label="Rotate picture">⟳</button>
                 <div class="camera-preview" data-rot="{{.Rotation}}">
                     {{if eq .State "streaming"}}
-                    <video-rtc src="{{.Go2RTCURL}}" data-poster="{{.SnapshotURL}}" muted></video-rtc>
+                    <video-rtc src="{{.Go2RTCURL}}" data-poster="{{.SnapshotURL}}" mode="mse" buffer="2.5" muted></video-rtc>
                     {{else}}
                     <img src="{{.SnapshotURL}}" alt="{{.Nickname}}" loading="lazy"
                          onerror="this.style.display='none'">
