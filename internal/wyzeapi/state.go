@@ -21,9 +21,28 @@ type StateFile struct {
 	// than in config because it's edited at runtime and must survive
 	// restarts without a redeploy. See camera.Manager.Ignore.
 	Ignored []IgnoredCamera `json:"ignored,omitempty"`
-	Updated time.Time       `json:"updated"`
+	// Layout is the dashboard's tile order and lock, edited from the
+	// WebUI and kept here so every browser sees the same arrangement.
+	Layout  *Layout   `json:"layout,omitempty"`
+	Updated time.Time `json:"updated"`
 
 	writeMu sync.Mutex
+}
+
+// Layout is the operator's dashboard arrangement: camera names in
+// display order (cameras not listed follow, by name) and whether the
+// tiles are locked against dragging.
+type Layout struct {
+	Order  []string `json:"order"`
+	Locked bool     `json:"locked"`
+}
+
+// SetLayout replaces the layout under the same lock Save uses.
+func (sf *StateFile) SetLayout(l Layout) {
+	sf.writeMu.Lock()
+	cp := Layout{Order: append([]string(nil), l.Order...), Locked: l.Locked}
+	sf.Layout = &cp
+	sf.writeMu.Unlock()
 }
 
 // IgnoredCamera is a camera the operator told the bridge to leave

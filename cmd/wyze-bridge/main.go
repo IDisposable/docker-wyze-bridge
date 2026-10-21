@@ -187,6 +187,17 @@ func main() {
 		},
 	})
 
+	// Dashboard tile order + lock live in the state file so every
+	// browser sees the same grid; install before the listener starts
+	// and persist every change the UI makes.
+	if state.Layout != nil {
+		webServer.SetLayout(*state.Layout)
+	}
+	webServer.OnLayoutChange(func(l wyzeapi.Layout) {
+		state.SetLayout(l)
+		persistState(state, apiClient, cfg.StateDir)
+	})
+
 	// Start the WebUI HTTP listener ASAP. Handlers that need go2rtc
 	// return 503 "bridge still starting" until we inject the API below.
 	// Static pages, SSE, and the /internal/wyze shim are all ready.

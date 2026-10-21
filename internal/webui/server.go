@@ -58,6 +58,8 @@ type Server struct {
 	onSnapReq     SnapshotRequester
 	onDiscoverReq DiscoverRequester
 	mars          MarsTokenMinter
+	// layouts holds the dashboard tile order + lock; see layout.go.
+	layouts layoutStore
 	kvs           KVSStreamProvider
 	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup
@@ -299,6 +301,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/discover", s.auth.Wrap(s.handleAPIDiscover))
 	mux.HandleFunc("/api/ignored", s.auth.Wrap(s.handleAPIIgnored))
 	mux.HandleFunc("/api/ignored/", s.auth.Wrap(s.handleAPIIgnoredAction))
+	mux.HandleFunc("/api/layout", s.auth.Wrap(s.handleAPILayout))
 	mux.HandleFunc("/api/snapshot/", s.auth.Wrap(s.handleSnapshot))
 	mux.HandleFunc("/api/streams", s.auth.Wrap(s.handleStreamsM3U8))
 	mux.HandleFunc("/api/streams/", s.auth.Wrap(s.handleStreamM3U8))

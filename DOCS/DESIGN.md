@@ -365,6 +365,10 @@ Filtered-out cameras are never added to go2rtc and never appear in MQTT or WebUI
 
 **Ignore list (runtime, 4.6+):** `Manager.Ignore(name)` / `Unignore(mac)` maintain a MAC-keyed set applied after the env filters on every `Discover`. Ignoring deletes the go2rtc stream, marks the camera offline (so recording, MQTT state and webhooks see a normal shutdown), removes it from the registry and fires `OnCameraRemoved`, which main.go uses to drop the dashboard card (SSE `camera_removed`), stop the recorder and retract the HA entities (`RemoveDiscovery`). The list is persisted through `OnIgnoreChange` → `StateFile.Ignored` and installed at startup with `SetIgnored` before the first discovery, so an ignored camera never gets a stream at all. Restoring removes the MAC and triggers the same async rediscovery as the Rediscover button; `OnCameraAdded` (SSE `camera_added` + `PublishDiscovery`) brings the card and entities back. Nickname/model on each entry are refreshed from discovery so the WebUI strip stays readable after a rename.
 
+#### 5.3.2a Dashboard layout (`internal/webui/layout.go`, 4.6+)
+
+The tile order and lock flag are server-side (`StateFile.Layout`), not a browser preference, so every device shows the same grid. `orderCameras` renders listed cameras first in saved order and the rest by name; names in the saved order that no longer exist are skipped. The dashboard drags tiles with pointer events from a ⠿ handle that only exists while the grid is in arranging mode, PUTs the full order after each drop, and the lock button PUTs `locked`. Unknown names are kept on PUT so an offline camera keeps its slot.
+
 #### 5.3.3 Per-Camera Overrides
 
 `CAM_OPTIONS` in config.yml or env vars `RECORD_{CAM_NAME}`, `QUALITY_{CAM_NAME}`, `AUDIO_{CAM_NAME}` override global defaults per camera. Names are normalized (uppercase, spaces→underscores) to match env var conventions.
@@ -485,6 +489,8 @@ POST /api/cameras/{name}/snapshot Force capture to SNAPSHOT_PATH
 POST /api/cameras/{name}/ignore   Drop the camera + remember its MAC (persisted; see 5.3.2)
 GET  /api/ignored                JSON: the ignore list
 POST /api/ignored/{mac}/restore  Take a MAC off the ignore list + rediscover (async)
+GET  /api/layout                 {"order":[names...],"locked":bool} — dashboard tile arrangement
+PUT  /api/layout                 Replace it (POST accepted too); persisted in the state file
 
 POST /api/discover               Re-poll Wyze API for added/removed cameras (202 + async)
 
