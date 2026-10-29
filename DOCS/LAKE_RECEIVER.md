@@ -113,6 +113,23 @@ and buffered frames from surviving a new connection. Idle and cold sources
 retain startup grace. The existing STREAMING badge
 still indicates registration; validate arriving frames for actual playback.
 
+For an established Pan v4 `2k` session, a separate quality guard waits two
+minutes, then samples one second of decoded native frames about once per minute
+using the image's existing `ffprobe` (two decoder threads, 15-second deadline).
+It only samples an already-active shared native producer with consumers, checks
+producer identity before and after, and cancels on session teardown. Cached SDP
+or container dimensions are not used: a 4K header can conceal 360p frames.
+Mixed-resolution, idle, failed or insufficient samples break confirmation.
+Two consecutive samples below 3840×2160 trigger the existing high-quality
+property on that same gateway socket. Retries are separated by at least two
+minutes and capped at three in any rolling hour, including failed sends and
+episodes separated by recovery. No new receiver or automatic reconnect is
+created by this guard. `quality_sample` logs include measured dimensions;
+`quality_low`, `quality_retry_sent`, `quality_retry_send_failed`,
+`quality_recovered` and `quality_retry_exhausted` distinguish observations from
+attempts and verified recovery. A camera warning stays visible until decoded
+4K returns. Three failed probes also raise a separate check-unavailable warning.
+
 A second camera session or the Wyze app can compete over quality. Test with a
 spare camera or stop its existing receiver before opening another session. The
 receiver still connects through Wyze/Agora cloud services.

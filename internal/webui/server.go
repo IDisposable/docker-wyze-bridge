@@ -155,8 +155,30 @@ func NewServer(opts Options) *Server {
 	}
 	if s.lake != nil {
 		s.lakeBroker = lake.NewBroker(s.rootCtx, s.lake)
+		s.lakeBroker.ProbeQuality = s.probeLakeQuality
 		s.lakeBroker.OnEvent = func(name string, event lake.Event) {
-			s.log.Info().Str("cam", name).Str("event", event.Kind).Int("code", event.Code).Msg("Lake session")
+			entry := s.log.Info().Str("cam", name).Str("event", event.Kind).Int("code", event.Code)
+			if event.Width > 0 {
+				entry = entry.Int("width", event.Width).Int("height", event.Height)
+			}
+			entry.Msg("Lake session")
+			switch event.Kind {
+			case "quality_probe_unavailable":
+				s.issues.Report(issues.Issue{ID: "camera/quality-check/" + name, Severity: issues.SeverityWarn, Scope: "camera", Camera: name, Message: "Native video quality check unavailable", Detail: "Bridge could not inspect three video samples. Check that camera live video is working. Automatic quality requests wait for confirmed low-resolution frames."})
+			case "quality_sample":
+				s.issues.Resolve("camera/quality-check/" + name)
+				if event.Width >= 3840 && event.Height >= 2160 {
+					s.issues.Resolve("camera/quality/" + name)
+				}
+			case "quality_low", "quality_retry_exhausted":
+				detail := "The camera is sending reduced native resolution. Bridge requests high quality on the existing session, at most three times per hour."
+				if event.Kind == "quality_retry_exhausted" {
+					detail = "High-quality requests have not restored native resolution. Automatic retries are paused until the hourly budget resets; check the camera or another active Wyze viewer."
+				}
+				s.issues.Report(issues.Issue{ID: "camera/quality/" + name, Severity: issues.SeverityWarn, Scope: "camera", Camera: name, Message: "Camera native resolution is below 4K", Detail: detail})
+			case "quality_recovered":
+				s.issues.Resolve("camera/quality/" + name)
+			}
 		}
 		s.lakeBroker.OnError = func(name string, err error) { s.log.Warn().Str("cam", name).Err(err).Msg("Lake signaling failed") }
 	}

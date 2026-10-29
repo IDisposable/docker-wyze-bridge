@@ -187,8 +187,9 @@ func encryptedSecret(secret string) (string, error) {
 // Session owns the gateway websocket. It outlives go2rtc's short offer/answer
 // socket, which go2rtc intentionally closes once ICE is connected.
 type Event struct {
-	Kind string
-	Code int
+	Kind          string
+	Code          int
+	Width, Height int // Only populated for decoded quality samples.
 }
 
 const (

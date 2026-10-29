@@ -23,17 +23,20 @@ type cameraOperation struct {
 }
 
 type Broker struct {
-	OnError  func(string, error)
-	OnEvent  func(string, Event)
-	ctx      context.Context
-	provider Provider
-	mu       sync.Mutex
-	sessions map[string]*Session
-	locks    map[string]*sync.Mutex
-	pending  map[string]*cameraOperation
-	epochs   map[string]uint64
-	stops    map[string]uint64
-	cancel   context.CancelFunc
+	OnError func(string, error)
+	OnEvent func(string, Event)
+	// ProbeQuality samples decoded frames from the existing local native
+	// producer. Configure before serving; nil disables the quality guard.
+	ProbeQuality func(context.Context, string) (Resolution, error)
+	ctx          context.Context
+	provider     Provider
+	mu           sync.Mutex
+	sessions     map[string]*Session
+	locks        map[string]*sync.Mutex
+	pending      map[string]*cameraOperation
+	epochs       map[string]uint64
+	stops        map[string]uint64
+	cancel       context.CancelFunc
 
 	publisherLost map[string]*cameraOperation
 }
@@ -270,6 +273,9 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 	}
 	lock.Unlock()
 	locked = false
+	if b.ProbeQuality != nil && quality == "2k" {
+		go b.guardQuality(cameraCtx, name, session, operation)
+	}
 	// go2rtc closes this socket after ICE connects. Its r.Context is therefore
 	// deliberately not the parent of the persistent gateway session.
 	go func() {
