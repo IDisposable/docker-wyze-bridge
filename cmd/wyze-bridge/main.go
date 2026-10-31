@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/IDisposable/docker-wyze-bridge/internal/alerts"
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
@@ -251,6 +252,20 @@ func main() {
 	})
 
 	startBridgeHeartbeat(ctx, camMgr, webServer)
+
+	// Alerts: mirror Wyze cloud motion/sound events (snapshot + clip).
+	alertMgr := alerts.NewManager(cfg.AlertsPath, cfg.AlertsInterval, cfg.AlertsKeep, apiClient,
+		func() []alerts.Camera {
+			var out []alerts.Camera
+			for _, c := range camMgr.Cameras() {
+				info := c.GetInfo()
+				out = append(out, alerts.Camera{Name: c.Name(), Nickname: info.Nickname, MAC: info.MAC})
+			}
+			return out
+		}, log.With().Str("c", "alerts").Logger())
+	alertMgr.OnNew(func(a alerts.Alert) { webServer.BroadcastAlert(a) })
+	webServer.SetAlerts(alertMgr)
+	go alertMgr.Run(ctx)
 
 	// Snapshot pruner
 	snapPruner := snapshot.NewPruner(cfg.SnapshotPath, cfg.SnapshotKeep, snapLog)

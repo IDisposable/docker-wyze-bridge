@@ -17,6 +17,7 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
+	"github.com/IDisposable/docker-wyze-bridge/internal/alerts"
 	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzectl"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
@@ -51,6 +52,8 @@ type Server struct {
 	// ptz sends pan/tilt commands to go2rtc's /api/wyze/* control
 	// endpoints. Built alongside go2rtcAPI so it shares URL + auth.
 	ptz atomic.Pointer[wyzectl.Client]
+	// alerts is the Wyze event mirror; nil hides the Alerts page.
+	alerts *alerts.Manager
 	sseHub    *SSEHub
 	auth      *AuthMiddleware
 	srv       *http.Server
@@ -298,6 +301,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Pages
 	mux.HandleFunc("/", s.auth.Wrap(s.handleIndex))
 	mux.HandleFunc("/camera/", s.auth.Wrap(s.handleCameraPage))
+	mux.HandleFunc("/alerts", s.auth.Wrap(s.handleAlertsPage))
+	mux.HandleFunc("/alerts/media/", s.auth.Wrap(s.handleAlertMedia))
+	mux.HandleFunc("/api/alerts", s.auth.Wrap(s.handleAPIAlerts))
 
 	// Favicon (served from embedded icon.png, no auth required)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
