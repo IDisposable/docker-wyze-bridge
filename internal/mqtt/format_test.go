@@ -135,6 +135,9 @@ func TestFormatDiscoveryCamera(t *testing.T) {
 	if disc["name"] != "Front Door" {
 		t.Errorf("name = %v", disc["name"])
 	}
+	if disc["topic"] != "wyzebridge/front_door/thumbnail" {
+		t.Errorf("topic = %v, want wyzebridge/front_door/thumbnail", disc["topic"])
+	}
 	if disc["availability_topic"] != "wyzebridge/front_door/state" {
 		t.Errorf("availability = %v", disc["availability_topic"])
 	}

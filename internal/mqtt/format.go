@@ -67,7 +67,7 @@ func FormatDiscoveryCamera(baseTopic, camName, nickname, mac, fwVer string) map[
 	return map[string]interface{}{
 		"name":                  nickname,
 		"unique_id":             "wyze_" + mac,
-		"topic":                 fmt.Sprintf("%s/%s/", baseTopic, camName),
+		"topic":                 fmt.Sprintf("%s/%s/thumbnail", baseTopic, camName),
 		"availability_topic":    fmt.Sprintf("%s/%s/state", baseTopic, camName),
 		"payload_available":     "connected",
 		"payload_not_available": "disconnected",

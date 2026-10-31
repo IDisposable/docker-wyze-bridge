@@ -43,7 +43,7 @@ func (c *Client) PublishDiscovery(cam *camera.Camera) {
 	c.publishDiscoveryConfig(fmt.Sprintf("%s/camera/%s/config", c.dtopic, mac), map[string]interface{}{
 		"name":                  info.Nickname,
 		"unique_id":             "wyze_" + mac,
-		"topic":                 fmt.Sprintf("%s/%s/", c.topic, name),
+		"topic":                 fmt.Sprintf("%s/%s/thumbnail", c.topic, name),
 		"availability_topic":    fmt.Sprintf("%s/%s/state", c.topic, name),
 		"payload_available":     "connected",
 		"payload_not_available": "disconnected",

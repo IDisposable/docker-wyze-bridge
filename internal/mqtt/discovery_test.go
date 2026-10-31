@@ -51,7 +51,7 @@ func TestDiscoveryConfigJSON(t *testing.T) {
 	config := map[string]interface{}{
 		"name":                  cam.Info.Nickname,
 		"unique_id":             "wyze_" + cam.Info.MAC,
-		"topic":                 "wyzebridge/front_door/",
+		"topic":                 "wyzebridge/front_door/thumbnail",
 		"availability_topic":    "wyzebridge/front_door/state",
 		"payload_available":     "connected",
 		"payload_not_available": "disconnected",
