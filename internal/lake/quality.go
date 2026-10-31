@@ -120,7 +120,7 @@ func (b *Broker) runQualityGuard(ctx context.Context, name string, session *Sess
 		if !b.ownsQualitySession(name, session, operation) {
 			return
 		}
-		probeCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+		probeCtx, stop := context.WithTimeout(ctx, 25*time.Second)
 		resolution, err := b.ProbeQuality(probeCtx, name)
 		stop()
 		if ctx.Err() != nil || !b.ownsQualitySession(name, session, operation) {

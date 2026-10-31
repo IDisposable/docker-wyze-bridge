@@ -113,13 +113,17 @@ and buffered frames from surviving a new connection. Idle and cold sources
 retain startup grace. The existing STREAMING badge
 still indicates registration; validate arriving frames for actual playback.
 
-For an established Pan v4 `2k` session, a separate quality guard waits two
-minutes, then samples one second of decoded native frames about once per minute
-using the image's existing `ffprobe` (two decoder threads, 15-second deadline).
+For an established Pan v4 `2k` session, the bridge's quality guard waits two
+minutes, then samples twelve seconds of decoded native frames about once per minute
+using the image's existing `ffprobe` (two decoder threads, 25-second deadline).
 It only samples an already-active shared native producer with consumers, checks
 producer identity before and after, and cancels on session teardown. Cached SDP
 or container dimensions are not used: a 4K header can conceal 360p frames.
-Mixed-resolution, idle, failed or insufficient samples break confirmation.
+The first three seconds are excluded to avoid cached decoder startup parameters.
+A sample is low when at least half of both its steady frames and final two
+seconds are below 4K; occasional 4K frames cannot hide a sustained downgrade.
+A healthy tail indicates recovery. Idle, failed, insufficient or otherwise
+uncertain transitions still break confirmation.
 Two consecutive samples below 3840×2160 trigger the existing high-quality
 property on that same gateway socket. Retries are separated by at least two
 minutes and capped at three in any rolling hour, including failed sends and
