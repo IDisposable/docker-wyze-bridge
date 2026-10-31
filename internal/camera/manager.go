@@ -3,6 +3,7 @@ package camera
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,8 @@ type Manager struct {
 	lakeReset     func(string)
 	lakeIdleReset func(string)
 	lakeHealth    map[string]lakeHealthState
+
+	lakeNeedsReconnect func(string) bool
 	// onChronicError fires once when a camera's error count first
 	// crosses chronicErrorThreshold; onChronicRecover fires when that
 	// same camera reaches StateStreaming again.
@@ -50,8 +53,10 @@ type Manager struct {
 }
 
 type lakeHealthState struct {
-	bytes    int64
-	lastData time.Time
+	bytes       int64
+	lastData    time.Time
+	producerIDs []int64
+	required    bool
 }
 
 // chronicErrorThreshold is the consecutive-error count at which a
@@ -94,24 +99,40 @@ func (m *Manager) SetLakeReset(reset func(string)) { m.lakeReset = reset }
 
 func (m *Manager) SetLakeIdleReset(reset func(string)) { m.lakeIdleReset = reset }
 
-func (m *Manager) lakeStreamHealthy(name string, native *go2rtcmgr.StreamInfo, now time.Time) bool {
+func (m *Manager) SetLakeNeedsReconnect(needsReconnect func(string) bool) {
+	m.lakeNeedsReconnect = needsReconnect
+}
+
+func (m *Manager) lakeStreamHealthy(name string, native *go2rtcmgr.StreamInfo, now time.Time, required bool) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if native == nil {
 		delete(m.lakeHealth, name)
 		return false
 	}
-	if len(native.Consumers) == 0 {
+	if len(native.Consumers) == 0 && !required {
 		delete(m.lakeHealth, name)
 		return true
 	}
 	var bytes int64
+	var producerIDs []int64
 	for _, p := range native.Producers {
 		bytes += p.BytesRecv
+		if p.ID != 0 {
+			producerIDs = append(producerIDs, p.ID)
+		}
 	}
+	sort.Slice(producerIDs, func(i, j int) bool { return producerIDs[i] < producerIDs[j] })
 	status, exists := m.lakeHealth[name]
-	if !exists || bytes != status.bytes {
-		m.lakeHealth[name] = lakeHealthState{bytes: bytes, lastData: now}
+	// go2rtc can replace an upstream producer without restarting the
+	// preview encoder. After live data, rebuild the owned chain instead
+	// of letting old timestamps or buffered frames survive that change.
+	if required && status.required && status.bytes > 0 &&
+		(bytes < status.bytes || len(status.producerIDs) > 0 && !slices.Equal(producerIDs, status.producerIDs)) {
+		return false
+	}
+	if !exists || bytes != status.bytes || required != status.required {
+		m.lakeHealth[name] = lakeHealthState{bytes: bytes, lastData: now, producerIDs: producerIDs, required: required}
 		return true
 	}
 	return now.Sub(status.lastData) < 60*time.Second
@@ -439,7 +460,7 @@ func lakePreviewSource(name, quality string) string {
 	if quality == "sd" {
 		width, height = "640", "360"
 	}
-	return "ffmpeg:" + name + "_4k#video=h264#width=" + width + "#height=" + height + "#raw=wyze_lake_preview"
+	return "ffmpeg:" + name + "_4k#video=h264#width=" + width + "#height=" + height + "#input=wyze_lake_preview_input#raw=wyze_lake_preview"
 }
 
 func lakeNativeSource(name string) string {
@@ -498,9 +519,14 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 				m.lakeIdleReset(cam.Name())
 			}
 			now := time.Now()
-			healthy = ok && info != nil && m.lakeStreamHealthy(cam.Name()+"/transport", raw, now) && m.lakeStreamHealthy(cam.Name()+"/native", native, now)
-			if healthy && len(info.Consumers) > 0 {
-				healthy = m.lakeStreamHealthy(cam.Name()+"/preview", info, time.Now())
+			// A preview can keep emitting stale frames after its upstream
+			// workers disappear. Downstream demand must keep both upstream
+			// liveness timers active, even while their readers are absent.
+			demanded := info != nil && len(info.Consumers) > 0 || native != nil && len(native.Consumers) > 0
+			publisherLost := demanded && m.lakeNeedsReconnect != nil && m.lakeNeedsReconnect(cam.Name())
+			healthy = !publisherLost && ok && info != nil && m.lakeStreamHealthy(cam.Name()+"/transport", raw, now, demanded) && m.lakeStreamHealthy(cam.Name()+"/native", native, now, demanded)
+			if healthy {
+				healthy = m.lakeStreamHealthy(cam.Name()+"/preview", info, time.Now(), false)
 			}
 		}
 		if !healthy {

@@ -191,8 +191,8 @@ func TestBrokerStopRejectsSocketWaitingForOffer(t *testing.T) {
 func TestGatewayFailureClosesSessionAndReader(t *testing.T) {
 	for _, tc := range []struct{ name, notification, event string }{
 		{"renewal-failure", "on_token_privilege_will_expire", "token_renewal_failed"},
-		{"expired-token", "on_token_privilege_did_expire", "gateway_lost"},
-		{"lost-peer", "on_p2p_lost", "gateway_lost"},
+		{"expired-token", "on_token_privilege_did_expire", "gateway_token_expired"},
+		{"lost-peer", "on_p2p_lost", "gateway_peer_lost"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o, err := parseOffer(testSDP)

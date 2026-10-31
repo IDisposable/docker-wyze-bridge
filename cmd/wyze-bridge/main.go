@@ -179,6 +179,7 @@ func main() {
 
 	camMgr.SetLakeReset(webServer.CloseLakeCamera)
 	camMgr.SetLakeIdleReset(webServer.CloseIdleLakeCamera)
+	camMgr.SetLakeNeedsReconnect(webServer.LakeNeedsReconnect)
 
 	// Start the WebUI HTTP listener ASAP. Handlers that need go2rtc
 	// return 503 "bridge still starting" until we inject the API below.

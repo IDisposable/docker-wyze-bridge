@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -41,10 +42,11 @@ type edge struct {
 	response             object
 }
 type message struct {
-	ID     string `json:"_id,omitempty"`
-	Type   string `json:"_type,omitempty"`
-	Body   object `json:"_message"`
-	Result string `json:"_result,omitempty"`
+	ID        string `json:"_id,omitempty"`
+	Type      string `json:"_type,omitempty"`
+	Body      object `json:"_message"`
+	Result    string `json:"_result,omitempty"`
+	ErrorCode int    `json:"error_code,omitempty"`
 }
 
 // Gateway notifications may use numeric IDs or a primitive/null message body.
@@ -58,7 +60,18 @@ func (m *message) UnmarshalJSON(raw []byte) error {
 	m.Type = str(data["_type"])
 	m.Result = str(data["_result"])
 	m.Body = obj(data["_message"])
+	m.ErrorCode = num(data["error_code"])
 	return nil
+}
+
+func (m message) diagnosticCode() int {
+	if m.ErrorCode != 0 {
+		return m.ErrorCode
+	}
+	if code := num(m.Body["error_code"]); code != 0 {
+		return code
+	}
+	return num(m.Body["code"])
 }
 
 func gatewayRequest(ctx context.Context, url string, session *wyzeapi.LakeSession) (*http.Request, error) {
@@ -174,21 +187,31 @@ func encryptedSecret(secret string) (string, error) {
 // Session owns the gateway websocket. It outlives go2rtc's short offer/answer
 // socket, which go2rtc intentionally closes once ICE is connected.
 type Event struct {
-	Kind string
-	Code int
+	Kind          string
+	Code          int
+	Width, Height int // Only populated for decoded quality samples.
 }
 
+const (
+	activationSendFailed   = "activation_send_failed"
+	subscriptionSendFailed = "subscription_send_failed"
+	pingSendFailed         = "ping_send_failed"
+)
+
 type Session struct {
-	events   chan Event
-	conn     *websocket.Conn
-	mu       sync.Mutex
-	stopped  chan struct{}
-	once     sync.Once
-	cancel   context.CancelFunc
-	initial  *wyzeapi.LakeSession
-	renewing func(context.Context, int) (string, error)
-	quality  string
-	started  time.Time
+	events    chan Event
+	conn      *websocket.Conn
+	mu        sync.Mutex
+	stopped   chan struct{}
+	once      sync.Once
+	cancel    context.CancelFunc
+	initial   *wyzeapi.LakeSession
+	renewing  func(context.Context, int) (string, error)
+	quality   string
+	started   time.Time
+	renewID   string // Protected by mu; only the latest renewal reply is observed.
+	videoUID  int64  // Negotiated video identity, used only to classify notices.
+	videoSSRC int64
 }
 
 func (s *Session) Close() {
@@ -214,7 +237,84 @@ func (s *Session) send(kind string, body object) error {
 	if e := s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); e != nil {
 		return e
 	}
-	return s.conn.WriteJSON(message{ID: requestID(), Type: kind, Body: body})
+	id := requestID()
+	err := s.conn.WriteJSON(message{ID: id, Type: kind, Body: body})
+	if kind == "renew_token" {
+		s.renewID = ""
+		if err == nil {
+			s.renewID = id
+		}
+	}
+	return err
+}
+
+func (s *Session) notifyReadError(ctx context.Context, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	var closeErr *websocket.CloseError
+	var networkErr net.Error
+	switch {
+	case errors.As(err, &closeErr):
+		// Code 1006 can be synthesized for EOF; it does not prove a remote
+		// close frame. Never expose the gateway's close text or raw error.
+		s.notify("gateway_read_closed", closeErr.Code)
+	case errors.As(err, &networkErr) && networkErr.Timeout():
+		s.notify("gateway_read_timeout", 0)
+	default:
+		s.notify("gateway_read_failed", 0)
+	}
+}
+
+func (s *Session) notifyRenewalReply(m message) bool {
+	if m.Result != "success" && m.Result != "error" {
+		return false
+	}
+	s.mu.Lock()
+	matched := s.renewID != "" && s.renewID == m.ID
+	if matched {
+		s.renewID = ""
+	}
+	s.mu.Unlock()
+	if matched {
+		kind := "renewal_accepted"
+		if m.Result == "error" {
+			kind = "renewal_rejected"
+		}
+		s.notify(kind, m.diagnosticCode())
+	}
+	return matched
+}
+
+func (s *Session) notifyVideoStream(stream object) {
+	kind := "video_stream_announced"
+	uid, ssrc := number64(stream["uid"]), number64(stream["ssrcId"])
+	if s.videoUID > 0 && s.videoSSRC > 0 && uid > 0 && ssrc > 0 {
+		kind = "video_stream_same"
+		if uid != s.videoUID || ssrc != s.videoSSRC {
+			kind = "video_stream_changed"
+		}
+	}
+	s.notify(kind, 0)
+}
+
+func (s *Session) notifyUserOffline(m message) {
+	kind := "user_offline_unknown"
+	uid := number64(m.Body["uid"])
+	// Compare only valid RTC UIDs with the originally negotiated publisher.
+	// A fractional JSON number must not be truncated into a false match.
+	if uid > 0 && uid <= 4294967295 && s.videoUID > 0 && s.videoUID <= 4294967295 {
+		n, numeric := m.Body["uid"].(float64)
+		if !numeric || n == float64(uid) {
+			kind = "user_offline_other"
+			if uid == s.videoUID {
+				kind = "user_offline_publisher"
+			}
+		}
+	}
+	// Reason has no verified numeric mapping for this wire notice. Preserve
+	// existing diagnostic codes without exposing identities or raw payloads.
+	s.notify(kind, m.diagnosticCode())
 }
 func (s *Session) subscribe(stream object) error {
 	return s.send("subscribe", object{"stream_id": stream["uid"], "stream_type": "video", "mode": "rtc", "codec": "h265", "p2p_id": 1, "twcc": false, "rtx": true, "extend": "", "ssrcId": stream["ssrcId"]})
@@ -229,6 +329,11 @@ func (s *Session) controls(quality bool) error {
 		return e
 	}
 	return s.send("data_stream", object{"payload": base64.StdEncoding.EncodeToString(raw), "syncWithAudio": false, "sendTs": time.Since(s.started).Milliseconds()})
+}
+
+// Continue ownership checks while limiting periodic quality retries to startup.
+func (s *Session) periodicControls(elapsed time.Duration) error {
+	return s.controls(elapsed > 20*time.Second && elapsed < 100*time.Second)
 }
 
 func Open(ctx context.Context, initial *wyzeapi.LakeSession, sdp, quality string, renew func(context.Context, int) (string, error)) (*Session, string, error) {
@@ -285,7 +390,7 @@ func openEdges(ctx context.Context, initial *wyzeapi.LakeSession, o *offer, qual
 				break
 			}
 			if msg.Result == "error" {
-				lastReason = fmt.Sprintf("gateway rejected join (code %d)", num(msg.Body["error_code"]))
+				lastReason = fmt.Sprintf("gateway rejected join (code %d)", msg.diagnosticCode())
 				break
 			}
 			if msg.Result == "success" && len(obj(msg.Body["ortc"])) > 0 {
@@ -319,6 +424,7 @@ func openEdges(ctx context.Context, initial *wyzeapi.LakeSession, o *offer, qual
 					break
 				}
 				_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+				s.videoUID, s.videoSSRC = number64(stream["uid"]), number64(stream["ssrcId"])
 				go s.run(runCtx)
 				return s, answer, nil
 			}
@@ -338,32 +444,47 @@ func (s *Session) run(ctx context.Context) {
 			var m message
 			e := s.conn.ReadJSON(&m)
 			if e != nil {
-				if ctx.Err() == nil {
-					s.notify("gateway_read_failed", 0)
-				}
+				s.notifyReadError(ctx, e)
 				readErr <- e
 				return
 			}
 			_ = s.conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+			if !s.notifyRenewalReply(m) && m.Result == "error" {
+				s.notify("gateway_request_rejected", m.diagnosticCode())
+			}
 			if m.Type == "on_token_privilege_will_expire" {
+				s.notify("token_expiry_warning", m.diagnosticCode())
 				select {
 				case renewNeeded <- struct{}{}:
 				default:
 				}
 			}
 			if m.Type == "on_p2p_lost" || m.Type == "on_token_privilege_did_expire" {
-				s.notify("gateway_lost", num(m.Body["code"]))
+				kind := "gateway_peer_lost"
+				if m.Type == "on_token_privilege_did_expire" {
+					kind = "gateway_token_expired"
+				}
+				s.notify(kind, m.diagnosticCode())
 				readErr <- fmt.Errorf("gateway disconnected")
 				return
 			}
+			if m.Type == "on_remove_video_stream" {
+				s.notify("video_stream_removed", m.diagnosticCode())
+			}
+			if m.Type == "on_user_offline" {
+				s.notifyUserOffline(m)
+			}
 			if m.Type == "on_user_online" && num(m.Body["uid"]) > 0 && num(m.Body["uid"]) != s.initial.UID {
 				if s.controls(true) != nil {
+					s.notify(activationSendFailed, 0)
 					readErr <- fmt.Errorf("camera activation failed")
 					return
 				}
 			}
 			if m.Type == "on_add_video_stream" && m.Body["video"] == true {
+				s.notifyVideoStream(m.Body)
 				if s.subscribe(m.Body) != nil {
+					s.notify(subscriptionSendFailed, 0)
 					readErr <- fmt.Errorf("subscription failed")
 					return
 				}
@@ -381,6 +502,15 @@ func (s *Session) run(ctx context.Context) {
 	}
 	renew := time.NewTicker(renewAfter)
 	defer renew.Stop()
+	renewalDone := make(chan bool, 1)
+	renewalPending := false
+	startRenewal := func() {
+		if renewalPending || ctx.Err() != nil {
+			return
+		}
+		renewalPending = true
+		go func() { renewalDone <- s.renew(ctx) }()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -389,19 +519,21 @@ func (s *Session) run(ctx context.Context) {
 			return
 		case <-ping.C:
 			if s.send("ping", object{}) != nil {
+				s.notify(pingSendFailed, 0)
 				return
 			}
 		case <-control.C:
-			if s.controls(time.Since(begin) > 20*time.Second) != nil {
+			if s.periodicControls(time.Since(begin)) != nil {
 				s.notify("control_send_failed", 0)
 				return
 			}
 		case <-renew.C:
-			if !s.renew(ctx) {
-				return
-			}
+			startRenewal()
 		case <-renewNeeded:
-			if !s.renew(ctx) {
+			startRenewal()
+		case renewed := <-renewalDone:
+			renewalPending = false
+			if !renewed {
 				return
 			}
 
@@ -424,6 +556,6 @@ func (s *Session) renew(ctx context.Context) bool {
 		s.notify("token_renewal_send_failed", 0)
 		return false
 	}
-	s.notify("token_renewed", 0)
+	s.notify("token_renewal_sent", 0)
 	return true
 }

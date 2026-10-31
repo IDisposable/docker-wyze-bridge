@@ -2,7 +2,11 @@ name: Fork container release
 
 on:
   push:
+    branches: [pan-v4-release]
     tags: ['v*-pan-v4.*']
+    paths:
+      - '.github/workflows/docker-image.yml'
+      - 'docker/pan-v4-version'
 
 permissions:
   contents: read
@@ -51,6 +55,9 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          if [[ "$GITHUB_REF" == refs/heads/pan-v4-release ]]; then
+            TAG="v$(tr -d '\r\n' < docker/pan-v4-version)"
+          fi
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pan-v4\.[0-9]+$ ]]
           echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -131,11 +138,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Publish and verify the multi-architecture version
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          VERSION=${TAG#v}
+          VERSION=$(jq -er '.version' release-proof/release-proof-amd64/image.json)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-pan-v4\.[0-9]+$ ]]
+          jq -e --arg version "$VERSION" --arg revision "$GITHUB_SHA" \
+            '.version == $version and .revision == $revision' release-proof/release-proof-arm64/image.json
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "::error::Version $VERSION already exists; bump docker/pan-v4-version instead of overwriting it."
+            exit 1
+          fi
           AMD64=$(cat release-proof/release-proof-amd64/amd64.digest)
           ARM64=$(cat release-proof/release-proof-arm64/arm64.digest)
           docker buildx imagetools create --tag "$IMAGE:$VERSION" \

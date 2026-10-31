@@ -81,10 +81,10 @@ index d6142eb..6a8ff8b 100644
  			http.Error(w, err.Error(), http.StatusBadRequest)
 diff --git a/internal/streams/delete_stop_test.go b/internal/streams/delete_stop_test.go
 new file mode 100644
-index 0000000..5d8138c
+index 0000000..7fe9d9a
 --- /dev/null
 +++ b/internal/streams/delete_stop_test.go
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,446 @@
 +package streams
 +
 +import (
@@ -108,6 +108,7 @@ index 0000000..5d8138c
 +	stopped atomic.Int32
 +	once    sync.Once
 +	done    chan struct{}
++	onStop  func()
 +}
 +
 +func newDeleteStopProducer() *deleteStopProducer {
@@ -118,7 +119,13 @@ index 0000000..5d8138c
 +func (p *deleteStopProducer) Start() error { <-p.done; return nil }
 +func (p *deleteStopProducer) Stop() error {
 +	p.stopped.Add(1)
-+	p.once.Do(func() { p.Connection.Stop(); close(p.done) })
++	p.once.Do(func() {
++		if p.onStop != nil {
++			p.onStop()
++		}
++		p.Connection.Stop()
++		close(p.done)
++	})
 +	return nil
 +}
 +
@@ -450,6 +457,80 @@ index 0000000..5d8138c
 +		t.Fatal("config failure skipped resource teardown")
 +	}
 +}
++
++func TestDeleteStopWaitsForReconnectBeforeClosingConsumers(t *testing.T) {
++	oldConn, freshConn := newDeleteStopProducer(), newDeleteStopProducer()
++	dialStarted, releaseDial := make(chan struct{}), make(chan struct{})
++	var releaseOnce sync.Once
++	release := func() { releaseOnce.Do(func() { close(releaseDial) }) }
++	HandleFunc("delete-stop-probe", func(string) (core.Producer, error) {
++		close(dialStarted)
++		<-releaseDial
++		return freshConn, nil
++	})
++	t.Cleanup(func() { delete(handlers, "delete-stop-probe") })
++	stream := NewStream("delete-stop-probe:reconnecting")
++	producer := stream.producers[0]
++	producer.conn, producer.state, producer.workerID = oldConn, stateStart, 1
++	producer.receivers = oldConn.Receivers
++	consumer := newDeleteStopConsumer()
++	if err := consumer.AddTrack(oldConn.Medias[0], oldConn.Medias[0].Codecs[0], oldConn.Receivers[0]); err != nil {
++		t.Fatal(err)
++	}
++	stream.consumers = []core.Consumer{consumer}
++	name := setupDeleteStopTest(t, stream)
++	t.Cleanup(release)
++	consumer.onStop = func() {
++		if oldConn.stopped.Load() != 1 || freshConn.stopped.Load() != 1 {
++			t.Error("consumer stopped before reconnect and producer teardown completed")
++		}
++	}
++	// RTSP close callbacks can remove resources synchronously. The closed
++	// stream must neither hold its mutex nor re-enter the producer mutex.
++	freshConn.onStop = func() {
++		stream.RemoveConsumer(consumer)
++		stream.RemoveProducer(freshConn)
++	}
++	reconnected := make(chan struct{})
++	go func() { producer.reconnect(1, 0); close(reconnected) }()
++	select {
++	case <-dialStarted:
++	case <-time.After(time.Second):
++		t.Fatal("replacement dial did not start")
++	}
++	deleted := make(chan int, 1)
++	go func() { deleted <- requestDeleteStop(name, true, "delete-stop-probe:reconnecting") }()
++	deadline := time.Now().Add(time.Second)
++	for {
++		stream.mu.Lock()
++		closed := stream.closed
++		stream.mu.Unlock()
++		if closed {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("teardown did not mark the stream closed")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	release()
++	select {
++	case status := <-deleted:
++		if status != http.StatusOK {
++			t.Fatalf("DELETE status=%d", status)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("producer close callback deadlocked teardown")
++	}
++	select {
++	case <-reconnected:
++	case <-time.After(time.Second):
++		t.Fatal("replacement dial did not finish")
++	}
++	if Get(name) != nil || producer.conn != nil || oldConn.stopped.Load() != 1 || freshConn.stopped.Load() != 1 {
++		t.Fatal("teardown retained a reconnected producer")
++	}
++}
 diff --git a/internal/streams/producer.go b/internal/streams/producer.go
 index 09e2dcc..f493f67 100644
 --- a/internal/streams/producer.go
@@ -477,7 +558,7 @@ index 09e2dcc..f493f67 100644
  		log.Trace().Msgf("[streams] skip stop none producer")
  		return
 diff --git a/internal/streams/stream.go b/internal/streams/stream.go
-index 984c73e..b505258 100644
+index 984c73e..57709e8 100644
 --- a/internal/streams/stream.go
 +++ b/internal/streams/stream.go
 @@ -13,6 +13,9 @@ type Stream struct {
@@ -490,7 +571,7 @@ index 984c73e..b505258 100644
  }
  
  func NewStream(source any) *Stream {
-@@ -79,10 +82,40 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
+@@ -79,10 +82,41 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
  func (s *Stream) AddProducer(prod core.Producer) {
  	producer := &Producer{conn: prod, state: stateExternal, url: "external"}
  	s.mu.Lock()
@@ -519,11 +600,12 @@ index 984c73e..b505258 100644
 +		s.consumers = nil
 +		s.mu.Unlock()
 +		// Stop may call back into this stream; do not hold its mutex.
-+		for _, consumer := range consumers {
-+			_ = consumer.Stop()
-+		}
++		// Finish producer reconnect/track moves before detaching consumers.
 +		for _, producer := range producers {
 +			producer.stopWithForce(true)
++		}
++		for _, consumer := range consumers {
++			_ = consumer.Stop()
 +		}
 +	})
 +}
@@ -531,7 +613,7 @@ index 984c73e..b505258 100644
  func (s *Stream) RemoveProducer(prod core.Producer) {
  	s.mu.Lock()
  	for i, producer := range s.producers {
-@@ -101,6 +134,10 @@ func (s *Stream) stopProducers() {
+@@ -101,6 +135,10 @@ func (s *Stream) stopProducers() {
  	}
  
  	s.mu.Lock()

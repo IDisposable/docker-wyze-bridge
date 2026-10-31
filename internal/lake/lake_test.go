@@ -151,6 +151,9 @@ func TestGatewayJoinAndCancellation(t *testing.T) {
 			if !strings.Contains(answer, "H265") {
 				t.Fatal("no HEVC answer")
 			}
+			if s.videoUID != 777 || s.videoSSRC != 1234 {
+				t.Fatal("diagnostics did not retain the negotiated video identity")
+			}
 			join := <-joins
 			if str(join.Body["mode"]) != "rtc" || str(join.Body["role"]) != "host" || str(join.Body["aes_secret"]) != "wrapped-key" {
 				t.Fatal("wrong communication/encryption join")

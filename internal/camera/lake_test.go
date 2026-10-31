@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,6 +38,9 @@ func TestLakeOutputsAndQuality(t *testing.T) {
 	if !strings.Contains(streams["front"].Producers[0].URL, "ffmpeg:front_4k#video=h264#width=1920#height=1080") {
 		t.Fatal("preview did not consume the native output")
 	}
+	if !strings.HasSuffix(streams["front"].Producers[0].URL, "#input=wyze_lake_preview_input#raw=wyze_lake_preview") {
+		t.Fatal("preview inherited global decoder flags or lost its output settings")
+	}
 	native := streams["front_4k"].Producers[0].URL
 	raw := streams["front_lake"].Producers[0].URL
 	if e := m.SetQuality(context.Background(), "front", "sd"); e != nil {
@@ -51,6 +55,9 @@ func TestLakeOutputsAndQuality(t *testing.T) {
 	}
 	if !strings.Contains(streams["front"].Producers[0].URL, "#width=640#height=360") {
 		t.Fatal("SD preview routing was lost")
+	}
+	if !strings.HasSuffix(streams["front"].Producers[0].URL, "#input=wyze_lake_preview_input#raw=wyze_lake_preview") {
+		t.Fatal("SD preview lost its decoder or output settings")
 	}
 	stopped := false
 	m.SetLakeReset(func(name string) {
@@ -87,25 +94,162 @@ func TestLakeNativeStallAndIdle(t *testing.T) {
 	m, _ := newLakeTestManager(t)
 	now := time.Now()
 	native := &go2rtcmgr.StreamInfo{Producers: []go2rtcmgr.ProducerInfo{{BytesRecv: 100}}, Consumers: []go2rtcmgr.ConsumerInfo{{}}}
-	if !m.lakeStreamHealthy("front", native, now) {
+	if !m.lakeStreamHealthy("front", native, now, false) {
 		t.Fatal("startup incorrectly failed")
 	}
-	if !m.lakeStreamHealthy("front", native, now.Add(30*time.Second)) {
+	if !m.lakeStreamHealthy("front", native, now.Add(30*time.Second), false) {
 		t.Fatal("transient delay failed")
 	}
-	if m.lakeStreamHealthy("front", native, now.Add(61*time.Second)) {
+	if m.lakeStreamHealthy("front", native, now.Add(61*time.Second), false) {
 		t.Fatal("stalled producer remained healthy")
 	}
 	native.Producers[0].BytesRecv = 200
-	if !m.lakeStreamHealthy("front", native, now.Add(62*time.Second)) {
+	if !m.lakeStreamHealthy("front", native, now.Add(62*time.Second), false) {
 		t.Fatal("new bytes did not restore health")
 	}
 	native.Consumers = nil
-	if !m.lakeStreamHealthy("front", native, now.Add(5*time.Minute)) {
+	if !m.lakeStreamHealthy("front", native, now.Add(5*time.Minute), false) {
 		t.Fatal("idle stream was failed")
 	}
-	if m.lakeStreamHealthy("front", nil, now) {
+	if m.lakeStreamHealthy("front", nil, now, false) {
 		t.Fatal("missing native registration was accepted")
+	}
+}
+
+func TestLakeHealthRequiresDemandedUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		previewViewers, nativeViewers int
+		transportReaders              int
+		transportData, nativeData     bool
+		wantError                     bool
+	}{
+		{"frozen preview with no upstream readers", 1, 0, 0, false, false, true},
+		{"preview with stalled native worker", 1, 0, 1, true, false, true},
+		{"native viewer with stalled transport", 0, 1, 0, false, true, true},
+		{"native viewer with live upstream and idle preview", 0, 1, 1, true, true, false},
+		{"all outputs idle", 0, 0, 0, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var received atomic.Int64
+			received.Store(100)
+			stream := func(readers int, progressing bool) *go2rtcmgr.StreamInfo {
+				var bytes int64
+				if progressing {
+					bytes = received.Load()
+				}
+				return &go2rtcmgr.StreamInfo{
+					Producers: []go2rtcmgr.ProducerInfo{{BytesRecv: bytes}},
+					Consumers: make([]go2rtcmgr.ConsumerInfo, readers),
+				}
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]*go2rtcmgr.StreamInfo{
+					"front":      stream(tc.previewViewers, true),
+					"front_4k":   stream(tc.nativeViewers, tc.nativeData),
+					"front_lake": stream(tc.transportReaders, tc.transportData),
+				})
+			}))
+			defer srv.Close()
+			api := go2rtcmgr.NewAPIClient(srv.URL, zerolog.Nop())
+			m := NewManager(&config.Config{}, nil, api, zerolog.Nop())
+			cam := NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+			m.cameras["front"] = cam
+			cam.SetState(StateStreaming)
+			m.HealthCheck(context.Background())
+			if cam.GetState() != StateStreaming {
+				t.Fatal("required upstream did not receive startup grace")
+			}
+			// Advance only the existing liveness timers. Preview bytes still
+			// grow, reproducing a stale picture encoded as valid H264 packets.
+			stalledSince := time.Now().Add(-61 * time.Second)
+			for _, stage := range []string{"transport", "native"} {
+				var bytes int64
+				if stage == "transport" && tc.transportData || stage == "native" && tc.nativeData {
+					bytes = 100
+				}
+				m.lakeHealth["front/"+stage] = lakeHealthState{bytes: bytes, lastData: stalledSince, required: true}
+			}
+			received.Store(200)
+			m.HealthCheck(context.Background())
+			if gotError := cam.GetState() == StateError; gotError != tc.wantError {
+				t.Fatalf("state=%v, want stalled upstream error=%t", cam.GetState(), tc.wantError)
+			}
+		})
+	}
+}
+
+func TestLakeEstablishedUpstreamContinuity(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		beforeIDs, afterIDs   []int64
+		before, after         int64
+		elapsed               time.Duration
+		required, wantHealthy bool
+	}{
+		{"same producer advances", []int64{1}, []int64{1}, 100, 200, time.Second, true, true},
+		{"same producer stalls", []int64{1}, []int64{1}, 100, 100, 61 * time.Second, true, false},
+		{"replacement counter overtakes old counter", []int64{1}, []int64{2}, 100, 200, time.Second, true, false},
+		{"same producer counter resets", []int64{1}, []int64{1}, 100, 50, time.Second, true, false},
+		{"legacy counter resets without identity", []int64{0}, []int64{0}, 100, 50, time.Second, true, false},
+		{"live producer disappears", []int64{1}, []int64{0}, 100, 0, time.Second, true, false},
+		{"first producer arrives", []int64{0}, []int64{1}, 0, 100, time.Second, true, true},
+		{"identity set reorders", []int64{1, 2}, []int64{2, 1}, 100, 200, time.Second, true, true},
+		{"identity set changes", []int64{1, 2}, []int64{1, 3}, 100, 200, time.Second, true, false},
+		{"preview replacement leaves upstream alone", []int64{1}, []int64{2}, 100, 50, time.Second, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := newLakeTestManager(t)
+			now := time.Now()
+			stream := func(ids []int64, bytes int64) *go2rtcmgr.StreamInfo {
+				producers := make([]go2rtcmgr.ProducerInfo, len(ids))
+				for i, id := range ids {
+					producers[i] = go2rtcmgr.ProducerInfo{ID: id, BytesRecv: bytes / int64(len(ids))}
+				}
+				return &go2rtcmgr.StreamInfo{Producers: producers, Consumers: []go2rtcmgr.ConsumerInfo{{}}}
+			}
+			if !m.lakeStreamHealthy("front/transport", stream(tc.beforeIDs, tc.before), now, tc.required) {
+				t.Fatal("initial observation did not establish a baseline")
+			}
+			if healthy := m.lakeStreamHealthy("front/transport", stream(tc.afterIDs, tc.after), now.Add(tc.elapsed), tc.required); healthy != tc.wantHealthy {
+				t.Fatalf("healthy=%t, want %t after upstream transition", healthy, tc.wantHealthy)
+			}
+		})
+	}
+}
+
+func TestLakeColdProducerChangesDoNotExtendGrace(t *testing.T) {
+	m, _ := newLakeTestManager(t)
+	now := time.Now()
+	stream := &go2rtcmgr.StreamInfo{Producers: []go2rtcmgr.ProducerInfo{{ID: 1}}, Consumers: []go2rtcmgr.ConsumerInfo{{}}}
+	if !m.lakeStreamHealthy("front/transport", stream, now, true) {
+		t.Fatal("cold producer did not receive startup grace")
+	}
+	stream.Producers[0].ID = 2
+	if !m.lakeStreamHealthy("front/transport", stream, now.Add(30*time.Second), true) {
+		t.Fatal("cold retry lost its remaining startup grace")
+	}
+	stream.Producers[0].ID = 3
+	if m.lakeStreamHealthy("front/transport", stream, now.Add(61*time.Second), true) {
+		t.Fatal("zero-byte producer retries extended startup grace indefinitely")
+	}
+}
+
+func TestLakeIdleDemandResetsUpstreamBaseline(t *testing.T) {
+	m, _ := newLakeTestManager(t)
+	now := time.Now()
+	stream := &go2rtcmgr.StreamInfo{Producers: []go2rtcmgr.ProducerInfo{{ID: 1, BytesRecv: 100}}, Consumers: []go2rtcmgr.ConsumerInfo{{}}}
+	if !m.lakeStreamHealthy("front/transport", stream, now, true) {
+		t.Fatal("live upstream was unhealthy")
+	}
+	// An internal worker may still be draining after both public outputs
+	// become idle. Its presence must not pin the next viewing session.
+	if !m.lakeStreamHealthy("front/transport", stream, now.Add(30*time.Second), false) {
+		t.Fatal("idle output was unhealthy")
+	}
+	stream.Producers[0] = go2rtcmgr.ProducerInfo{ID: 2, BytesRecv: 50}
+	if !m.lakeStreamHealthy("front/transport", stream, now.Add(time.Minute), true) {
+		t.Fatal("normal on-demand startup inherited an old producer baseline")
 	}
 }
 func TestLakeAliasCollision(t *testing.T) {
@@ -535,7 +679,7 @@ func TestLakeReconnectStartsFreshHealthGrace(t *testing.T) {
 	m.connectCamera(context.Background(), cam)
 	waiting := &go2rtcmgr.StreamInfo{Consumers: []go2rtcmgr.ConsumerInfo{{}}}
 	for _, stage := range []string{"transport", "native", "preview"} {
-		if !m.lakeStreamHealthy("front/"+stage, waiting, now) {
+		if !m.lakeStreamHealthy("front/"+stage, waiting, now, true) {
 			t.Errorf("new %s session inherited the previous stalled timer", stage)
 		}
 	}
