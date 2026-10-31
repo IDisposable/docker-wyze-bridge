@@ -1,6 +1,7 @@
 package wyzectl
 
 import (
+	"errors"
 	"context"
 	"encoding/json"
 	"io"
@@ -84,6 +85,9 @@ func TestClient_MethodRouting(t *testing.T) {
 		{"rotate_action left @ 50",
 			func(c *Client) error { return c.RotateByAction(context.Background(), "cam", RotationLeft, 50) },
 			"/api/wyze/rotate_action", `{"direction":1,"speed":50}`},
+		{"rotate_action stop",
+			func(c *Client) error { return c.RotateByAction(context.Background(), "cam", RotationStop, 5) },
+			"/api/wyze/rotate_action", `{"direction":0,"speed":5}`},
 		{"reset_rotation",
 			func(c *Client) error { return c.ResetRotation(context.Background(), "cam") },
 			"/api/wyze/reset_rotation", ""},
@@ -154,15 +158,15 @@ func TestClient_RotateByDegree_RejectsFirmwareVLimit(t *testing.T) {
 }
 
 func TestClient_SetPTZPosition_ClampsRange(t *testing.T) {
-	// K11018 payload uses uint8 vertical (0-40) and uint16 horizontal
-	// (0-350). Enforce client-side.
+	// K11018 payload uses uint8 vertical and uint16 horizontal. Widest
+	// observed ranges: vertical 0-180 (HL_PAN3), horizontal 0-359.
 	srv, got := newRecorder(t, http.StatusOK, "")
 	c := newClient(srv.URL)
-	if err := c.SetPTZPosition(context.Background(), "cam", 41, 0); err == nil {
-		t.Fatal("expected error for vertical=41")
+	if err := c.SetPTZPosition(context.Background(), "cam", 181, 0); err == nil {
+		t.Fatal("expected error for vertical=181")
 	}
-	if err := c.SetPTZPosition(context.Background(), "cam", 0, 351); err == nil {
-		t.Fatal("expected error for horizontal=351")
+	if err := c.SetPTZPosition(context.Background(), "cam", 0, 360); err == nil {
+		t.Fatal("expected error for horizontal=360")
 	}
 	if len(*got) != 0 {
 		t.Errorf("expected zero requests to be sent, got %d", len(*got))
@@ -308,5 +312,54 @@ func TestNightVisionMode_String(t *testing.T) {
 		if got := m.String(); got != want {
 			t.Errorf("%d.String() = %q, want %q", m, got, want)
 		}
+	}
+}
+
+func TestParseRotationDirection(t *testing.T) {
+	cases := map[string]RotationDirection{"left": RotationLeft, "RIGHT": RotationRight, " up ": RotationUp, "down": RotationDown, "stop": RotationStop}
+	for in, want := range cases {
+		got, ok := ParseRotationDirection(in)
+		if !ok || got != want {
+			t.Errorf("ParseRotationDirection(%q) = %v,%v want %v", in, got, ok, want)
+		}
+	}
+	if _, ok := ParseRotationDirection("sideways"); ok {
+		t.Error("expected ok=false for unknown direction")
+	}
+}
+
+func TestClient_RotateByAction_RejectsUnknownDirection(t *testing.T) {
+	srv, got := newRecorder(t, http.StatusOK, "")
+	c := newClient(srv.URL)
+	if err := c.RotateByAction(context.Background(), "cam", RotationDirection(9), 5); err == nil {
+		t.Fatal("expected error")
+	}
+	if len(*got) != 0 {
+		t.Errorf("expected no request, got %d", len(*got))
+	}
+}
+
+func TestClient_GetPTZPosition(t *testing.T) {
+	srv, got := newRecorder(t, http.StatusOK, `{"vertical":90,"horizontal":180}`)
+	c := newClient(srv.URL)
+	c.SetBasicAuth("u", "p")
+	pos, err := c.GetPTZPosition(context.Background(), "cam")
+	if err != nil {
+		t.Fatalf("GetPTZPosition: %v", err)
+	}
+	if pos.Vertical != 90 || pos.Horizontal != 180 {
+		t.Errorf("pos = %+v", pos)
+	}
+	r := (*got)[0]
+	if r.method != "GET" || r.path != "/api/wyze/ptz_state" || r.src != "cam" || r.auth == "" {
+		t.Errorf("request = %+v", r)
+	}
+}
+
+func TestClient_GetPTZPosition_Offline(t *testing.T) {
+	srv, _ := newRecorder(t, http.StatusNotFound, `stream "cam" has no active wyze camera`)
+	c := newClient(srv.URL)
+	if _, err := c.GetPTZPosition(context.Background(), "cam"); !errors.Is(err, ErrCameraOffline) {
+		t.Errorf("err = %v, want ErrCameraOffline", err)
 	}
 }

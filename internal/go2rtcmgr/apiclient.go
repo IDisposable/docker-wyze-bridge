@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -259,4 +260,50 @@ func (c *APIClient) GetSnapshot(ctx context.Context, name string) ([]byte, error
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+// PlayToStream redirects src into the dst stream's consumer side
+// (POST /api/streams?dst=&src=). For Wyze cameras this plays audio out of
+// the camera speaker via go2rtc's backchannel.
+func (c *APIClient) PlayToStream(ctx context.Context, dst, src string) error {
+	u := fmt.Sprintf("%s/api/streams?dst=%s&src=%s", c.baseURL, url.QueryEscape(dst), url.QueryEscape(src))
+	req, err := http.NewRequestWithContext(ctx, "POST", u, nil)
+	if err != nil {
+		return err
+	}
+	c.applyAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("play to %q: %w", dst, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("play to %q: %d %s", dst, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// BackchannelCodec returns the go2rtc codec string of the stream's
+// sendonly audio track (e.g. "PCML/16000/1"), or "" when the active
+// producer has no speaker channel.
+func (c *APIClient) BackchannelCodec(ctx context.Context, name string) (string, error) {
+	info, err := c.GetStreamInfo(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range info.Producers {
+		for _, m := range p.Medias {
+			s, ok := m.(string)
+			if !ok {
+				continue
+			}
+			// "audio, sendonly, PCML/16000/1"
+			parts := strings.Split(s, ",")
+			if len(parts) == 3 && strings.TrimSpace(parts[0]) == "audio" && strings.TrimSpace(parts[1]) == "sendonly" {
+				return strings.TrimSpace(parts[2]), nil
+			}
+		}
+	}
+	return "", nil
 }

@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -207,27 +208,46 @@ func (c *Client) TakePhoto(ctx context.Context, cam string) error {
 }
 
 // RotationDirection is the discrete direction accepted by
-// RotateByAction. Byte values match K11002SetRotaryByAction
-// (wyzecam tutk_protocol.py:995).
+// RotateByAction. The fork maps it onto K11002SetRotaryByAction's
+// separate horizontal/vertical bytes (wyzecam tutk_protocol.py:995).
 type RotationDirection byte
 
 const (
+	RotationStop  RotationDirection = 0
 	RotationLeft  RotationDirection = 1
 	RotationRight RotationDirection = 2
 	RotationUp    RotationDirection = 3
 	RotationDown  RotationDirection = 4
 )
 
-// RotateByAction moves the pan/tilt motor in a discrete direction at
-// the given speed (0-100 typical; camera clamps out-of-range values).
-// Meaningful on pan-capable hardware only (HL_PAN2/3/P, WYZECP1_JEF).
-// K11002SetRotaryByAction, payload `[direction:1, direction:1, speed:1]`
-// (direction duplicated for legacy protocol reasons).
+// ParseRotationDirection accepts "left"/"right"/"up"/"down"/"stop"
+// (case-insensitive). ok=false on anything else.
+func ParseRotationDirection(raw string) (RotationDirection, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "stop":
+		return RotationStop, true
+	case "left":
+		return RotationLeft, true
+	case "right":
+		return RotationRight, true
+	case "up":
+		return RotationUp, true
+	case "down":
+		return RotationDown, true
+	}
+	return 0, false
+}
+
+// RotateByAction starts the pan/tilt motor moving in a direction at
+// speed 1-9 (0 = firmware default 5). The motor keeps going until it
+// hits its travel limit or receives RotationStop, so press-and-hold
+// UIs send the direction on press and RotationStop on release.
 //
-// SPEC-ONLY: not verified against hardware — the maintainer has no
-// pan-cam in the test fleet. First community reporter to confirm gets
-// a mention in the changelog.
+// Verified on HL_PAN3 firmware 4.50.17.25 via K11006 position readback.
 func (c *Client) RotateByAction(ctx context.Context, cam string, dir RotationDirection, speed uint8) error {
+	if dir > RotationDown {
+		return fmt.Errorf("wyzectl: rotate_action direction %d outside [0, 4]", dir)
+	}
 	return c.postJSON(ctx, cam, "rotate_action", map[string]byte{
 		"direction": byte(dir),
 		"speed":     speed,
@@ -235,15 +255,15 @@ func (c *Client) RotateByAction(ctx context.Context, cam string, dir RotationDir
 }
 
 // RotateByDegree moves the pan/tilt motor by relative degrees.
-// Positive h = right, positive v = up. Speed is 0-100 (camera clamps).
 // K11000SetRotaryByDegree, payload `<hhB` = int16 h, int16 v, uint8 speed.
 //
 // Firmware quirk (#862): `v` values outside int8 range (-128..127) are
 // rejected by the camera even though the wire format allocates int16.
-// We enforce the tighter range client-side to fail fast rather than
-// send garbage.
+// We enforce the tighter range client-side to fail fast.
 //
-// SPEC-ONLY.
+// Note: HL_PAN3 firmware 4.50 accepts the command but barely moves
+// (a few degrees regardless of h/v); prefer SetPTZPosition for
+// precise moves on that model.
 func (c *Client) RotateByDegree(ctx context.Context, cam string, hDeg, vDeg int16, speed uint8) error {
 	if vDeg < -128 || vDeg > 127 {
 		return fmt.Errorf("wyzectl: rotate_degree vDeg %d outside [-128, 127] (firmware limit, #862)", vDeg)
@@ -255,20 +275,31 @@ func (c *Client) RotateByDegree(ctx context.Context, cam string, hDeg, vDeg int1
 	})
 }
 
+// PTZPosition is the motor's absolute position as reported by
+// K11006/K11007. On HL_PAN3, Horizontal is 0-359 (increasing = camera
+// turns left) and Vertical is 0-180 (0 = straight up, increasing =
+// tilting down). Older Pan models use a 0-40 vertical range.
+type PTZPosition struct {
+	Vertical   uint8  `json:"vertical"`
+	Horizontal uint16 `json:"horizontal"`
+}
+
 // SetPTZPosition moves the pan/tilt motor to an absolute position.
 // K11018SetPTZPosition, payload `<IBH` = uint32 timestamp-ms, uint8
-// vertical (0-40), uint16 horizontal (0-350). The fork's HTTP handler
-// injects the timestamp itself; callers just supply vertical and
-// horizontal.
+// vertical, uint16 horizontal. The fork's HTTP handler injects the
+// timestamp; callers supply vertical and horizontal.
 //
-// SPEC-ONLY. Values outside the 0-40 / 0-350 ranges are enforced
-// client-side; the camera would silently clamp or reject.
+// Bounds are the widest seen across Pan models (vertical 0-180 on
+// HL_PAN3, 0-40 on earlier Pans; horizontal 0-359). The firmware
+// clamps anything beyond its own mechanical range.
+//
+// Verified on HL_PAN3 firmware 4.50.17.25.
 func (c *Client) SetPTZPosition(ctx context.Context, cam string, vertical uint8, horizontal uint16) error {
-	if vertical > 40 {
-		return fmt.Errorf("wyzectl: ptz_position vertical %d outside [0, 40]", vertical)
+	if vertical > 180 {
+		return fmt.Errorf("wyzectl: ptz_position vertical %d outside [0, 180]", vertical)
 	}
-	if horizontal > 350 {
-		return fmt.Errorf("wyzectl: ptz_position horizontal %d outside [0, 350]", horizontal)
+	if horizontal > 359 {
+		return fmt.Errorf("wyzectl: ptz_position horizontal %d outside [0, 359]", horizontal)
 	}
 	return c.postJSON(ctx, cam, "ptz_position", map[string]interface{}{
 		"v": vertical,
@@ -276,11 +307,40 @@ func (c *Client) SetPTZPosition(ctx context.Context, cam string, vertical uint8,
 	})
 }
 
-// ResetRotation returns the motor to a stored reference position.
-// K11004ResetRotatePosition, payload `[position:1]` (default 3 in the
-// wyzecam reference implementation — appears to be the "home" preset).
-//
-// SPEC-ONLY.
+// GetPTZPosition reads the motor's current absolute position
+// (GET /api/wyze/ptz_state, backed by K11006GetCurCruisePoint).
+func (c *Client) GetPTZPosition(ctx context.Context, cam string) (PTZPosition, error) {
+	var pos PTZPosition
+	if cam == "" {
+		return pos, errors.New("wyzectl: camera name required")
+	}
+	u := fmt.Sprintf("%s/api/wyze/ptz_state?src=%s", c.baseURL, url.QueryEscape(cam))
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return pos, fmt.Errorf("wyzectl: build ptz_state: %w", err)
+	}
+	if c.authUsername != "" && c.authPassword != "" {
+		req.SetBasicAuth(c.authUsername, c.authPassword)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return pos, fmt.Errorf("wyzectl: ptz_state %s: %w", cam, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if err := mapStatus(resp.StatusCode, body, "ptz_state", cam); err != nil {
+		return pos, err
+	}
+	if err := json.Unmarshal(body, &pos); err != nil {
+		return pos, fmt.Errorf("wyzectl: ptz_state %s: decode: %w", cam, err)
+	}
+	return pos, nil
+}
+
+// ResetRotation returns the motor to its calibrated home position.
+// K11004ResetRotatePosition, payload `[position:1]` (3 in the wyzecam
+// reference implementation). On HL_PAN3 this runs a full calibration
+// sweep before settling, which takes ~20s.
 func (c *Client) ResetRotation(ctx context.Context, cam string) error {
 	return c.postJSON(ctx, cam, "reset_rotation", nil)
 }
@@ -326,9 +386,18 @@ func (c *Client) postJSON(ctx context.Context, cam, command string, body any) er
 	}
 	defer resp.Body.Close()
 
-	switch resp.StatusCode {
+	respBody, _ := io.ReadAll(resp.Body)
+	if err := mapStatus(resp.StatusCode, respBody, command, cam); err != nil {
+		return err
+	}
+	c.log.Debug().Str("cam", cam).Str("cmd", command).Msg("wyze control sent")
+	return nil
+}
+
+// mapStatus turns a go2rtc control response into the typed errors above.
+func mapStatus(status int, body []byte, command, cam string) error {
+	switch status {
 	case http.StatusOK, http.StatusNoContent, http.StatusAccepted:
-		c.log.Debug().Str("cam", cam).Str("cmd", command).Msg("wyze control sent")
 		return nil
 	case http.StatusNotFound:
 		// Two distinguishable causes for 404: unknown camera vs.
@@ -336,14 +405,11 @@ func (c *Client) postJSON(ctx context.Context, cam, command string, body any) er
 		// body — the fork's handler emits either when the stream
 		// lookup fails; a bare "404 page not found" from net/http's
 		// default mux (unknown endpoint) contains neither.
-		body, _ := io.ReadAll(resp.Body)
 		if bytes.Contains(body, []byte("src")) || bytes.Contains(body, []byte("camera")) {
 			return ErrCameraOffline
 		}
 		return ErrControlNotSupported
 	default:
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("wyzectl: %s %s: %d %s",
-			command, cam, resp.StatusCode, string(body))
+		return fmt.Errorf("wyzectl: %s %s: %d %s", command, cam, status, strings.TrimSpace(string(body)))
 	}
 }

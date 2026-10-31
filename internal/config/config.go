@@ -100,6 +100,11 @@ type Config struct {
 	SnapshotKeep     time.Duration
 	SnapshotCameras  []string
 
+	// Alerts — mirror of Wyze cloud motion/sound events (snapshots + clips).
+	AlertsInterval time.Duration // 0 disables
+	AlertsPath     string
+	AlertsKeep     time.Duration
+
 	// Sunrise/Sunset
 	Latitude  float64
 	Longitude float64
@@ -222,6 +227,10 @@ func Load() (*Config, error) {
 		SnapshotInterval: envSeconds("SNAPSHOT_INTERVAL", 0),
 		SnapshotKeep:     envDuration("SNAPSHOT_KEEP", 0),
 		SnapshotCameras:  envList("SNAPSHOT_CAMERAS"),
+
+		AlertsInterval: envDuration("ALERTS_INTERVAL", time.Minute),
+		AlertsPath:     env("ALERTS_PATH", "/media/alerts"),
+		AlertsKeep:     envDuration("ALERTS_KEEP", 7*24*time.Hour),
 
 		// Sunrise/Sunset
 		Latitude:  envFloat("LATITUDE", 0),

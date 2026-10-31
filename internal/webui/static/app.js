@@ -269,6 +269,8 @@
         wireSnapButtons();
         wireRecordButtons();
         wireDiscoverButton();
+        initPTZ();
+        initSpeak();
     }
 
     if (document.readyState === 'loading') {
@@ -276,4 +278,184 @@
     } else {
         init();
     }
+
+    // ── Pan / tilt (camera detail page, TUTK pan cams only) ──────────
+    // Press-and-hold: "move" on press, "stop" on release. The motor
+    // keeps turning until stopped or it reaches a travel limit.
+    function initPTZ() {
+        var box = document.querySelector('.ptz[data-cam]');
+        if (!box) return;
+        var cam = box.getAttribute('data-cam');
+        var posEl = box.querySelector('.ptz-pos');
+        var speedEl = box.querySelector('.ptz-speed input');
+        var moving = null;
+
+        function api(body) {
+            return fetch(B + '/api/cameras/' + cam + '/ptz', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            }).then(function(r) {
+                return r.json().then(function(j) {
+                    if (!r.ok) throw new Error(j.error || r.statusText);
+                    return j;
+                });
+            });
+        }
+
+        function refresh() {
+            fetch(B + '/api/cameras/' + cam + '/ptz').then(function(r) {
+                return r.ok ? r.json() : null;
+            }).then(function(j) {
+                if (j && j.position) {
+                    posEl.textContent = 'pan ' + j.position.horizontal + '\u00b0 \u00b7 tilt ' + j.position.vertical + '\u00b0';
+                }
+            }).catch(function() {});
+        }
+
+        function showError(err) {
+            posEl.textContent = err.message;
+        }
+
+        function start(dir) {
+            if (moving === dir) return;
+            moving = dir;
+            api({ action: 'move', direction: dir, speed: parseInt(speedEl.value, 10) }).catch(showError);
+        }
+
+        function stop() {
+            if (!moving) return;
+            moving = null;
+            api({ action: 'move', direction: 'stop' }).then(function() {
+                setTimeout(refresh, 400);
+            }).catch(showError);
+        }
+
+        // Tap = fixed 15-degree step (one request, latency-proof);
+        // hold past HOLD_MS = continuous move until release.
+        var HOLD_MS = 300;
+        box.querySelectorAll('.ptz-btn[data-dir]').forEach(function(btn) {
+            var dir = btn.getAttribute('data-dir');
+            var holdTimer = null;
+            btn.addEventListener('pointerdown', function(e) {
+                e.preventDefault();
+                if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
+                btn.classList.add('active');
+                holdTimer = setTimeout(function() {
+                    holdTimer = null;
+                    start(dir);
+                }, HOLD_MS);
+            });
+            function release() {
+                btn.classList.remove('active');
+                if (holdTimer) {
+                    clearTimeout(holdTimer);
+                    holdTimer = null;
+                    api({ action: 'step', direction: dir }).then(function() {
+                        setTimeout(refresh, 1500);
+                    }).catch(showError);
+                    return;
+                }
+                stop();
+            }
+            btn.addEventListener('pointerup', release);
+            ['pointercancel', 'lostpointercapture'].forEach(function(ev) {
+                btn.addEventListener(ev, function() {
+                    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; btn.classList.remove('active'); return; }
+                    btn.classList.remove('active');
+                    stop();
+                });
+            });
+            btn.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+        });
+
+        var home = box.querySelector('[data-ptz-home]');
+        if (home) {
+            home.addEventListener('click', function() {
+                posEl.textContent = 'recalibrating\u2026';
+                api({ action: 'home' }).then(function() {
+                    setTimeout(refresh, 20000);
+                }).catch(showError);
+            });
+        }
+
+        var keys = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+        document.addEventListener('keydown', function(e) {
+            var dir = keys[e.key];
+            if (!dir || e.target.closest('input, textarea, select')) return;
+            e.preventDefault();
+            start(dir);
+        });
+        document.addEventListener('keyup', function(e) {
+            if (keys[e.key]) stop();
+        });
+        window.addEventListener('blur', stop);
+
+        refresh();
+    }
+
+
+    // ── Voice message (camera detail page) ───────────────────────────
+    // Record with the browser microphone (requires https or localhost) or
+    // pick a file; the bridge plays it out of the camera speaker.
+    function initSpeak() {
+        var box = document.querySelector('.speak[data-cam]');
+        if (!box) return;
+        var cam = box.getAttribute('data-cam');
+        var status = box.querySelector('.speak-status');
+        var recBtn = box.querySelector('.speak-rec');
+        var fileIn = box.querySelector('.speak-upload input');
+        var recorder = null, chunks = [], timer = null;
+
+        function send(blob, filename) {
+            var fd = new FormData();
+            fd.append('audio', blob, filename);
+            status.textContent = 'sending\u2026';
+            fetch(B + '/api/cameras/' + cam + '/speak', { method: 'POST', body: fd })
+                .then(function(r) { return r.json().then(function(j) {
+                    if (!r.ok) throw new Error(j.error || r.statusText);
+                    return j;
+                }); })
+                .then(function(j) {
+                    status.textContent = 'playing (' + j.seconds.toFixed(1) + 's)';
+                    setTimeout(function() { status.textContent = ''; }, (j.seconds + 2) * 1000);
+                })
+                .catch(function(err) { status.textContent = err.message; });
+        }
+
+        function stopRec() {
+            if (recorder && recorder.state === 'recording') recorder.stop();
+            clearTimeout(timer);
+        }
+
+        recBtn.addEventListener('click', function() {
+            if (recorder && recorder.state === 'recording') { stopRec(); return; }
+            if (!navigator.mediaDevices || !window.MediaRecorder) {
+                status.textContent = 'recording needs https (use the public URL) or a file';
+                return;
+            }
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+                chunks = [];
+                recorder = new MediaRecorder(stream);
+                recorder.ondataavailable = function(e) { if (e.data.size) chunks.push(e.data); };
+                recorder.onstop = function() {
+                    stream.getTracks().forEach(function(t) { t.stop(); });
+                    recBtn.classList.remove('on');
+                    recBtn.innerHTML = '&#127908; Record';
+                    send(new Blob(chunks, { type: recorder.mimeType }), 'message.webm');
+                };
+                recorder.start();
+                recBtn.classList.add('on');
+                recBtn.innerHTML = '&#9209; Stop &amp; send';
+                status.textContent = 'recording\u2026 (max 60s)';
+                timer = setTimeout(stopRec, 60000);
+            }).catch(function(err) { status.textContent = 'microphone: ' + err.message; });
+        });
+
+        fileIn.addEventListener('change', function() {
+            if (fileIn.files.length) send(fileIn.files[0], fileIn.files[0].name);
+            fileIn.value = '';
+        });
+    }
+
 })();

@@ -3,10 +3,14 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzectl"
 )
 
 // handleFavicon serves the embedded icon.png as the tab favicon.
@@ -173,8 +177,169 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			"recording": s.recMgr.IsRecording(name),
 		})
 
+	case action == "ptz":
+		s.handlePTZ(w, r, cam)
+
+	case action == "speak":
+		s.handleSpeak(w, r, cam)
+
 	default:
 		writeJSONError(w, http.StatusNotFound, "not found")
+	}
+}
+
+// handlePTZ drives a pan/tilt camera through go2rtc's Wyze control
+// endpoints. GET returns the current position; POST accepts one of:
+//
+//	{"action":"move","direction":"left|right|up|down|stop","speed":1-9}
+//	{"action":"step","direction":"left|right|up|down","degrees":1-90}
+//	{"action":"goto","vertical":0-180,"horizontal":0-359}
+//	{"action":"home"}
+//
+// "move" starts the motor; it keeps going until "stop" or a travel
+// limit, so press-and-hold UIs send move on press and stop on release.
+// "step" reads the current position and moves a fixed number of
+// degrees (default 15). It is latency-proof, so it suits taps over
+// slow links where a stop could arrive late and overshoot.
+func (s *Server) handlePTZ(w http.ResponseWriter, r *http.Request, cam *camera.Camera) {
+	info := cam.GetInfo()
+	if !info.IsPanCam() {
+		writeJSONError(w, http.StatusBadRequest, "camera does not support pan/tilt")
+		return
+	}
+	if info.IsWebRTCStreamer() {
+		writeJSONError(w, http.StatusNotImplemented, "pan/tilt is only available for TUTK cameras")
+		return
+	}
+	ctl := s.ptz.Load()
+	if ctl == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "bridge still starting; go2rtc not yet ready")
+		return
+	}
+	name := cam.Name()
+	ctx := r.Context()
+
+	if r.Method == http.MethodGet {
+		pos, err := ctl.GetPTZPosition(ctx, name)
+		if err != nil {
+			writePTZError(w, err)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "camera": name, "position": pos})
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		writeJSONError(w, http.StatusMethodNotAllowed, "GET or POST required")
+		return
+	}
+
+	var body struct {
+		Action     string `json:"action"`
+		Direction  string `json:"direction"`
+		Speed      *int   `json:"speed"`
+		Vertical   *int   `json:"vertical"`
+		Horizontal *int   `json:"horizontal"`
+		Degrees    *int   `json:"degrees"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	var err error
+	switch body.Action {
+	case "move", "":
+		dir, ok := wyzectl.ParseRotationDirection(body.Direction)
+		if !ok {
+			writeJSONError(w, http.StatusBadRequest, "direction must be left, right, up, down or stop")
+			return
+		}
+		speed := 5
+		if body.Speed != nil {
+			speed = *body.Speed
+		}
+		if speed < 1 || speed > 9 {
+			writeJSONError(w, http.StatusBadRequest, "speed must be 1-9")
+			return
+		}
+		err = ctl.RotateByAction(ctx, name, dir, uint8(speed))
+	case "goto":
+		if body.Vertical == nil || body.Horizontal == nil {
+			writeJSONError(w, http.StatusBadRequest, "goto requires vertical and horizontal")
+			return
+		}
+		v, h := *body.Vertical, *body.Horizontal
+		if v < 0 || v > 180 || h < 0 || h > 359 {
+			writeJSONError(w, http.StatusBadRequest, "vertical must be 0-180 and horizontal 0-359")
+			return
+		}
+		err = ctl.SetPTZPosition(ctx, name, uint8(v), uint16(h))
+	case "step":
+		dir, ok := wyzectl.ParseRotationDirection(body.Direction)
+		if !ok || dir == wyzectl.RotationStop {
+			writeJSONError(w, http.StatusBadRequest, "direction must be left, right, up or down")
+			return
+		}
+		deg := 15
+		if body.Degrees != nil {
+			deg = *body.Degrees
+		}
+		if deg < 1 || deg > 90 {
+			writeJSONError(w, http.StatusBadRequest, "degrees must be 1-90")
+			return
+		}
+		pos, perr := ctl.GetPTZPosition(ctx, name)
+		if perr != nil {
+			writePTZError(w, perr)
+			return
+		}
+		v, h := stepPosition(pos, dir, deg)
+		err = ctl.SetPTZPosition(ctx, name, v, h)
+	case "home":
+		err = ctl.ResetRotation(ctx, name)
+	default:
+		writeJSONError(w, http.StatusBadRequest, "action must be move, goto or home")
+		return
+	}
+	if err != nil {
+		writePTZError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok", "camera": name})
+}
+
+// stepPosition computes the absolute target for a relative step.
+// Observed on HL_PAN3: horizontal grows as the camera turns left
+// (0-359, hard stops at both ends, no wraparound) and vertical grows
+// as it tilts down (0 = straight up, 180 = straight down). Targets
+// are clamped; the firmware clamps further to its mechanical range.
+func stepPosition(pos wyzectl.PTZPosition, dir wyzectl.RotationDirection, deg int) (uint8, uint16) {
+	v, h := int(pos.Vertical), int(pos.Horizontal)
+	switch dir {
+	case wyzectl.RotationLeft:
+		h += deg
+	case wyzectl.RotationRight:
+		h -= deg
+	case wyzectl.RotationUp:
+		v -= deg
+	case wyzectl.RotationDown:
+		v += deg
+	}
+	v = min(max(v, 0), 180)
+	h = min(max(h, 0), 359)
+	return uint8(v), uint16(h)
+}
+
+// writePTZError maps wyzectl errors onto HTTP status codes.
+func writePTZError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, wyzectl.ErrCameraOffline):
+		writeJSONError(w, http.StatusConflict, "camera has no active stream; open the live view and try again")
+	case errors.Is(err, wyzectl.ErrControlNotSupported):
+		writeJSONError(w, http.StatusNotImplemented, "this go2rtc build has no Wyze control endpoints")
+	default:
+		writeJSONError(w, http.StatusBadGateway, err.Error())
 	}
 }
 

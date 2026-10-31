@@ -134,6 +134,11 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"HLSURL":    fmt.Sprintf("http://%s:%d/hls/%s.m3u8", bridgeIP, s.cfg.BridgePort, name),
 		"Go2RTCURL": fmt.Sprintf("%s/ws?src=%s", basePath, name),
 		"BridgeIP":  bridgeIP,
+		// PTZ controls render for TUTK pan cams; WebRTC-path pans
+		// (Pan v4, Pan Duo) don't share the TUTK control channel.
+		"PTZ": snap.Info.IsPanCam() && !snap.Info.IsWebRTCStreamer(),
+		// Voice messages ride the TUTK backchannel.
+		"Speak": !snap.Info.IsWebRTCStreamer(),
 	}
 
 	tmpl, err := template.New("camera").Parse(cameraHTML)
@@ -161,6 +166,7 @@ const indexHTML = `<!DOCTYPE html>
     <header>
         <h1>Wyze Bridge <span class="version">v{{.Version}}</span></h1>
         <nav class="header-nav">
+            <a href="{{.BasePath}}/alerts" title="Motion and sound alerts">Alerts</a>
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
         </nav>
         <button type="button" id="discover-btn" class="discover-btn" title="Re-poll Wyze API for added/removed cameras">↻ Rediscover</button>
@@ -217,6 +223,7 @@ const cameraHTML = `<!DOCTYPE html>
         <a href="{{.BasePath}}/" class="back">&larr; All Cameras</a>
         <h1>{{.Nickname}} <span class="version">v{{.Version}}</span></h1>
         <nav class="header-nav">
+            <a href="{{.BasePath}}/alerts" title="Motion and sound alerts">Alerts</a>
             <a href="{{.BasePath}}/metrics" title="Metrics, issues, events">Metrics</a>
         </nav>
     </header>
@@ -225,6 +232,29 @@ const cameraHTML = `<!DOCTYPE html>
             <video-rtc src="{{.Go2RTCURL}}"></video-rtc>
         </div>
         <div class="camera-meta">
+            {{if .PTZ}}
+            <div class="ptz" data-cam="{{.Name}}">
+                <h3>Pan / Tilt <small class="ptz-pos" aria-live="polite"></small></h3>
+                <div class="ptz-pad">
+                    <button type="button" class="ptz-btn ptz-up" data-dir="up" title="Tilt up (hold)" aria-label="Tilt up">&#9650;</button>
+                    <button type="button" class="ptz-btn ptz-left" data-dir="left" title="Pan left (hold)" aria-label="Pan left">&#9664;</button>
+                    <button type="button" class="ptz-btn ptz-home" data-ptz-home title="Recalibrate and return home (~20s)" aria-label="Home">&#8962;</button>
+                    <button type="button" class="ptz-btn ptz-right" data-dir="right" title="Pan right (hold)" aria-label="Pan right">&#9654;</button>
+                    <button type="button" class="ptz-btn ptz-down" data-dir="down" title="Tilt down (hold)" aria-label="Tilt down">&#9660;</button>
+                </div>
+                <label class="ptz-speed">Speed <input type="range" min="1" max="9" value="5"></label>
+                <p class="ptz-hint">Tap to step 15&deg;; hold to move continuously. Arrow keys work too.</p>
+            </div>
+            {{end}}
+            {{if .Speak}}
+            <div class="speak" data-cam="{{.Name}}">
+                <h3>Voice message <small class="speak-status" aria-live="polite"></small></h3>
+                <div class="speak-row">
+                    <button type="button" class="speak-rec" title="Record, then press again to send">&#127908; Record</button>
+                    <label class="speak-upload" title="Send an audio file (max 60s)">&#128193; Send file<input type="file" accept="audio/*" hidden></label>
+                </div>
+            </div>
+            {{end}}
             <table>
                 <tr><td>Model</td><td>{{.ModelName}} ({{.Model}})</td></tr>
                 <tr><td>State</td><td><span class="state-badge {{.State}}">{{.State}}</span></td></tr>
@@ -233,6 +263,7 @@ const cameraHTML = `<!DOCTYPE html>
                 <tr><td>IP</td><td>{{.IP}}</td></tr>
                 <tr><td>MAC</td><td>{{.MAC}}</td></tr>
                 <tr><td>Firmware</td><td>{{.FWVersion}}</td></tr>
+                <tr><td>Alerts</td><td><a href="{{.BasePath}}/alerts?camera={{.Name}}">View motion/sound alerts</a></td></tr>
             </table>
             <div class="stream-urls">
                 <h3>Stream URLs <small>(click to copy)</small></h3>
