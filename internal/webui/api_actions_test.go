@@ -255,6 +255,13 @@ func TestHandleShimKVSSignaling_HappyPath(t *testing.T) {
 	if len(servers) != 2 {
 		t.Errorf("servers count = %d, want 2", len(servers))
 	}
+	// go2rtc only reads "urls"; anything else leaves pion with no STUN/TURN (#150)
+	for i, s := range servers {
+		m, _ := s.(map[string]interface{})
+		if _, ok := m["urls"].(string); !ok {
+			t.Errorf("servers[%d] has no \"urls\": %v", i, m)
+		}
+	}
 }
 
 func TestHandleShimKVSSignaling_NonWebRTCCameraRejected(t *testing.T) {
