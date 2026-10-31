@@ -1,0 +1,843 @@
+diff --git a/internal/streams/add_consumer.go b/internal/streams/add_consumer.go
+index 7400ce6..ed28aa6 100644
+--- a/internal/streams/add_consumer.go
++++ b/internal/streams/add_consumer.go
+@@ -8,8 +8,16 @@ import (
+ )
+ 
+ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
++	s.mu.Lock()
++	if s.closed {
++		s.mu.Unlock()
++		return errors.New("streams: stream closed")
++	}
+ 	// support for multiple simultaneous pending from different consumers
+ 	consN := s.pending.Add(1) - 1
++	s.pendingWG.Add(1)
++	s.mu.Unlock()
++	defer s.pendingWG.Done()
+ 
+ 	var prodErrors = make([]error, len(s.producers))
+ 	var prodMedias []*core.Media
+@@ -103,6 +111,13 @@ func (s *Stream) AddConsumer(cons core.Consumer) (err error) {
+ 	}
+ 
+ 	s.mu.Lock()
++	if s.closed {
++		// Teardown waits for pending attachments, then closes this consumer
++		// with the others. Do not start or expose the late connection.
++		s.consumers = append(s.consumers, cons)
++		s.mu.Unlock()
++		return errors.New("streams: stream closed")
++	}
+ 	s.consumers = append(s.consumers, cons)
+ 	s.mu.Unlock()
+ 
+diff --git a/internal/streams/api.go b/internal/streams/api.go
+index d6142eb..6a8ff8b 100644
+--- a/internal/streams/api.go
++++ b/internal/streams/api.go
+@@ -98,7 +98,40 @@ func apiStreams(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 
+ 	case "DELETE":
+-		delete(streams, src)
++		if query.Get("stop") == "1" {
++			streamsMu.Lock()
++			stream := streams[src]
++			if stream == nil {
++				streamsMu.Unlock()
++				return
++			}
++			if allowed := query["if_src"]; len(allowed) > 0 {
++				sources := stream.Sources()
++				matched := false
++				if len(sources) == 1 {
++					for _, source := range allowed {
++						matched = matched || sources[0] == source
++					}
++				}
++				if !matched {
++					streamsMu.Unlock()
++					http.Error(w, "stream source changed", http.StatusConflict)
++					return
++				}
++			}
++			delete(streams, src)
++			// Remove metadata before a concurrent PUT can install a replacement.
++			// Resource cleanup may wait for pending clients or close callbacks.
++			err := app.PatchConfig([]string{"streams", src}, nil)
++			streamsMu.Unlock()
++			stream.close()
++			if err != nil {
++				http.Error(w, err.Error(), http.StatusBadRequest)
++			}
++			return
++		} else {
++			delete(streams, src)
++		}
+ 
+ 		if err := app.PatchConfig([]string{"streams", src}, nil); err != nil {
+ 			http.Error(w, err.Error(), http.StatusBadRequest)
+diff --git a/internal/streams/delete_stop_test.go b/internal/streams/delete_stop_test.go
+new file mode 100644
+index 0000000..7fe9d9a
+--- /dev/null
++++ b/internal/streams/delete_stop_test.go
+@@ -0,0 +1,446 @@
++package streams
++
++import (
++	"bytes"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"os"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/AlexxIT/go2rtc/internal/app"
++	"github.com/AlexxIT/go2rtc/pkg/core"
++)
++
++type deleteStopProducer struct {
++	core.Connection
++	stopped atomic.Int32
++	once    sync.Once
++	done    chan struct{}
++	onStop  func()
++}
++
++func newDeleteStopProducer() *deleteStopProducer {
++	codec := &core.Codec{Name: core.CodecH264, ClockRate: 90000}
++	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{codec}}
++	return &deleteStopProducer{Connection: core.Connection{Medias: []*core.Media{media}, Receivers: []*core.Receiver{core.NewReceiver(media, codec)}}, done: make(chan struct{})}
++}
++func (p *deleteStopProducer) Start() error { <-p.done; return nil }
++func (p *deleteStopProducer) Stop() error {
++	p.stopped.Add(1)
++	p.once.Do(func() {
++		if p.onStop != nil {
++			p.onStop()
++		}
++		p.Connection.Stop()
++		close(p.done)
++	})
++	return nil
++}
++
++type deleteStopConsumer struct {
++	core.Connection
++	stopped atomic.Int32
++	mu      sync.Mutex
++	once    sync.Once
++	onStop  func()
++}
++
++func newDeleteStopConsumer() *deleteStopConsumer {
++	return &deleteStopConsumer{Connection: core.Connection{Medias: []*core.Media{{Kind: core.KindVideo, Direction: core.DirectionSendonly, Codecs: []*core.Codec{{Name: core.CodecH264, ClockRate: 90000}}}}}}
++}
++func (c *deleteStopConsumer) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.Senders = append(c.Senders, core.NewSender(media, codec).WithParent(track))
++	return nil
++}
++func (c *deleteStopConsumer) Stop() error {
++	c.stopped.Add(1)
++	c.once.Do(func() {
++		if c.onStop != nil {
++			c.onStop()
++		}
++		c.mu.Lock()
++		defer c.mu.Unlock()
++		c.Connection.Stop()
++	})
++	return nil
++}
++
++func setupDeleteStopTest(t *testing.T, stream *Stream) string {
++	t.Helper()
++	name := "delete-stop-test"
++	oldConfig := app.ConfigPath
++	app.ConfigPath = t.TempDir() + "/go2rtc.yaml"
++	if err := os.WriteFile(app.ConfigPath, []byte("streams:\n  delete-stop-test: []\n"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	streamsMu.Lock()
++	streams[name] = stream
++	streamsMu.Unlock()
++	t.Cleanup(func() {
++		for _, consumer := range stream.consumers {
++			consumer.Stop()
++		}
++		for _, producer := range stream.producers {
++			producer.stop()
++		}
++		Delete(name)
++		app.ConfigPath = oldConfig
++	})
++	return name
++}
++
++func requestDeleteStop(name string, stop bool, sources ...string) int {
++	query := url.Values{"src": []string{name}}
++	if stop {
++		query.Set("stop", "1")
++	}
++	for _, source := range sources {
++		query.Add("if_src", source)
++	}
++	url := "/api/streams?" + query.Encode()
++	w := httptest.NewRecorder()
++	apiStreams(w, httptest.NewRequest(http.MethodDelete, url, nil))
++	return w.Code
++}
++
++func TestDeleteStopOwnedResources(t *testing.T) {
++	producer, consumer := newDeleteStopProducer(), newDeleteStopConsumer()
++	stream := NewStream("delete-stop-probe:active")
++	stream.producers[0].conn = producer
++	stream.producers[0].state = stateTracks
++	stream.consumers = []core.Consumer{consumer}
++	name := setupDeleteStopTest(t, stream)
++	consumer.onStop = func() {
++		if !stream.mu.TryLock() {
++			t.Error("consumer closed while stream lock was held")
++			return
++		}
++		stream.mu.Unlock()
++	}
++	if status := requestDeleteStop(name, true, "delete-stop-probe:wrong", "delete-stop-probe:active"); status != http.StatusOK {
++		t.Fatalf("DELETE status=%d", status)
++	}
++	if Get(name) != nil {
++		t.Fatal("deleted stream still registered")
++	}
++	if producer.stopped.Load() != 1 || consumer.stopped.Load() != 1 {
++		t.Fatalf("owned resources not stopped: producer=%d, consumer=%d", producer.stopped.Load(), consumer.stopped.Load())
++	}
++	if stream.producers[0].conn != nil {
++		t.Fatal("deleted stream retains producer connection")
++	}
++}
++
++func TestDeleteDefaultPreservesExistingBehavior(t *testing.T) {
++	producer, consumer := newDeleteStopProducer(), newDeleteStopConsumer()
++	stream := NewStream("delete-stop-probe:active")
++	stream.producers[0].conn = producer
++	stream.producers[0].state = stateTracks
++	stream.consumers = []core.Consumer{consumer}
++	name := setupDeleteStopTest(t, stream)
++	if status := requestDeleteStop(name, false); status != http.StatusOK {
++		t.Fatalf("DELETE status=%d", status)
++	}
++	if Get(name) != nil {
++		t.Fatal("deleted stream still registered")
++	}
++	if producer.stopped.Load() != 0 || consumer.stopped.Load() != 0 {
++		t.Fatal("default DELETE changed resource ownership")
++	}
++}
++
++func TestDeleteStopRejectsRetainedStream(t *testing.T) {
++	var dials atomic.Int32
++	HandleFunc("delete-stop-probe", func(string) (core.Producer, error) { dials.Add(1); return newDeleteStopProducer(), nil })
++	t.Cleanup(func() { delete(handlers, "delete-stop-probe") })
++	stream := NewStream("delete-stop-probe:closed")
++	name := setupDeleteStopTest(t, stream)
++	if status := requestDeleteStop(name, true); status != http.StatusOK {
++		t.Fatalf("DELETE status=%d", status)
++	}
++	if err := stream.AddConsumer(newDeleteStopConsumer()); err == nil {
++		t.Fatal("retained deleted stream accepted a consumer")
++	}
++	if dials.Load() != 0 {
++		t.Fatal("deleted stream started a producer")
++	}
++}
++
++func TestDeleteStopPendingDialCannotReviveStream(t *testing.T) {
++	dialStarted := make(chan struct{})
++	releaseDial := make(chan struct{})
++	var releaseOnce sync.Once
++	release := func() { releaseOnce.Do(func() { close(releaseDial) }) }
++	defer release()
++	producer := newDeleteStopProducer()
++	HandleFunc("delete-stop-probe", func(string) (core.Producer, error) { close(dialStarted); <-releaseDial; return producer, nil })
++	t.Cleanup(func() { delete(handlers, "delete-stop-probe") })
++	stream := NewStream("delete-stop-probe:pending")
++	existingConsumer := newDeleteStopConsumer()
++	stream.consumers = []core.Consumer{existingConsumer}
++	name := setupDeleteStopTest(t, stream)
++	added := make(chan error, 1)
++	go func() { added <- stream.AddConsumer(newDeleteStopConsumer()) }()
++	select {
++	case <-dialStarted:
++	case <-time.After(time.Second):
++		t.Fatal("producer dial did not start")
++	}
++	deleted := make(chan int, 1)
++	go func() { deleted <- requestDeleteStop(name, true) }()
++	deadline := time.Now().Add(time.Second)
++	for {
++		err := stream.AddConsumer(&deleteStopConsumer{})
++		if err != nil && strings.Contains(err.Error(), "stream closed") {
++			break
++		}
++		select {
++		case status := <-deleted:
++			release()
++			<-added
++			t.Fatalf("DELETE finished without tombstoning the stream, status=%d", status)
++		default:
++		}
++		if time.Now().After(deadline) {
++			release()
++			<-added
++			t.Fatal("DELETE did not begin teardown")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	release()
++	select {
++	case err := <-added:
++		if err == nil {
++			t.Fatal("pending consumer attached after teardown began")
++		}
++	case <-time.After(time.Second):
++		t.Fatal("pending consumer did not finish")
++	}
++	select {
++	case status := <-deleted:
++		if status != http.StatusOK {
++			t.Fatalf("DELETE status=%d", status)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("DELETE did not finish")
++	}
++	if producer.stopped.Load() == 0 {
++		t.Fatal("late producer connection was not stopped")
++	}
++	stream.producers[0].mu.Lock()
++	leaked := stream.producers[0].conn != nil || stream.producers[0].state != stateNone
++	stream.producers[0].mu.Unlock()
++	if leaked || stream.pending.Load() != 0 {
++		t.Fatal("pending dial left an active producer")
++	}
++}
++
++func TestDeleteStopOwnershipGuard(t *testing.T) {
++	for _, sources := range []any{"rtsp://operator.test/feed", []string{"delete-stop-probe:owned", "rtsp://operator.test/feed"}} {
++		stream := NewStream(sources)
++		producer, consumer := newDeleteStopProducer(), newDeleteStopConsumer()
++		stream.producers[0].conn = producer
++		stream.producers[0].state = stateTracks
++		stream.consumers = []core.Consumer{consumer}
++		name := setupDeleteStopTest(t, stream)
++		before, err := os.ReadFile(app.ConfigPath)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if status := requestDeleteStop(name, true, "delete-stop-probe:owned"); status != http.StatusConflict {
++			t.Fatalf("source mismatch status=%d, want409", status)
++		}
++		if Get(name) != stream {
++			t.Fatal("ownership mismatch removed an operator stream")
++		}
++		if producer.stopped.Load() != 0 || consumer.stopped.Load() != 0 {
++			t.Fatal("ownership mismatch stopped operator resources")
++		}
++		after, err := os.ReadFile(app.ConfigPath)
++		if err != nil || !bytes.Equal(before, after) {
++			t.Fatal("ownership mismatch changed saved configuration")
++		}
++	}
++}
++
++func TestDeleteStopMissingStreamIsNoOp(t *testing.T) {
++	stream := NewStream(nil)
++	setupDeleteStopTest(t, stream)
++	before, err := os.ReadFile(app.ConfigPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if status := requestDeleteStop("not-registered", true, "delete-stop-probe:owned"); status != http.StatusOK {
++		t.Fatalf("missing stream status=%d", status)
++	}
++	after, err := os.ReadFile(app.ConfigPath)
++	if err != nil || !bytes.Equal(before, after) {
++		t.Fatal("missing stream changed saved configuration")
++	}
++}
++
++func TestDeleteStopClosesExternalProducer(t *testing.T) {
++	stream := NewStream(nil)
++	producer := newDeleteStopProducer()
++	stream.AddProducer(producer)
++	name := setupDeleteStopTest(t, stream)
++	if status := requestDeleteStop(name, true); status != http.StatusOK {
++		t.Fatalf("DELETE status=%d", status)
++	}
++	if producer.stopped.Load() != 1 {
++		t.Fatal("explicit teardown did not close a pushed producer")
++	}
++	late := newDeleteStopProducer()
++	stream.AddProducer(late)
++	if late.stopped.Load() != 1 || len(stream.producers) != 1 {
++		t.Fatal("deleted stream accepted a late publisher")
++	}
++}
++
++func TestDeleteStopPreservesConcurrentReplacement(t *testing.T) {
++	HandleFunc("delete-stop-probe", func(string) (core.Producer, error) { return newDeleteStopProducer(), nil })
++	t.Cleanup(func() { delete(handlers, "delete-stop-probe") })
++	stream := NewStream("delete-stop-probe:owned")
++	consumer := newDeleteStopConsumer()
++	stream.consumers = []core.Consumer{consumer}
++	name := setupDeleteStopTest(t, stream)
++	stopping, released := make(chan struct{}), make(chan struct{})
++	var releaseOnce sync.Once
++	release := func() { releaseOnce.Do(func() { close(released) }) }
++	defer release()
++	consumer.onStop = func() { close(stopping); <-released }
++	deleted := make(chan int, 1)
++	go func() { deleted <- requestDeleteStop(name, true, "delete-stop-probe:owned") }()
++	select {
++	case <-stopping:
++	case <-time.After(time.Second):
++		t.Fatal("old stream did not begin teardown")
++	}
++	query := url.Values{"name": []string{name}, "src": []string{"delete-stop-probe:operator-replacement"}}
++	w := httptest.NewRecorder()
++	apiStreams(w, httptest.NewRequest(http.MethodPut, "/api/streams?"+query.Encode(), nil))
++	replacement := Get(name)
++	release()
++	select {
++	case status := <-deleted:
++		if status != http.StatusOK {
++			t.Fatalf("DELETE status=%d", status)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("old teardown did not finish")
++	}
++	if w.Code != http.StatusOK {
++		t.Fatalf("replacement PUT status=%d", w.Code)
++	}
++	if replacement == nil || Get(name) != replacement {
++		t.Fatal("old teardown removed the replacement stream")
++	}
++	saved, err := os.ReadFile(app.ConfigPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(saved), "delete-stop-probe:operator-replacement") {
++		t.Fatalf("old teardown erased replacement configuration: %s", saved)
++	}
++}
++
++func TestDeleteStopCleansResourcesAfterConfigFailure(t *testing.T) {
++	producer, consumer := newDeleteStopProducer(), newDeleteStopConsumer()
++	stream := NewStream("delete-stop-probe:owned")
++	stream.producers[0].conn = producer
++	stream.producers[0].state = stateTracks
++	stream.consumers = []core.Consumer{consumer}
++	name := setupDeleteStopTest(t, stream)
++	path := app.ConfigPath
++	app.ConfigPath = ""
++	status := requestDeleteStop(name, true, "delete-stop-probe:owned")
++	app.ConfigPath = path
++	if status != http.StatusBadRequest {
++		t.Fatalf("config failure status=%d", status)
++	}
++	if Get(name) != nil || producer.stopped.Load() != 1 || consumer.stopped.Load() != 1 {
++		t.Fatal("config failure skipped resource teardown")
++	}
++}
++
++func TestDeleteStopWaitsForReconnectBeforeClosingConsumers(t *testing.T) {
++	oldConn, freshConn := newDeleteStopProducer(), newDeleteStopProducer()
++	dialStarted, releaseDial := make(chan struct{}), make(chan struct{})
++	var releaseOnce sync.Once
++	release := func() { releaseOnce.Do(func() { close(releaseDial) }) }
++	HandleFunc("delete-stop-probe", func(string) (core.Producer, error) {
++		close(dialStarted)
++		<-releaseDial
++		return freshConn, nil
++	})
++	t.Cleanup(func() { delete(handlers, "delete-stop-probe") })
++	stream := NewStream("delete-stop-probe:reconnecting")
++	producer := stream.producers[0]
++	producer.conn, producer.state, producer.workerID = oldConn, stateStart, 1
++	producer.receivers = oldConn.Receivers
++	consumer := newDeleteStopConsumer()
++	if err := consumer.AddTrack(oldConn.Medias[0], oldConn.Medias[0].Codecs[0], oldConn.Receivers[0]); err != nil {
++		t.Fatal(err)
++	}
++	stream.consumers = []core.Consumer{consumer}
++	name := setupDeleteStopTest(t, stream)
++	t.Cleanup(release)
++	consumer.onStop = func() {
++		if oldConn.stopped.Load() != 1 || freshConn.stopped.Load() != 1 {
++			t.Error("consumer stopped before reconnect and producer teardown completed")
++		}
++	}
++	// RTSP close callbacks can remove resources synchronously. The closed
++	// stream must neither hold its mutex nor re-enter the producer mutex.
++	freshConn.onStop = func() {
++		stream.RemoveConsumer(consumer)
++		stream.RemoveProducer(freshConn)
++	}
++	reconnected := make(chan struct{})
++	go func() { producer.reconnect(1, 0); close(reconnected) }()
++	select {
++	case <-dialStarted:
++	case <-time.After(time.Second):
++		t.Fatal("replacement dial did not start")
++	}
++	deleted := make(chan int, 1)
++	go func() { deleted <- requestDeleteStop(name, true, "delete-stop-probe:reconnecting") }()
++	deadline := time.Now().Add(time.Second)
++	for {
++		stream.mu.Lock()
++		closed := stream.closed
++		stream.mu.Unlock()
++		if closed {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("teardown did not mark the stream closed")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	release()
++	select {
++	case status := <-deleted:
++		if status != http.StatusOK {
++			t.Fatalf("DELETE status=%d", status)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("producer close callback deadlocked teardown")
++	}
++	select {
++	case <-reconnected:
++	case <-time.After(time.Second):
++		t.Fatal("replacement dial did not finish")
++	}
++	if Get(name) != nil || producer.conn != nil || oldConn.stopped.Load() != 1 || freshConn.stopped.Load() != 1 {
++		t.Fatal("teardown retained a reconnected producer")
++	}
++}
+diff --git a/internal/streams/producer.go b/internal/streams/producer.go
+index 09e2dcc..f493f67 100644
+--- a/internal/streams/producer.go
++++ b/internal/streams/producer.go
+@@ -243,13 +243,19 @@ func (p *Producer) reconnect(workerID, retry int) {
+ }
+ 
+ func (p *Producer) stop() {
++	p.stopWithForce(false)
++}
++
++func (p *Producer) stopWithForce(force bool) {
+ 	p.mu.Lock()
+ 	defer p.mu.Unlock()
+ 
+ 	switch p.state {
+ 	case stateExternal:
+-		log.Trace().Msgf("[streams] skip stop external producer")
+-		return
++		if !force {
++			log.Trace().Msgf("[streams] skip stop external producer")
++			return
++		}
+ 	case stateNone:
+ 		log.Trace().Msgf("[streams] skip stop none producer")
+ 		return
+diff --git a/internal/streams/stream.go b/internal/streams/stream.go
+index 984c73e..57709e8 100644
+--- a/internal/streams/stream.go
++++ b/internal/streams/stream.go
+@@ -13,6 +13,9 @@ type Stream struct {
+ 	consumers []core.Consumer
+ 	mu        sync.Mutex
+ 	pending   atomic.Int32
++	closed    bool
++	closeOnce sync.Once
++	pendingWG sync.WaitGroup
+ }
+ 
+ func NewStream(source any) *Stream {
+@@ -79,10 +82,41 @@ func (s *Stream) RemoveConsumer(cons core.Consumer) {
+ func (s *Stream) AddProducer(prod core.Producer) {
+ 	producer := &Producer{conn: prod, state: stateExternal, url: "external"}
+ 	s.mu.Lock()
++	if s.closed {
++		s.mu.Unlock()
++		_ = prod.Stop()
++		return
++	}
+ 	s.producers = append(s.producers, producer)
+ 	s.mu.Unlock()
+ }
+ 
++// close is an explicit teardown, rather than the default map-only deletion.
++// Retained or pending clients cannot keep producers alive after teardown.
++func (s *Stream) close() {
++	s.closeOnce.Do(func() {
++		s.mu.Lock()
++		s.closed = true
++		s.mu.Unlock()
++		// Finish any in-flight track attachment before closing its graph.
++		// The owner cancels upstream negotiations before requesting teardown.
++		s.pendingWG.Wait()
++		s.mu.Lock()
++		consumers := append([]core.Consumer(nil), s.consumers...)
++		producers := append([]*Producer(nil), s.producers...)
++		s.consumers = nil
++		s.mu.Unlock()
++		// Stop may call back into this stream; do not hold its mutex.
++		// Finish producer reconnect/track moves before detaching consumers.
++		for _, producer := range producers {
++			producer.stopWithForce(true)
++		}
++		for _, consumer := range consumers {
++			_ = consumer.Stop()
++		}
++	})
++}
++
+ func (s *Stream) RemoveProducer(prod core.Producer) {
+ 	s.mu.Lock()
+ 	for i, producer := range s.producers {
+@@ -101,6 +135,10 @@ func (s *Stream) stopProducers() {
+ 	}
+ 
+ 	s.mu.Lock()
++	if s.closed {
++		s.mu.Unlock()
++		return
++	}
+ producers:
+ 	for _, producer := range s.producers {
+ 		for _, track := range producer.receivers {
+diff --git a/internal/webrtc/client.go b/internal/webrtc/client.go
+index 5fbf217..d9e0171 100644
+--- a/internal/webrtc/client.go
++++ b/internal/webrtc/client.go
+@@ -47,7 +47,7 @@ func streamsHandler(rawURL string) (core.Producer, error) {
+ 			} else if format == "switchbot" {
+ 				return switchbotClient(rawURL, query)
+ 			} else {
+-				return go2rtcClient(rawURL)
++				return go2rtcClient(rawURL, format == "wyze-lake")
+ 			}
+ 
+ 		case "http", "https":
+@@ -68,7 +68,7 @@ func streamsHandler(rawURL string) (core.Producer, error) {
+ 
+ // go2rtcClient can connect only to go2rtc server
+ // ex: ws://localhost:1984/api/ws?src=camera1
+-func go2rtcClient(url string) (core.Producer, error) {
++func go2rtcClient(url string, lake bool) (core.Producer, error) {
+ 	// 1. Connect to signalign server
+ 	conn, _, err := Dial(url)
+ 	if err != nil {
+@@ -79,7 +79,12 @@ func go2rtcClient(url string) (core.Producer, error) {
+ 	defer conn.Close()
+ 
+ 	// 2. Create PeerConnection
+-	pc, err := PeerConnection(true)
++	var pc *pion.PeerConnection
++	if lake {
++		pc, err = LakePeerConnection()
++	} else {
++		pc, err = PeerConnection(true)
++	}
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/internal/webrtc/webrtc.go b/internal/webrtc/webrtc.go
+index 2a5b4ad..b998dd5 100644
+--- a/internal/webrtc/webrtc.go
++++ b/internal/webrtc/webrtc.go
+@@ -87,6 +87,14 @@ func Init() {
+ 		SDPSemantics: pion.SDPSemanticsUnifiedPlanWithFallback,
+ 	}
+ 
++	LakePeerConnection = func() (*pion.PeerConnection, error) {
++		api, err := webrtc.NewReceiveAPI(4096)
++		if err != nil {
++			return nil, err
++		}
++		return api.NewPeerConnection(pionConf)
++	}
++
+ 	PeerConnection = func(active bool) (*pion.PeerConnection, error) {
+ 		// active - client, passive - server
+ 		if active {
+@@ -114,6 +122,8 @@ var log zerolog.Logger
+ 
+ var PeerConnection func(active bool) (*pion.PeerConnection, error)
+ 
++var LakePeerConnection func() (*pion.PeerConnection, error)
++
+ func asyncHandler(tr *ws.Transport, msg *ws.Message) (err error) {
+ 	var stream *streams.Stream
+ 	var mode core.Mode
+diff --git a/pkg/webrtc/api.go b/pkg/webrtc/api.go
+index 5551d65..12d7f58 100644
+--- a/pkg/webrtc/api.go
++++ b/pkg/webrtc/api.go
+@@ -92,7 +92,17 @@ func (f *Filters) IPFilter(ip net.IP) bool {
+ 	return f == nil || f.IPs == nil || core.Contains(f.IPs, ip.String())
+ }
+ 
++// NewReceiveAPI preserves the normal client API while allowing a bounded
++// replay window for transports that recover delayed video packets.
++func NewReceiveAPI(window uint) (*webrtc.API, error) {
++	return newServerAPI("", "", nil, window)
++}
++
+ func NewServerAPI(network, address string, filters *Filters) (*webrtc.API, error) {
++	return newServerAPI(network, address, filters, 0)
++}
++
++func newServerAPI(network, address string, filters *Filters, window uint) (*webrtc.API, error) {
+ 	// for debug logs add to env: `PION_LOG_DEBUG=all`
+ 	m := &webrtc.MediaEngine{}
+ 	//if err := m.RegisterDefaultCodecs(); err != nil {
+@@ -108,6 +118,11 @@ func NewServerAPI(network, address string, filters *Filters) (*webrtc.API, error
+ 	}
+ 
+ 	s := webrtc.SettingEngine{}
++	if window > 0 {
++		// Keep delayed authenticated video available for RTP ordering.
++		// Replay protection stays enabled; duplicates are still rejected.
++		s.SetSRTPReplayProtectionWindow(window)
++	}
+ 
+ 	// fix https://github.com/pion/webrtc/pull/2407
+ 	s.SetDTLSInsecureSkipHelloVerify(true)
+diff --git a/pkg/webrtc/receive_window_test.go b/pkg/webrtc/receive_window_test.go
+new file mode 100644
+index 0000000..ea0036c
+--- /dev/null
++++ b/pkg/webrtc/receive_window_test.go
+@@ -0,0 +1,113 @@
++package webrtc
++
++import (
++	"github.com/pion/rtp"
++	pion "github.com/pion/webrtc/v4"
++	"sync"
++	"testing"
++	"time"
++)
++
++func TestReceiveDelayedAuthenticatedPacket(t *testing.T) {
++	for _, tc := range []struct {
++		name     string
++		factory  func() (*pion.API, error)
++		expected []uint16
++	}{
++		{"default", NewAPI, []uint16{1, 100}},
++		{"delayed-video", func() (*pion.API, error) { return NewReceiveAPI(4096) }, []uint16{1, 100, 2}},
++	} {
++		t.Run(tc.name, func(t *testing.T) { testReceiveWindow(t, tc.factory, tc.expected) })
++	}
++}
++
++func testReceiveWindow(t *testing.T, factory func() (*pion.API, error), expected []uint16) {
++	t.Helper()
++	api, err := factory()
++	if err != nil {
++		t.Fatal(err)
++	}
++	sender, err := api.NewPeerConnection(pion.Configuration{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer sender.Close()
++	receiver, err := api.NewPeerConnection(pion.Configuration{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer receiver.Close()
++	got := make(chan uint16, 4)
++	receiver.OnTrack(func(track *pion.TrackRemote, _ *pion.RTPReceiver) {
++		for {
++			p, _, e := track.ReadRTP()
++			if e != nil {
++				return
++			}
++			got <- p.SequenceNumber
++		}
++	})
++	connected := make(chan struct{})
++	var once sync.Once
++	sender.OnConnectionStateChange(func(s pion.PeerConnectionState) {
++		if s == pion.PeerConnectionStateConnected {
++			once.Do(func() { close(connected) })
++		}
++	})
++	track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{MimeType: pion.MimeTypeH265}, "video", "late-packet-test")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err = sender.AddTrack(track); err != nil {
++		t.Fatal(err)
++	}
++	offer, err := sender.CreateOffer(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	done := pion.GatheringCompletePromise(sender)
++	if err = sender.SetLocalDescription(offer); err != nil {
++		t.Fatal(err)
++	}
++	<-done
++	if err = receiver.SetRemoteDescription(*sender.LocalDescription()); err != nil {
++		t.Fatal(err)
++	}
++	answer, err := receiver.CreateAnswer(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	done = pion.GatheringCompletePromise(receiver)
++	if err = receiver.SetLocalDescription(answer); err != nil {
++		t.Fatal(err)
++	}
++	<-done
++	if err = sender.SetRemoteDescription(*receiver.LocalDescription()); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case <-connected:
++	case <-time.After(10 * time.Second):
++		t.Fatal("local peers did not connect")
++	}
++	for _, seq := range []uint16{1, 100, 2, 1} {
++		if err = track.WriteRTP(&rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: seq, Timestamp: 90000}, Payload: []byte{2, 1, 7}}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	for _, want := range expected {
++		select {
++		case seq := <-got:
++			if seq != want {
++				t.Fatalf("got sequence %d, want %d", seq, want)
++			}
++		case <-time.After(2 * time.Second):
++			t.Fatalf("valid delayed sequence %d was lost", want)
++		}
++	}
++	select {
++	case seq := <-got:
++		t.Fatalf("replay accepted: sequence %d", seq)
++	case <-time.After(100 * time.Millisecond):
++	}
++}

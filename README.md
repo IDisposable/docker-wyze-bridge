@@ -6,13 +6,14 @@
 [![Home Assistant Add-on](https://img.shields.io/badge/home_assistant-add--on-blue.svg?logo=homeassistant&logoColor=white)](./docs/user_guide/install_ha.md)
 
 Local WebRTC / RTSP / HLS bridge for Wyze cameras. No modifications, no
-special firmware, no cloud dependency for streaming (TUTK + OG cameras
-stay entirely on-LAN; doorbell-lineage cameras use Wyze's own WebRTC
-signaling but the media still flows directly to you).
+special firmware. TUTK + OG cameras stay entirely on-LAN; doorbell-lineage
+cameras use Wyze's own WebRTC signaling but the media still flows directly
+to you. Pan v4 uses Wyze's Lake/Agora cloud services; see
+[Pan v4 Lake setup](DOCS/LAKE_RECEIVER.md).
 
 Built in **pure Go** on top of [go2rtc](https://github.com/AlexxIT/go2rtc).
 No Python, no binary SDKs, no C code beyond the `ffmpeg` used for
-snapshot extraction and MP4 recording. Docker image ~65 MB.
+snapshot extraction, MP4 recording, and Pan v4 RTP ordering/H264 previews.
 
 ![Supports amd64](https://img.shields.io/badge/amd64-yes-success.svg)
 ![Supports arm64v8](https://img.shields.io/badge/arm64v8-yes-success.svg)
@@ -103,7 +104,7 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam Pan V2 | `HL_PAN2` | TUTK | Should work |
 | Wyze Cam Pan V3 | `HL_PAN3` | TUTK | Mostly working |
 | Wyze Cam Pan Pro (2K) | `HL_PANP` | TUTK | Should work |
-| Wyze Cam Pan v4 | `HL_PAN4` | WebRTC | Expected (cloud sends no TUTK uid) |
+| Wyze Cam Pan v4 | `HL_PAN4` | Integrated Lake receiver | [Lake setup](DOCS/LAKE_RECEIVER.md): native HEVC output and an H264 preview from one shared session |
 | Wyze Cam Outdoor | `WVOD1` | TUTK | Should work |
 | Wyze Cam Outdoor V2 | `HL_WCO2` | TUTK | Should work |
 | Wyze Cam Doorbell V1 | `WYZEDB3` | TUTK | Needs support in go2rtc |

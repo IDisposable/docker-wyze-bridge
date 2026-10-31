@@ -33,11 +33,12 @@ func TestAPIClient_BasicAuth_AttachedToEveryRequest(t *testing.T) {
 	_, _ = c.ListStreams(ctx)
 	_ = c.AddStream(ctx, "cam", "wyze://x")
 	_ = c.DeleteStream(ctx, "cam")
+	_ = c.DeleteStreamAndStop(ctx, "cam")
 	_, _ = c.GetStreamInfo(ctx, "cam")
 	_, _ = c.GetSnapshot(ctx, "cam")
 
-	if len(gotAuth) != 5 {
-		t.Fatalf("expected 5 requests, got %d", len(gotAuth))
+	if len(gotAuth) != 6 {
+		t.Fatalf("expected 6 requests, got %d", len(gotAuth))
 	}
 	// Basic YWRtaW46aHVudGVyMg== == "admin:hunter2"
 	want := "Basic YWRtaW46aHVudGVyMg=="
@@ -95,6 +96,35 @@ func TestAPIClient_ListStreams(t *testing.T) {
 	}
 }
 
+func TestAPIClient_ListStreamsProducerIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":{"producers":[{"id":18428,"bytes_recv":1024}]},"pending":{"producers":[{}]},"legacy":{"producers":[{"bytes_recv":512}]}}`))
+	}))
+	defer server.Close()
+
+	streams, err := NewAPIClient(server.URL, zerolog.Nop()).ListStreams(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A producer replacement can have a larger byte count than its predecessor.
+	// Preserve the engine's identity so health checks can still detect that change.
+	encoded, err := json.Marshal(streams["active"].Producers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var active map[string]interface{}
+	if err := json.Unmarshal(encoded, &active); err != nil {
+		t.Fatal(err)
+	}
+	if active["id"] != float64(18428) {
+		t.Fatalf("producer identity lost: %s", encoded)
+	}
+	if len(streams["pending"].Producers) != 1 || streams["legacy"].Producers[0].BytesRecv != 512 {
+		t.Fatal("pending or legacy producer metadata no longer parses")
+	}
+}
+
 func TestAPIClient_AddStream(t *testing.T) {
 	var gotName, gotSrc string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,20 +151,42 @@ func TestAPIClient_AddStream(t *testing.T) {
 }
 
 func TestAPIClient_DeleteStream(t *testing.T) {
-	var gotMethod string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	c := NewAPIClient(server.URL, zerolog.Nop())
-	err := c.DeleteStream(context.Background(), "test_cam")
-	if err != nil {
-		t.Fatalf("DeleteStream: %v", err)
-	}
-	if gotMethod != "DELETE" {
-		t.Errorf("method = %q, want DELETE", gotMethod)
+	for _, stop := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ordinary", true: "stop-owned-stream"}[stop], func(t *testing.T) {
+			allowed := []string{"ffmpeg:front_4k#video=h264#width=1920#height=1080", "rtsp://example.test/path?name=front&quality=sd"}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "DELETE" || r.URL.Query().Get("src") != "test cam&preview" {
+					t.Errorf("incorrect deletion request: %s %s", r.Method, r.URL.RawQuery)
+				}
+				want := ""
+				if stop {
+					want = "1"
+				}
+				if r.URL.Query().Get("stop") != want {
+					t.Errorf("stop = %q, want %q", r.URL.Query().Get("stop"), want)
+				}
+				got := r.URL.Query()["if_src"]
+				if stop {
+					if len(got) != 2 || got[0] != allowed[0] || got[1] != allowed[1] {
+						t.Errorf("source whitelist = %q, want %q", got, allowed)
+					}
+				} else if len(got) != 0 {
+					t.Error("ordinary deletion included a source guard")
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			c := NewAPIClient(server.URL, zerolog.Nop())
+			var err error
+			if stop {
+				err = c.DeleteStreamAndStop(context.Background(), "test cam&preview", allowed...)
+			} else {
+				err = c.DeleteStream(context.Background(), "test cam&preview")
+			}
+			if err != nil {
+				t.Fatalf("DeleteStream: %v", err)
+			}
+		})
 	}
 }
 

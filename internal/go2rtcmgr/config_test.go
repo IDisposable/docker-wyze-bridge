@@ -37,6 +37,18 @@ func TestConfigBuilder_Build(t *testing.T) {
 	if cfg.WebRTC.Listen != ":8889" {
 		t.Errorf("WebRTC.Listen = %q, want :8889", cfg.WebRTC.Listen)
 	}
+	if cfg.FFmpeg["wyze_lake_preview"] != "-threads 2 -fps_mode:v vfr -enc_time_base:v demux -force_key_frames expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+2))" {
+		t.Fatal("Lake preview source timing, thread limit or timed keyframes missing")
+	}
+	if cfg.FFmpeg["wyze_lake_preview_input"] != "-rtsp_transport tcp -threads:v 2 -timeout 15000000 -i {input}" {
+		t.Fatal("Lake preview decoder thread limit or input timeout missing")
+	}
+	if cfg.FFmpeg["wyze_lake_receive"] != "-rtsp_transport tcp -reorder_queue_size 512 -max_delay 1000000 -timeout 15000000 -i {input}" {
+		t.Fatal("native packet ordering settings changed")
+	}
+	if _, changed := cfg.FFmpeg["rtsp"]; changed {
+		t.Fatal("Lake decoder settings changed the global RTSP template")
+	}
 	if len(cfg.WebRTC.Candidates) != 1 || cfg.WebRTC.Candidates[0] != "192.168.1.50:8889" {
 		t.Errorf("WebRTC.Candidates = %v, want [192.168.1.50:8889]", cfg.WebRTC.Candidates)
 	}
@@ -60,6 +72,38 @@ func TestConfigBuilder_NoWBIP(t *testing.T) {
 	}
 	if len(cfg.WebRTC.ICEServers) != 0 {
 		t.Errorf("ICEServers should be empty when no STUN server, got %v", cfg.WebRTC.ICEServers)
+	}
+}
+
+func TestExtraFFmpegSettingsRemainValid(t *testing.T) {
+	b := NewConfigBuilder("warn", "", "")
+	b.AppendRawYAML("# Operator pipeline\nffmpeg:\n  bin: /custom/ffmpeg\n  h264: -c:v custom_encoder\n  wyze_lake_preview_input: -custom-input\npublish:\n  other: rtsp://example.test/record\n")
+	path := filepath.Join(t.TempDir(), "go2rtc.yaml")
+	if err := b.WriteConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		FFmpeg  map[string]string `yaml:"ffmpeg"`
+		Publish map[string]string `yaml:"publish"`
+	}
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal("generated duplicate or invalid configuration:", err)
+	}
+	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.Publish["other"] != "rtsp://example.test/record" {
+		t.Fatal("operator settings changed")
+	}
+	if parsed.FFmpeg["wyze_lake_preview_input"] != "-custom-input" {
+		t.Fatal("operator preview input override changed")
+	}
+	if parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" {
+		t.Fatal("receive templates were lost")
+	}
+	if !strings.Contains(string(raw), "# Operator pipeline") {
+		t.Fatal("operator comment was lost")
 	}
 }
 
@@ -149,5 +193,90 @@ func TestConfigBuilder_ClearStreams(t *testing.T) {
 	cfg = b.Build()
 	if len(cfg.Streams) != 0 {
 		t.Errorf("expected 0 streams after clear, got %d", len(cfg.Streams))
+	}
+}
+
+func TestExtraFFmpegAliasRemainsValid(t *testing.T) {
+	b := NewConfigBuilder("warn", "", "")
+	b.AppendRawYAML("defaults: &pipeline\n  bin: /custom/ffmpeg\n  h264: -c:v custom_encoder\nffmpeg: *pipeline\n")
+	path := filepath.Join(t.TempDir(), "go2rtc.yaml")
+	if err := b.WriteConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed Go2RTCConfig
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.FFmpeg["bin"] != "/custom/ffmpeg" || parsed.FFmpeg["h264"] != "-c:v custom_encoder" || parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" || parsed.FFmpeg["wyze_lake_preview_input"] == "" {
+		t.Fatal("operator alias or receive templates were lost")
+	}
+	var operator struct {
+		Defaults map[string]string `yaml:"defaults"`
+	}
+	if err := yaml.Unmarshal(raw, &operator); err != nil {
+		t.Fatal(err)
+	}
+	if _, added := operator.Defaults["wyze_lake_receive"]; added {
+		t.Fatal("shared operator anchor was modified")
+	}
+}
+
+func TestExtraFFmpegMergeOverridesRemainValid(t *testing.T) {
+	for _, tc := range []struct {
+		name, extraYAML string
+		want            map[string]string
+	}{
+		{
+			name:      "null defaults",
+			extraYAML: "ffmpeg: null\n",
+		},
+		{
+			name:      "empty defaults",
+			extraYAML: "ffmpeg:\n",
+		},
+		{
+			name:      "inherited root",
+			extraYAML: "defaults: &defaults\n  ffmpeg:\n    bin: /custom/ffmpeg\n<<: *defaults\n",
+			want:      map[string]string{"bin": "/custom/ffmpeg"},
+		},
+		{
+			name:      "inherited template",
+			extraYAML: "defaults: &defaults\n  bin: /custom/ffmpeg\n  wyze_lake_preview: -custom-preview\nffmpeg:\n  <<: *defaults\n",
+			want:      map[string]string{"bin": "/custom/ffmpeg", "wyze_lake_preview": "-custom-preview"},
+		},
+		{
+			name:      "merge sequence and direct override",
+			extraYAML: "first: &first\n  bin: /first/ffmpeg\n  wyze_lake_preview: -first-preview\nsecond: &second\n  bin: /second/ffmpeg\n  wyze_lake_preview: -second-preview\nffmpeg:\n  <<: [*first, *second]\n  bin: /direct/ffmpeg\n",
+			want:      map[string]string{"bin": "/direct/ffmpeg", "wyze_lake_preview": "-first-preview"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewConfigBuilder("warn", "", "")
+			b.AppendRawYAML(tc.extraYAML)
+			path := filepath.Join(t.TempDir(), "go2rtc.yaml")
+			if err := b.WriteConfig(path); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parsed Go2RTCConfig
+			if err := yaml.Unmarshal(raw, &parsed); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range tc.want {
+				if got := parsed.FFmpeg[key]; got != want {
+					t.Errorf("operator %s = %q, want %q", key, got, want)
+				}
+			}
+			if parsed.FFmpeg["wyze_lake_receive"] == "" || parsed.FFmpeg["wyze_lake_preview"] == "" || parsed.FFmpeg["wyze_lake_preview_input"] == "" {
+				t.Fatal("missing receive templates")
+			}
+		})
 	}
 }

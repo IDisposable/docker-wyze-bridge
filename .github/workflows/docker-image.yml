@@ -1,360 +1,163 @@
-name: Docker
+name: Fork container release
 
 on:
   push:
-    branches: [dev, main]
-    tags: ['v*.*.*']
-  pull_request:
-    branches: [dev, main]
-  workflow_dispatch:
+    branches: [pan-v4-release]
+    tags: ['v*-pan-v4.*']
+    paths:
+      - '.github/workflows/docker-image.yml'
+      - 'docker/pan-v4-version'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
-  DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/wyze-bridge
+  IMAGE: ghcr.io/t0nyz0/docker-wyze-bridge
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    if: github.repository == 't0nyz0/docker-wyze-bridge'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.26.4'
-      - name: Run tests
-        run: go test -v -cover ./...
-      - name: Vet
-        run: go vet ./...
+      - name: Race tests and vet
+        run: |
+          go test -race ./...
+          go vet ./...
 
-  # Builds the underlying wyze-bridge image (single codebase, two
-  # channel tags). Runs on every push — the channel distinction lives
-  # in the HA add-on wrappers below, not in the main image.
   build:
-    needs: [test]
-    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     permissions:
       contents: read
       packages: write
-    outputs:
-      ghcr_image: ${{ steps.envs.outputs.ghcr_image }}
-      addon_image_stable: ${{ steps.envs.outputs.addon_image_stable }}
-      addon_image_edge: ${{ steps.envs.outputs.addon_image_edge }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Normalize image references
-        id: envs
-        # Docker registry refs must be lowercase; github.repository
-        # keeps the owner's original casing. Compute lowercase names
-        # once and propagate via both GITHUB_ENV (for use in this job)
-        # and GITHUB_OUTPUT (for downstream jobs).
-        run: |
-          REPO="${GITHUB_REPOSITORY,,}"
-          echo "GHCR_IMAGE=ghcr.io/${REPO}"                             >> "$GITHUB_ENV"
-          echo "HA_ADDON_IMAGE=ghcr.io/${REPO}-homeassistant"           >> "$GITHUB_ENV"
-          echo "HA_ADDON_IMAGE_EDGE=ghcr.io/${REPO}-homeassistant-edge" >> "$GITHUB_ENV"
-          echo "ghcr_image=ghcr.io/${REPO}"                             >> "$GITHUB_OUTPUT"
-          echo "addon_image_stable=ghcr.io/${REPO}-homeassistant"       >> "$GITHUB_OUTPUT"
-          echo "addon_image_edge=ghcr.io/${REPO}-homeassistant-edge"    >> "$GITHUB_OUTPUT"
-
-      - name: Login to DockerHub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.DOCKERHUB_IMAGE }}
-            ${{ env.GHCR_IMAGE }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=edge,branch=dev
-            type=ref,event=branch,enable=${{ contains(github.ref, 'main') }}
-            type=ref,event=pr
-            type=sha,format=long
-
-      - name: Determine version
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read release version
         id: version
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF##*/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          push: ${{ github.event_name != 'pull_request' }}
-          context: .
-          file: ./docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-          labels: |
-            ${{ steps.meta.outputs.labels }}
-            io.hass.name=Wyze Bridge
-            io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras
-            io.hass.version=${{ steps.version.outputs.version }}
-            io.hass.type=addon
-            io.hass.arch=amd64,aarch64
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false
-
-  # Stable HA add-on — built from main branch pushes and stable tag
-  # releases only. Pulls the main-tagged wyze-bridge image produced
-  # by the upstream build job. Pre-release tags (vX.Y.Z-beta.N etc.)
-  # are excluded because this job reads config.yaml's version — which
-  # tracks *stable*, not the beta tag — and would re-publish the last
-  # stable HA image with beta code under the old tag. Beta testers
-  # get the same bits through the edge add-on channel.
-  addon-stable:
-    needs: [build]
-    if: >-
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' ||
-       (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')))
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    env:
-      GHCR_IMAGE: ${{ needs.build.outputs.ghcr_image }}
-      HA_ADDON_IMAGE: ${{ needs.build.outputs.addon_image_stable }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Read add-on version
-        id: addon_version
-        run: |
-          version=$(awk -F': ' '$1=="version"{print $2; exit}' home_assistant/wyze_bridge/config.yaml)
-          if [[ -z "$version" ]]; then
-            echo "Unable to read home_assistant/wyze_bridge/config.yaml version"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push stable add-on image
-        uses: docker/build-push-action@v6
-        with:
-          push: true
-          context: ./home_assistant/wyze_bridge
-          file: ./home_assistant/wyze_bridge/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            WYZE_BRIDGE_IMAGE=${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
-          labels: |
-            org.opencontainers.image.description=Home Assistant add-on image for Wyze Bridge (stable)
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.title=docker-wyze-bridge-homeassistant
-            org.opencontainers.image.url=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.addon_version.outputs.version }}
-            io.hass.name=Wyze Bridge
-            io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras
-            io.hass.version=${{ steps.addon_version.outputs.version }}
-            io.hass.type=addon
-            io.hass.arch=amd64,aarch64
-          tags: |
-            ${{ env.HA_ADDON_IMAGE }}:${{ steps.addon_version.outputs.version }}
-            ${{ env.HA_ADDON_IMAGE }}:latest
-            ${{ env.HA_ADDON_IMAGE }}:sha-${{ github.sha }}
-          cache-from: type=gha,scope=ha-stable
-          cache-to: type=gha,mode=max,scope=ha-stable
-          provenance: false
-
-  # Edge HA add-on — built from dev branch pushes only. Pulls the
-  # dev-branch sha-tagged wyze-bridge image so edge users run the same
-  # bits we just tested. Version is timestamp-stamped here (never on
-  # dev) so every publish looks newer to HA's supervisor, triggering
-  # the "update available" UX without anyone committing on dev just to
-  # bump a string.
-  addon-edge:
-    needs: [build]
-    if: >-
-      github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: write # needs to commit the bumped edge config.yaml back to main
-    env:
-      GHCR_IMAGE: ${{ needs.build.outputs.ghcr_image }}
-      HA_ADDON_IMAGE_EDGE: ${{ needs.build.outputs.addon_image_edge }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compute edge version
-        # Strip any ".YYYYMMDD.HHMM" suffix already present in the config
-        # so we don't compound suffixes across runs, then append a fresh
-        # UTC timestamp. HA's version-comparison handles "X.Y.Z-edge.S.T"
-        # correctly and treats larger stamps as newer. The bare base is
-        # also exported so we can publish BOTH tags — that way if
-        # something leaves main's config.yaml at the bare base (manual
-        # edit, stale state before the sync step ran), HA can still pull.
-        id: edge_version
-        run: |
-          set -euo pipefail
-          raw=$(awk -F': ' '$1=="version"{print $2; exit}' home_assistant/wyze_bridge_edge/config.yaml)
-          if [[ -z "$raw" ]]; then
-            echo "Unable to read home_assistant/wyze_bridge_edge/config.yaml version"
-            exit 1
-          fi
-          base=$(echo "$raw" | sed -E 's/\.[0-9]{8}\.[0-9]{4}$//')
-          stamp=$(date -u +%Y%m%d.%H%M)
-          echo "base=${base}" >> "$GITHUB_OUTPUT"
-          echo "version=${base}.${stamp}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push edge add-on image
-        uses: docker/build-push-action@v6
-        with:
-          push: true
-          context: ./home_assistant/wyze_bridge_edge
-          file: ./home_assistant/wyze_bridge_edge/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            WYZE_BRIDGE_IMAGE=${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
-          labels: |
-            org.opencontainers.image.description=Home Assistant add-on image for Wyze Bridge (edge)
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.title=docker-wyze-bridge-homeassistant-edge
-            org.opencontainers.image.url=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.edge_version.outputs.version }}
-            io.hass.name=Wyze Bridge (Edge)
-            io.hass.description=WebRTC/RTSP/HLS bridge for Wyze cameras — edge channel
-            io.hass.version=${{ steps.edge_version.outputs.version }}
-            io.hass.type=addon
-            io.hass.arch=amd64,aarch64
-          tags: |
-            ${{ env.HA_ADDON_IMAGE_EDGE }}:${{ steps.edge_version.outputs.version }}
-            ${{ env.HA_ADDON_IMAGE_EDGE }}:${{ steps.edge_version.outputs.base }}
-            ${{ env.HA_ADDON_IMAGE_EDGE }}:edge
-            ${{ env.HA_ADDON_IMAGE_EDGE }}:sha-${{ github.sha }}
-          cache-from: type=gha,scope=ha-edge
-          cache-to: type=gha,mode=max,scope=ha-edge
-          provenance: false
-
-      - name: Sync edge version into main
-        # Commit the bumped edge version directly to main. We work in a
-        # throwaway clone so we don't touch the dev checkout the build
-        # ran against. HA reads config.yaml off the default branch
-        # (main) — without this sync, edge users never see new versions.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_VERSION: ${{ steps.edge_version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/pan-v4-release ]]; then
+            TAG="v$(tr -d '\r\n' < docker/pan-v4-version)"
+          fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pan-v4\.[0-9]+$ ]]
+          echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and push native architecture
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          build-args: VERSION=${{ steps.version.outputs.value }}
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/t0nyz0/docker-wyze-bridge
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.title=Wyze Bridge - Pan v4 fork
+            org.opencontainers.image.description=Integrated Pan v4 video with native 4K HEVC and H264 preview
+          cache-from: type=gha,scope=pan-v4-${{ matrix.arch }}
+          cache-to: type=gha,scope=pan-v4-${{ matrix.arch }},mode=max
+          provenance: false
+      - name: Verify the published image without camera access
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.value }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          work=$(mktemp -d)
-          git clone --branch main --depth 1 \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$work"
-          cd "$work"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Replace only the top-level "version:" line in the edge
-          # config.yaml. Using 0,/pat/ limits sed to the first match so
-          # nested version-like strings (schema fields etc.) stay put.
-          sed -i "0,/^version: /{s|^version: .*|version: ${NEW_VERSION}|}" \
-            home_assistant/wyze_bridge_edge/config.yaml
-          if git diff --quiet; then
-            echo "Edge version on main already matches ${NEW_VERSION}; nothing to commit"
-            exit 0
-          fi
-          git add home_assistant/wyze_bridge_edge/config.yaml
-          # [skip ci] suppresses the main-push workflow this commit would
-          # otherwise trigger. That workflow would re-run test + build +
-          # addon-stable, republishing the stable image with the
-          # currently-tagged wyze_bridge/config.yaml version — wasteful
-          # and occasionally misleading (stable image published off a
-          # commit that only touched edge config). Skipping it keeps the
-          # workflow side of the release flow tag-driven only.
-          git commit -m "edge: publish ${NEW_VERSION} [skip ci]"
-          git push origin main
-
-  # On a semver tag push, bump the stable add-on's config.yaml version
-  # to match the tag, then commit back to main. Edge config.yaml is
-  # intentionally left alone — its version tracks the dev trunk and is
-  # rolled manually when preparing a release candidate.
-  version-bump:
-    needs: [addon-stable]
-    runs-on: ubuntu-latest
-    # Only bump for real stable tags (vX.Y.Z). Pre-release tags
-    # (vX.Y.Z-beta.N, -rc.N, -alpha.N) still fire addon-stable so
-    # the beta image publishes, but must NOT rewrite main's stable
-    # config.yaml — HA stable users would then see a beta version
-    # on their next add-on refresh.
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
+          mkdir -p release-proof
+          docker pull "$IMAGE@$DIGEST"
+          docker run -d --network none --name release-smoke "$IMAGE@$DIGEST"
+          trap 'docker logs release-smoke; docker rm -f -v release-smoke' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec release-smoke wget -qO- http://127.0.0.1:5080/api/version > release-proof/version.json &&
+               docker exec release-smoke wget -qO- http://127.0.0.1:1984/api/streams > release-proof/streams.json; then
+              break
+            fi
+            sleep 1
+          done
+          jq -e --arg version "$VERSION" '.version == $version and .go2rtc_version == "1.9.14"' release-proof/version.json
+          jq -e 'type == "object"' release-proof/streams.json
+          docker exec release-smoke test -s /usr/share/doc/wyze-bridge/LICENSE
+          docker exec release-smoke test -s /usr/share/doc/wyze-bridge/THIRD_PARTY_NOTICES.md
+          docker exec release-smoke ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=1280x720:rate=10 -frames:v 10 -c:v libx264 -f null -
+          docker exec release-smoke apk info -v > release-proof/runtime-packages.txt
+          jq -n --arg image "$IMAGE" --arg digest "$DIGEST" --arg arch "$ARCH" --arg version "$VERSION" --arg revision "$GITHUB_SHA" \
+            '{image:$image,digest:$digest,architecture:$arch,version:$version,revision:$revision}' > release-proof/image.json
+          echo "$IMAGE@$DIGEST" > release-proof/$ARCH.digest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          ref: main
+          name: release-proof-${{ matrix.arch }}
+          path: release-proof/
+          if-no-files-found: error
 
-      - name: Update stable add-on version
-        id: bump
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-proof-*
+          path: release-proof
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Publish and verify the multi-architecture version
         run: |
-          TAG=${GITHUB_REF##*/v}
-          if [[ ! $TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid tag: $TAG"
+          set -euo pipefail
+          VERSION=$(jq -er '.version' release-proof/release-proof-amd64/image.json)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-pan-v4\.[0-9]+$ ]]
+          jq -e --arg version "$VERSION" --arg revision "$GITHUB_SHA" \
+            '.version == $version and .revision == $revision' release-proof/release-proof-arm64/image.json
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "::error::Version $VERSION already exists; bump docker/pan-v4-version instead of overwriting it."
             exit 1
           fi
-          sed -i "s/^version: .*/version: ${TAG}/" home_assistant/wyze_bridge/config.yaml
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Commit version bump
-        uses: stefanzweifel/git-auto-commit-action@v5
+          AMD64=$(cat release-proof/release-proof-amd64/amd64.digest)
+          ARM64=$(cat release-proof/release-proof-arm64/arm64.digest)
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" \
+            --annotation "index:org.opencontainers.image.description=Wyze Bridge fork with integrated Pan v4 4K HEVC and H264 preview" \
+            "$AMD64" "$ARM64"
+          docker buildx imagetools inspect "$IMAGE:$VERSION" --raw > release-proof/manifest.json
+          jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64","linux/arm64"]' release-proof/manifest.json
+          docker buildx imagetools inspect "$IMAGE:$VERSION" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          branch: main
-          # [skip ci]: the stable image for this tag was already
-          # published by addon-stable; re-running the whole workflow on
-          # this version-bump commit would just rebuild + republish the
-          # same bytes under the same tag.
-          commit_message: 'v${{ steps.bump.outputs.tag }} [skip ci]'
-          file_pattern: home_assistant/wyze_bridge/config.yaml
+          name: release-manifest
+          path: release-proof/manifest.json
+          if-no-files-found: error

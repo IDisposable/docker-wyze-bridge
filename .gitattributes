@@ -1,0 +1,2 @@
+# Unified diffs prefix context lines with a space before source indentation.
+docker/*.patch -whitespace
