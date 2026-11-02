@@ -14,13 +14,14 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/IDisposable/docker-wyze-bridge/internal/alerts"
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/config"
 	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
-	"github.com/IDisposable/docker-wyze-bridge/internal/alerts"
 	"github.com/IDisposable/docker-wyze-bridge/internal/issues"
-	"github.com/IDisposable/docker-wyze-bridge/internal/wyzectl"
+	"github.com/IDisposable/docker-wyze-bridge/internal/sddownload"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzectl"
 )
 
 //go:embed static/*
@@ -45,15 +46,16 @@ type DiscoverRequester func(ctx context.Context)
 // the client. Handlers that need it use s.go2rtc() and return 503 if
 // the client isn't attached yet.
 type Server struct {
-	log       zerolog.Logger
-	cfg       *config.Config
-	camMgr    *camera.Manager
-	go2rtcAPI atomic.Pointer[go2rtcmgr.APIClient]
+	log        zerolog.Logger
+	cfg        *config.Config
+	camMgr     *camera.Manager
+	sdDownload *sddownload.Service
+	go2rtcAPI  atomic.Pointer[go2rtcmgr.APIClient]
 	// ptz sends pan/tilt commands to go2rtc's /api/wyze/* control
 	// endpoints. Built alongside go2rtcAPI so it shares URL + auth.
 	ptz atomic.Pointer[wyzectl.Client]
 	// alerts is the Wyze event mirror; nil hides the Alerts page.
-	alerts *alerts.Manager
+	alerts    *alerts.Manager
 	sseHub    *SSEHub
 	auth      *AuthMiddleware
 	srv       *http.Server
@@ -124,15 +126,15 @@ func (s *Server) Events() *EventLog {
 // callbacks) stay as Set* methods because they're constructed after
 // the server is already listening.
 type Options struct {
-	Config      *config.Config       // required
-	CameraMgr   *camera.Manager      // required
-	Version     string               // required
-	Log         zerolog.Logger       // required
-	RootCtx     context.Context      // optional; defaults to context.Background
-	Issues      *issues.Registry     // optional; nil-safe
-	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
-	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
-	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
+	Config      *config.Config    // required
+	CameraMgr   *camera.Manager   // required
+	Version     string            // required
+	Log         zerolog.Logger    // required
+	RootCtx     context.Context   // optional; defaults to context.Background
+	Issues      *issues.Registry  // optional; nil-safe
+	Mars        MarsTokenMinter   // optional; nil → CameraToken endpoint returns 503
+	KVS         KVSStreamProvider // optional; nil → KVS shim returns 503
+	AuthPhoneID func() string     // optional; nil → empty ClientId in KVS payload
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics
@@ -143,6 +145,7 @@ func NewServer(opts Options) *Server {
 		log:         opts.Log,
 		cfg:         opts.Config,
 		camMgr:      opts.CameraMgr,
+		sdDownload:  sddownload.New(opts.Config.SDDownloadHelper),
 		sseHub:      NewSSEHub(opts.Log),
 		version:     opts.Version,
 		startTime:   time.Now(),
@@ -267,6 +270,9 @@ type responseWriter struct {
 	http.ResponseWriter
 	status int
 }
+
+// Unwrap preserves ResponseController support through request logging.
+func (rw *responseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
 
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code

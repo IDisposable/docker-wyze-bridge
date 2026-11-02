@@ -427,6 +427,22 @@ Supported tokens:
   camera and raises a config error visible on `/metrics` and
   `/api/health`. Recording for other cameras is unaffected.
 
+### Camera microSD export (experimental)
+
+Retrieve one existing camera microSD minute clip with
+`POST /api/cameras/{name}/sd/recording`. This is separate from the live-stream
+recording feature above. It is disabled unless `SD_DOWNLOAD_HELPER` names an
+absolute path to an executable Linux `wyze-sd-download` helper built from
+[go2rtc PR #2637](https://github.com/AlexxIT/go2rtc/pull/2637). The stock go2rtc
+binary does not provide this helper; it is not bundled in the bridge images or
+Home Assistant add-ons. See [setup and validation](DOCS/SD_DOWNLOAD.md).
+
+The download uses cached camera pairing data and transfers media over the LAN;
+it never triggers Wyze account discovery. The bridge's existing account login
+and camera discovery remain separate requirements. Only one clip is exported
+at a time, with a 16 MiB limit and a 65-second helper timeout. The bridge removes
+temporary files after delivery or failure; no archive or background job is created.
+
 ### Authentication
 
 - `BRIDGE_AUTH=true` + `BRIDGE_USERNAME` + `BRIDGE_PASSWORD` — gates the
