@@ -1,6 +1,6 @@
 # ── Stage 1: Fetch go2rtc binary + video-rtc.js ─────────────────────────────
 FROM alpine:3.21 AS go2rtc-fetch
-ARG GO2RTC_VERSION=1.9.14
+ARG GO2RTC_VERSION=1.9.15
 ARG TARGETARCH
 RUN apk add --no-cache curl ca-certificates && \
     ARCH=${TARGETARCH}; \
