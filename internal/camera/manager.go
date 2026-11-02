@@ -476,7 +476,7 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 			continue
 		}
 
-		// Gwell cameras are fed by the gwell-proxy subprocess which
+		// Gwell P2P cameras are fed by the gwell-proxy subprocess which
 		// already has a deadman timer (no-data timeout) on its own
 		// ffmpeg publisher. The go2rtc-side producer count is legitimately
 		// zero during the 5-6 second window between our pre-registered
@@ -486,7 +486,10 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 		// that re-PUTs the stream slot and kicks the in-flight publish —
 		// the exact dance that caused gwell-proxy's ffmpeg to die with
 		// av_interleaved_write_frame(): Broken pipe during bring-up.
-		if cam.GetInfo().IsGwell() {
+		// The doorbells are Gwell too but stream over WebRTC through
+		// go2rtc like everything else, so they are polled like
+		// everything else; streamSourceFor is what decides.
+		if _, protocol := m.streamSourceFor(cam); protocol == "gwell" {
 			continue
 		}
 

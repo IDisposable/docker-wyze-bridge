@@ -454,3 +454,32 @@ func TestObserveVideo_AudioAloneIsNotVideo(t *testing.T) {
 		t.Errorf("audio moving, video frozen: %v, want no_video", cam.Video())
 	}
 }
+
+func TestHealthCheck_PollsTheDoorbellsAndSkipsGwellP2P(t *testing.T) {
+	// front_door on the NAS read "no video / last video never" while
+	// go2rtc was pulling 35MB from it: the poll skipped every Gwell
+	// model, and the Doorbell Duo is Gwell by lineage but streams over
+	// WebRTC through go2rtc. Only a camera gwell-proxy feeds gets the
+	// skip, and it keeps it even with no producer in go2rtc's table.
+	mock, api := newFlowMock(t)
+	cfg := &config.Config{Quality: "hd", Audio: true, CamOverrides: map[string]config.CamOverride{}, RefreshInterval: time.Hour, GwellEnabled: true}
+	mgr := NewManager(cfg, wyzeapi.NewClient(wyzeapi.Credentials{}, "test", zerolog.Nop()), api, zerolog.Nop())
+	bell := NewCamera(wyzeapi.CameraInfo{Name: "front_door", Model: "GW_DBD", MAC: "GW_DBD_80482C0D6B01"}, "hd", true, false)
+	bell.SetState(StateStreaming)
+	mgr.cameras["front_door"] = bell
+	window := NewCamera(wyzeapi.CameraInfo{Name: "window", Model: "GW_WC", MAC: "GW_WC_000000000001", LanIP: "192.168.4.50"}, "hd", true, false)
+	window.SetState(StateStreaming)
+	mgr.cameras["window"] = window
+
+	mock.set("front_door", true, 1, 1000)
+	mgr.HealthCheck(context.Background())
+	mock.set("front_door", true, 1, 9000)
+	mgr.HealthCheck(context.Background())
+
+	if bell.Video() != VideoLive {
+		t.Errorf("doorbell video = %v, want live", bell.Video())
+	}
+	if window.GetState() != StateStreaming || window.Video() != VideoUnknown {
+		t.Errorf("gwell-proxy camera: state=%v video=%v, want streaming and unpolled", window.GetState(), window.Video())
+	}
+}
