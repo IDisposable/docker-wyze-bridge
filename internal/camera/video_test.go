@@ -313,7 +313,8 @@ func TestObserveVideo_LeavesPulledDeadStreamAlone(t *testing.T) {
 	// A browser waiting on a stream whose dial failed is the player's
 	// problem to retry (video-stream.js restarts it). The health poll
 	// must not replace the stream under it while go2rtc is still
-	// dialing: doing that every minute only churned the cameras.
+	// dialing: doing that every minute only churned the cameras. It
+	// gets stuckPollsForRetry polls before retryIfStalled steps in.
 	var mu sync.Mutex
 	writes := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

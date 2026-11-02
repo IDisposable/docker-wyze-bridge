@@ -82,10 +82,16 @@ type Camera struct {
 	// Video flow bookkeeping; see video.go. video/lastBytes/stalledPolls
 	// are poll-to-poll state reset whenever the camera leaves
 	// StateStreaming. lastVideo, lastError and lastErrorAt are history.
+	// stuckPolls counts health polls running with someone pulling and
+	// no video track; videoFailStreak counts restarts that didn't bring
+	// video back and widens the gap before the next. Both clear the
+	// moment video flows. See retryIfStalled.
 	video            Video
 	lastVideo        time.Time
 	lastBytes        int
 	stalledPolls     int
+	stuckPolls       int
+	videoFailStreak  int
 	lastError        string
 	lastErrorAt      time.Time
 	lastErrorRecheck time.Time
@@ -96,7 +102,7 @@ type Camera struct {
 	// dials shouldn't wait five minutes to come back after a go2rtc
 	// blip. The two are added up as error_count for the outside.
 	dialFailures int
-	lastRestart      time.Time // last frozen-stream restart; see video.go
+	lastRestart      time.Time // last stream restart by the health poll; see video.go
 	mu               sync.RWMutex
 }
 

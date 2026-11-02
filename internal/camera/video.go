@@ -58,9 +58,11 @@ func (c *Camera) observeFlow(connected bool, consumers int, bytes int, now time.
 		c.video = VideoLive
 		c.lastVideo = now
 		c.stalledPolls = 0
-		// Video arriving heals whatever recordError counted; lastError
-		// stays as history.
+		// Video arriving heals whatever recordError counted and the
+		// retry backoff with it; lastError stays as history.
 		c.dialFailures = 0
+		c.stuckPolls = 0
+		c.videoFailStreak = 0
 	case !connected && consumers == 0:
 		c.video = VideoIdle
 		c.stalledPolls = 0
@@ -82,6 +84,8 @@ func (c *Camera) resetFlow() {
 	c.video = VideoUnknown
 	c.lastBytes = 0
 	c.stalledPolls = 0
+	c.stuckPolls = 0
+	c.videoFailStreak = 0
 }
 
 // recordError stores the latest go2rtc stream error. An error is a
@@ -156,7 +160,7 @@ func (m *Manager) OnStreamError(fn func(cam *Camera, msg string)) {
 // observeVideo is HealthCheck's per-camera step: fold the stream's
 // producer counters into the camera and announce any change.
 func (m *Manager) observeVideo(cam *Camera, info *go2rtcmgr.StreamInfo, now time.Time) {
-	connected, consumers, bytes := false, 0, 0
+	connected, consumers, bytes, hasVideo := false, 0, 0, false
 	if info != nil {
 		connected = info.ProducerConnected()
 		consumers = len(info.Consumers)
@@ -165,9 +169,9 @@ func (m *Manager) observeVideo(cam *Camera, info *go2rtcmgr.StreamInfo, now time
 		// doesn't say (not dialed yet, or an older go2rtc) the producer
 		// total is the honest fallback rather than reading zero as dead.
 		if vb, known := info.VideoBytes(); known {
-			bytes = vb
+			bytes, hasVideo = vb, info.HasVideoReceiver()
 		} else {
-			bytes = info.ProducerBytes()
+			bytes, hasVideo = info.ProducerBytes(), connected
 		}
 	}
 	// A browser waiting on the /ws proxy is a consumer go2rtc doesn't
@@ -177,6 +181,7 @@ func (m *Manager) observeVideo(cam *Camera, info *go2rtcmgr.StreamInfo, now time
 	}
 	old, cur := cam.observeFlow(connected, consumers, bytes, now)
 	m.restartIfFrozen(cam, cur, connected, consumers, now)
+	m.retryIfStalled(cam, hasVideo, consumers, now)
 	if old == cur {
 		return
 	}
@@ -202,6 +207,59 @@ const errorRecheckGap = time.Minute
 // couple of minutes rather than on every poll.
 const frozenRestartGap = 2 * time.Minute
 
+// errorFreshFor bounds how long a failed dial keeps arming a retry.
+// go2rtc only reports an error when something pulls, so errors that
+// keep coming mean something still wants video and isn't getting it:
+// a panel's ffmpeg copy redialing every few seconds, say, or the
+// snapshot timer. Once they stop the camera is just idle and on
+// demand, and retrying it would be churn for a stream nobody has
+// asked for since.
+const errorFreshFor = 10 * time.Minute
+
+// stuckPollsForRetry is how many health polls running a stream can
+// sit with consumers attached and no video track before it's
+// restarted. The poll is 30s and a cold V3 can take 40s to answer a
+// dial, so this is a couple of minutes of somebody watching nothing.
+const stuckPollsForRetry = 5
+
+// retryBackoffBase and retryBackoffMax bound the gap between restarts
+// of the same camera that didn't bring video back: 30s, 1m, 2m and so
+// on up to the cap, so a camera that is really off the network gets
+// one dial every ten minutes rather than one per poll. A camera the
+// LAN resolver hasn't heard at all is skipped outright; see
+// retryIfStalled.
+const (
+	retryBackoffBase = 30 * time.Second
+	retryBackoffMax  = 10 * time.Minute
+)
+
+// retryBackoff is this camera's current gap, widening with each
+// restart that didn't help. Caller holds the lock.
+func (c *Camera) retryBackoff() time.Duration {
+	d := retryBackoffBase
+	for i := 0; i < c.videoFailStreak; i++ {
+		d *= 2
+		if d >= retryBackoffMax {
+			return retryBackoffMax
+		}
+	}
+	return d
+}
+
+// freshConnectError reports a failed dial nothing has healed: the
+// last error was a connect failure, no video has arrived since, and
+// it's recent enough that something is still asking and still not
+// getting it (errorFreshFor). Caller holds the lock.
+func (c *Camera) freshConnectError(now time.Time) bool {
+	if c.lastErrorAt.IsZero() || !ConnectError(c.lastError) {
+		return false
+	}
+	if !c.lastErrorAt.After(c.lastVideo) {
+		return false
+	}
+	return now.Sub(c.lastErrorAt) < errorFreshFor
+}
+
 // restartIfFrozen replaces a TUTK stream whose connection to the camera
 // is up but has carried nothing for two polls while someone waits on
 // it. go2rtc keeps such a session open indefinitely: a V3 that drops
@@ -220,27 +278,86 @@ func (m *Manager) restartIfFrozen(cam *Camera, cur Video, connected bool, consum
 	if _, protocol := m.streamSourceFor(cam); protocol != "tutk" {
 		return
 	}
-	go2rtc := m.go2rtcClient()
-	if go2rtc == nil {
+	m.restartStream(cam, "connected but silent", now, frozenRestartGap)
+}
+
+// retryIfStalled restarts the go2rtc stream of a camera that claims
+// to be streaming and isn't delivering, so it doesn't sit dead until
+// somebody presses Restart Stream. Two shapes qualify:
+//
+//   - A failed dial nothing has healed (freshConnectError): this is
+//     Driveway's twelve hours, a camera that never answered at the
+//     address go2rtc dialed, with every pull timing out and nothing
+//     tying that to the camera.
+//   - Consumers attached and no video track: somebody is watching,
+//     directly or through a copy of the stream, and go2rtc's producer
+//     has nothing to give them, for stuckPollsForRetry polls running.
+//
+// A camera nobody is pulling is left alone. go2rtc dials when a
+// consumer asks, so an on-demand camera with no consumers has no
+// video and that's fine; restarting it would be churn for nothing.
+// Each restart that doesn't bring video back doubles the wait before
+// the next (retryBackoff), and a camera the LAN resolver can't hear
+// at all is skipped: two sweeps with no answer to its MAC means it
+// isn't here and the dial would fail the same way.
+func (m *Manager) retryIfStalled(cam *Camera, hasVideo bool, consumers int, now time.Time) {
+	if cam.GetState() != StateStreaming || cam.Snapshot().LanAbsent {
+		return
+	}
+
+	cam.mu.Lock()
+	unhealed := cam.freshConnectError(now)
+	if consumers > 0 && !hasVideo {
+		cam.stuckPolls++
+	} else {
+		cam.stuckPolls = 0
+	}
+	stuck := cam.stuckPolls >= stuckPollsForRetry
+	gap := cam.retryBackoff()
+	cam.mu.Unlock()
+
+	if !unhealed && !stuck {
+		return
+	}
+	reason := "no video since a failed dial"
+	if !unhealed {
+		reason = "consumers attached but no video arriving"
+	}
+	if !m.restartStream(cam, reason, now, gap) {
 		return
 	}
 	cam.mu.Lock()
-	due := cam.lastRestart.IsZero() || now.Sub(cam.lastRestart) >= frozenRestartGap
+	cam.videoFailStreak++
+	cam.stuckPolls = 0
+	cam.mu.Unlock()
+}
+
+// restartStream puts a camera's go2rtc stream back (a PUT, which
+// gives the name a fresh stream), at most once per gap, and tells the
+// players to reconnect. Reports whether it started one.
+func (m *Manager) restartStream(cam *Camera, reason string, now time.Time, gap time.Duration) bool {
+	go2rtc := m.go2rtcClient()
+	if go2rtc == nil {
+		return false
+	}
+	cam.mu.Lock()
+	due := cam.lastRestart.IsZero() || now.Sub(cam.lastRestart) >= gap
 	if due {
 		cam.lastRestart = now
 	}
 	cam.mu.Unlock()
 	if !due {
-		return
+		return false
 	}
-	m.log.Warn().Str("cam", cam.Name()).Int("consumers", consumers).
-		Msg("stream connected but silent; restarting it")
+	m.log.Warn().Str("cam", cam.Name()).Str("reason", reason).Dur("next_in", gap).
+		Msg("restarting a stream with no video")
 	go func() {
 		m.registerStream(context.Background(), go2rtc, cam)
 		if cam.GetState() == StateStreaming && m.onStreamRestart != nil {
-			m.onStreamRestart(cam, "connected but silent")
+			m.onStreamRestart(cam, reason)
 		}
 	}()
+	return true
 }
 
 // consumerSideError reports go2rtc errors about what a consumer asked

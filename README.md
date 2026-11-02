@@ -252,7 +252,13 @@ pulling it (a V3 that drops off Wi-Fi mid-stream leaves go2rtc holding
 a dead session, and every new viewer joins it), the bridge restarts
 the stream on its own, at most once every two minutes, and sends the
 dashboard's players to reconnect; that's what the Restart Stream
-button does by hand. The dashboard's
+button does by hand. The same goes for a camera whose dial failed and
+has sent no video since, and for one that something has been pulling
+for a couple of minutes with nothing coming back: the bridge puts the
+stream back, waiting twice as long after each try that doesn't help
+(30 seconds up to 10 minutes) and not at all for a camera the LAN
+sweeps can't hear. A camera nobody is pulling is left alone, since
+go2rtc only dials on demand and idle is normal. The dashboard's
 players also start a moment apart instead of all at once, and any
 player whose picture stops moving for 20 seconds reconnects by itself
 (backing off for a camera that keeps failing), and each tile asks for
