@@ -20,6 +20,9 @@ import (
 type APIClient struct {
 	baseURL    string
 	httpClient *http.Client
+	// slowClient has no timeout of its own; GetSnapshot uses it and
+	// lets the caller's ctx decide, since a frame takes a camera dial.
+	slowClient *http.Client
 	log        zerolog.Logger
 
 	// mu lets one stream-table call at a time reach go2rtc. go2rtc
@@ -186,6 +189,7 @@ func NewAPIClient(baseURL string, log zerolog.Logger) *APIClient {
 	return &APIClient{
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		slowClient: &http.Client{},
 		log:        log,
 	}
 }
@@ -348,7 +352,11 @@ func (c *APIClient) GetSnapshot(ctx context.Context, name string) ([]byte, error
 		return nil, err
 	}
 
-	resp, err := c.httpClient.Do(req)
+	// No fixed timeout here: go2rtc dials the camera for the frame
+	// and takes however long the dial takes to succeed or fail, which
+	// on a dozing V3 or a doorbell whose signaling dropped is well past
+	// the 10s the rest of the API gets. The caller's ctx is the limit.
+	resp, err := c.slowClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("get snapshot %q: %w", name, err)
 	}

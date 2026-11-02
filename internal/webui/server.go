@@ -74,6 +74,9 @@ type Server struct {
 	layouts layoutStore
 	// sockets holds the open /ws proxy connections by camera; see proxy.go.
 	sockets wsSockets
+	// snapshots holds the one go2rtc frame request in flight per
+	// camera; see handleSnapshot.
+	snapshots snapshotCalls
 	kvs           KVSStreamProvider
 	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup

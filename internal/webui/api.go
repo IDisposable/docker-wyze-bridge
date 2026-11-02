@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
+	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -335,6 +337,67 @@ type recordingController interface {
 	Stop(camName string)
 }
 
+// snapshotWait is how long a tile request waits for a frame before it
+// gets a 503. The request to go2rtc keeps going for snapshotProbeTimeout
+// after that, since go2rtc dials the camera for the frame and can take
+// most of a minute to give up on one that doesn't answer; its verdict
+// is what RecordSnapshotError needs, and cutting the request off at 10s
+// threw it away (go2rtc logs it with no stream name, so there is no
+// other way to hear it). Variables so the tests can shorten them.
+var (
+	snapshotWait         = 10 * time.Second
+	snapshotProbeTimeout = 90 * time.Second
+)
+
+// snapshotCall is one frame request to go2rtc, shared by every tile
+// request for the camera that arrives while it runs.
+type snapshotCall struct {
+	done chan struct{}
+	jpeg []byte
+	err  error
+}
+
+// snapshotCalls is the in-flight frame request per camera.
+type snapshotCalls struct {
+	mu    sync.Mutex
+	calls map[string]*snapshotCall
+}
+
+// snapshot returns the frame request in flight for a camera, starting
+// one when there isn't. The request runs to go2rtc's answer whatever
+// the caller does with it, and an error is reported against the camera.
+func (s *Server) snapshot(go2rtc *go2rtcmgr.APIClient, name string) *snapshotCall {
+	s.snapshots.mu.Lock()
+	defer s.snapshots.mu.Unlock()
+	if c, ok := s.snapshots.calls[name]; ok {
+		return c
+	}
+	if s.snapshots.calls == nil {
+		s.snapshots.calls = make(map[string]*snapshotCall)
+	}
+	c := &snapshotCall{done: make(chan struct{})}
+	s.snapshots.calls[name] = c
+	go func() {
+		ctx, cancel := context.WithTimeout(s.rootCtx, snapshotProbeTimeout)
+		defer cancel()
+		c.jpeg, c.err = go2rtc.GetSnapshot(ctx, name)
+		if c.err != nil {
+			s.log.Warn().Err(c.err).Str("cam", name).Msg("snapshot failed")
+			// The dashboard's tiles pull through here; go2rtc not
+			// getting a frame is the camera not answering its dial,
+			// so tell the camera.
+			if s.camMgr != nil {
+				s.camMgr.RecordSnapshotError(s.rootCtx, name, c.err)
+			}
+		}
+		s.snapshots.mu.Lock()
+		delete(s.snapshots.calls, name)
+		s.snapshots.mu.Unlock()
+		close(c.done)
+	}()
+	return c
+}
+
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/snapshot/")
 	if name == "" {
@@ -347,22 +410,23 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "bridge still starting; go2rtc not yet ready")
 		return
 	}
-	ctx := r.Context()
-	jpeg, err := go2rtc.GetSnapshot(ctx, name)
-	if err != nil {
-		s.log.Warn().Err(err).Str("cam", name).Msg("snapshot failed")
-		// The dashboard's tiles pull through here; a failure is the
-		// camera not answering go2rtc's dial, so tell the camera.
-		if s.camMgr != nil {
-			s.camMgr.RecordSnapshotError(s.rootCtx, name, err)
-		}
+	c := s.snapshot(go2rtc, name)
+	select {
+	case <-c.done:
+	case <-time.After(snapshotWait):
+		writeJSONError(w, http.StatusServiceUnavailable, "snapshot unavailable")
+		return
+	case <-r.Context().Done():
+		return
+	}
+	if c.err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "snapshot unavailable")
 		return
 	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(jpeg)
+	w.Write(c.jpeg)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -237,5 +239,68 @@ func TestRenderIndex_DegradedBadge(t *testing.T) {
 	}
 	if !strings.Contains(body, `title="wyze: connect failed: discovery timeout`) {
 		t.Error("the reason should be on the badge's tooltip")
+	}
+}
+
+func TestHandleSnapshot_SlowVerdictStillReachesTheCamera(t *testing.T) {
+	// go2rtc can take most of a minute to give up on a camera that
+	// doesn't answer. The tile gets its 503 at snapshotWait, but the
+	// request to go2rtc runs on, and the verdict lands on the camera.
+	// Tiles asking in the meantime share the one request.
+	var mu sync.Mutex
+	hits := 0
+	release := make(chan struct{})
+	go2rtcSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/frame.jpeg" {
+			mu.Lock()
+			hits++
+			mu.Unlock()
+			<-release
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("streams: wyze: connect failed: discovery timeout"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(go2rtcSrv.Close)
+	srv, _ := testServer(t)
+	srv.SetGo2RTCAPI(go2rtcmgr.NewAPIClient(go2rtcSrv.URL, zerolog.Nop()))
+	old := snapshotWait
+	snapshotWait = 50 * time.Millisecond
+	t.Cleanup(func() { snapshotWait = old })
+
+	cam := camera.NewCamera(wyzeapi.CameraInfo{Name: "slow_cam", Model: "WYZE_CAKP2JFUS", LanIP: "192.168.4.141"}, "hd", true, false)
+	cam.SetState(camera.StateStreaming)
+	srv.camMgr.InjectCamera("slow_cam", cam)
+
+	codes := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			w := httptest.NewRecorder()
+			srv.handleSnapshot(w, httptest.NewRequest("GET", "/api/snapshot/slow_cam", nil))
+			codes <- w.Code
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		if code := <-codes; code != http.StatusServiceUnavailable {
+			t.Errorf("tile got %d while go2rtc was still dialing, want 503", code)
+		}
+	}
+	if cam.Snapshot().ErrorCount != 0 {
+		t.Fatal("nothing should land before go2rtc answers")
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for cam.Snapshot().ErrorCount == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if snap := cam.Snapshot(); snap.ErrorCount != 1 || snap.LastError != "snapshot: wyze: connect failed: discovery timeout" {
+		t.Errorf("after go2rtc's answer: errors=%d err=%q", snap.ErrorCount, snap.LastError)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 1 {
+		t.Errorf("go2rtc was asked %d times, want once for both tiles", hits)
 	}
 }
