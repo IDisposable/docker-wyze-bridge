@@ -568,6 +568,7 @@ func wireCameraStateChanges(ctx context.Context, cfg *config.Config, camMgr *cam
 			"last_video":    snap.LastVideo,
 			"last_error":    snap.LastError,
 			"last_error_at": snap.LastErrorAt,
+			"stream_ok":     snap.StreamOk,
 		})
 	}
 	camMgr.OnVideoChange(func(cam *camera.Camera, old, cur camera.Video) {

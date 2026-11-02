@@ -106,6 +106,13 @@
             el.textContent = labels[data.video] || '';
             el.title = data.video === 'live' ? 'last video just now' : (data.last_error || '');
         });
+        // A camera can be "streaming" with no video arriving; the state
+        // badge goes amber rather than green so the card stops claiming
+        // it's fine. See stateClass in templates.go.
+        document.querySelectorAll('.state-badge[data-cam="' + data.name + '"]').forEach(function(el) {
+            el.classList.toggle('degraded', data.stream_ok === false);
+            el.title = data.last_error || '';
+        });
         const err = document.querySelector('.cam-last-error[data-cam="' + data.name + '"]');
         if (err) err.textContent = data.last_error ? data.last_error + ' (just now)' : 'none';
         const lv = document.querySelector('.cam-last-video[data-cam="' + data.name + '"]');
@@ -136,8 +143,12 @@
 
         const badge = card.querySelector('.state-badge');
         if (badge) {
+            // Keep the degraded marker: whether video is arriving is
+            // the camera_video event's to say, not this one's.
+            var degraded = badge.classList.contains('degraded');
             badge.textContent = state;
             badge.className = 'state-badge ' + state;
+            if (degraded && state === 'streaming') badge.classList.add('degraded');
         }
 
         // Update quality on detail page

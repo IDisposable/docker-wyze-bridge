@@ -431,6 +431,29 @@ type Snapshot struct {
 	// PinnedIP is the operator-set address, "" when none; Info.LanIP
 	// already reflects it.
 	PinnedIP string
+	// StreamOk is the honest verdict: streaming, and nothing says
+	// otherwise. See Camera.streamOk.
+	StreamOk bool
+}
+
+// streamOk is the health verdict the WebUI and /api/cameras show: the
+// camera claims to be streaming and nothing contradicts it. False
+// once the health poll decided video stopped arriving, or a dial
+// failed with no video since (freshConnectError). A camera nobody is
+// pulling is still ok, go2rtc dials on demand and idle isn't a fault.
+// Caller holds the lock.
+func (c *Camera) streamOk() bool {
+	if c.State != StateStreaming || c.video == VideoNoVideo {
+		return false
+	}
+	return !c.freshConnectError(time.Now())
+}
+
+// StreamOk reports the health verdict; see streamOk.
+func (c *Camera) StreamOk() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.streamOk()
 }
 
 // Snapshot returns a consistent view of the camera under RLock.
@@ -456,6 +479,7 @@ func (c *Camera) Snapshot() Snapshot {
 		LanMisses:     c.lanMisses,
 		LanAbsent:     c.lanAbsent(),
 		PinnedIP:      c.pinnedIP,
+		StreamOk:      c.streamOk(),
 	}
 }
 
@@ -483,6 +507,9 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 		"last_video":    c.lastVideo,
 		"last_error":    c.lastError,
 		"last_error_at": c.lastErrorAt,
+		// Whether the bridge believes the camera is working, as
+		// opposed to what state alone claims. See Camera.streamOk.
+		"stream_ok": c.streamOk(),
 		// LAN resolver history: which rung verified the address, when it
 		// last verified, and how many sweeps in a row missed the camera.
 		"lan_ip_source":      c.lanSource,

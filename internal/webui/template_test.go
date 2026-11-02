@@ -212,3 +212,30 @@ func TestHandleSnapshot_FailureLandsOnTheCamera(t *testing.T) {
 		t.Errorf("camera after a failed snapshot: errors=%d err=%q", snap.ErrorCount, snap.LastError)
 	}
 }
+
+func TestRenderIndex_DegradedBadge(t *testing.T) {
+	// A camera that is "streaming" with a failed dial behind it gets
+	// the degraded class on its state badge; a healthy one doesn't.
+	srv, _ := testServer(t)
+	good := camera.NewCamera(wyzeapi.CameraInfo{Name: "good_cam", Model: "WYZE_CAKP2JFUS", LanIP: "192.168.4.1"}, "hd", true, false)
+	good.SetState(camera.StateStreaming)
+	srv.camMgr.InjectCamera("good_cam", good)
+	bad := camera.NewCamera(wyzeapi.CameraInfo{Name: "bad_cam", Model: "WYZE_CAKP2JFUS", LanIP: "192.168.4.2"}, "hd", true, false)
+	bad.SetState(camera.StateStreaming)
+	srv.camMgr.InjectCamera("bad_cam", bad)
+	srv.camMgr.RecordStreamError(t.Context(), "bad_cam", "wyze: connect failed: discovery timeout")
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	srv.renderIndex(w, req)
+	body := w.Body.String()
+	if !strings.Contains(body, `class="state-badge streaming degraded" data-cam="bad_cam"`) {
+		t.Error("failed camera's state badge is not marked degraded")
+	}
+	if !strings.Contains(body, `class="state-badge streaming" data-cam="good_cam"`) {
+		t.Error("healthy camera's state badge should be plain streaming")
+	}
+	if !strings.Contains(body, `title="wyze: connect failed: discovery timeout`) {
+		t.Error("the reason should be on the badge's tooltip")
+	}
+}

@@ -235,3 +235,55 @@ func TestHealthCheck_RetriesACopyStreamsFailedDial(t *testing.T) {
 		t.Errorf("go2rtc PUTs = %d, want the stream put back once", n)
 	}
 }
+
+func TestStreamOk_FalseWhileDialsFail(t *testing.T) {
+	// What /api/cameras and the WebUI read. "streaming" alone is not
+	// health: it reads streaming for hours with no video behind it.
+	cam := newV3("driveway_bedb", "192.168.4.141")
+	cam.SetState(StateStreaming)
+	if !cam.StreamOk() {
+		t.Fatal("a freshly connected camera should read ok")
+	}
+
+	cam.recordError("wyze: connect failed: discovery timeout", time.Now())
+	if cam.StreamOk() {
+		t.Error("stream_ok still true after a failed dial with no video")
+	}
+	if snap := cam.Snapshot(); snap.StreamOk {
+		t.Error("Snapshot.StreamOk disagrees with StreamOk()")
+	}
+	if ok, _ := cam.StatusJSON()["stream_ok"].(bool); ok {
+		t.Error("StatusJSON stream_ok disagrees with StreamOk()")
+	}
+
+	// Video arriving heals it.
+	cam.observeFlow(true, 1, 4096, time.Now())
+	if !cam.StreamOk() {
+		t.Error("stream_ok still false once video is flowing")
+	}
+
+	// And no_video from the poll alone, with no error, is not ok.
+	cam.observeFlow(true, 1, 4096, time.Now())
+	cam.observeFlow(true, 1, 4096, time.Now())
+	if cam.Video() != VideoNoVideo || cam.StreamOk() {
+		t.Errorf("frozen stream: video=%v ok=%v, want no_video and not ok", cam.Video(), cam.StreamOk())
+	}
+}
+
+func TestStreamOk_IdleAndStaleErrorReadOk(t *testing.T) {
+	// An idle camera is on demand, not broken; and one carrying an old
+	// error nothing has pulled on since isn't failing now.
+	cam := newV3("driveway_bedb", "192.168.4.141")
+	cam.SetState(StateStreaming)
+	cam.observeFlow(false, 0, 0, time.Now())
+	if cam.Video() != VideoIdle || !cam.StreamOk() {
+		t.Errorf("idle: video=%v ok=%v", cam.Video(), cam.StreamOk())
+	}
+	cam.mu.Lock()
+	cam.lastError = "wyze: connect failed: discovery timeout"
+	cam.lastErrorAt = time.Now().Add(-errorFreshFor - time.Minute)
+	cam.mu.Unlock()
+	if !cam.StreamOk() {
+		t.Error("a stale error should not keep a camera marked unhealthy")
+	}
+}

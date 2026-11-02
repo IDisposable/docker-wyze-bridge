@@ -50,6 +50,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 		Model       string
 		ModelName   string
 		State       string
+		StateClass  string // State, plus "degraded" when no video is arriving (see stateClass)
 		Video       string // live | idle | no_video | unknown (see camera.Video)
 		VideoTitle  string // tooltip: last error / last video time
 		LanAbsent   bool   // enough LAN sweeps missed it to suggest ignoring it
@@ -86,6 +87,7 @@ func (s *Server) renderIndex(w http.ResponseWriter, r *http.Request) {
 			Model:      snap.Info.Model,
 			ModelName:  snap.Info.ModelName(),
 			State:      snap.State.String(),
+			StateClass: stateClass(snap),
 			Video:      snap.Video.String(),
 			VideoTitle: videoTitle(snap),
 			LanAbsent:  snap.LanAbsent && snap.Video != camera.VideoLive,
@@ -171,6 +173,7 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"Model":      snap.Info.Model,
 		"ModelName":  snap.Info.ModelName(),
 		"State":      snap.State.String(),
+		"StateClass": stateClass(snap),
 		"Video":      snap.Video.String(),
 		"VideoTitle": videoTitle(snap),
 		"Rotation":   s.rotationFor(name),
@@ -226,6 +229,17 @@ func videoLabel(video string) string {
 	default:
 		return ""
 	}
+}
+
+// stateClass is the CSS class for the state badge: the state name,
+// plus "degraded" for a camera that claims to be streaming while the
+// bridge knows video isn't arriving. StateStreaming only means go2rtc
+// accepted the stream, so on its own it paints a dead camera green.
+func stateClass(snap camera.Snapshot) string {
+	if snap.State == camera.StateStreaming && !snap.StreamOk {
+		return "streaming degraded"
+	}
+	return snap.State.String()
 }
 
 // videoTitle is the tooltip behind the video badge: the last go2rtc
@@ -375,7 +389,7 @@ const indexHTML = `<!DOCTYPE html>
                     <img src="{{.SnapshotURL}}" alt="{{.Nickname}}" loading="lazy"
                          onerror="this.style.display='none'">
                     {{end}}
-                    <span class="state-badge {{.State}}">{{.State}}</span>
+                    <span class="state-badge {{.StateClass}}" data-cam="{{.Name}}" title="{{.VideoTitle}}">{{.State}}</span>
                     <span class="video-badge {{.Video}}" data-cam="{{.Name}}" title="{{.VideoTitle}}">{{videoLabel .Video}}</span>
                     <a class="camera-preview-overlay" href="{{$.BasePath}}/camera/{{.Name}}" aria-label="{{.Nickname}} details"></a>
                 </div>
@@ -465,7 +479,7 @@ const cameraHTML = `<!DOCTYPE html>
         <div class="camera-meta">
             <table>
                 <tr><td>Model</td><td>{{.ModelName}} ({{.Model}})</td></tr>
-                <tr><td>State</td><td><span class="state-badge {{.State}}">{{.State}}</span> <span class="video-badge {{.Video}}" data-cam="{{.Name}}" title="{{.VideoTitle}}">{{videoLabel .Video}}</span></td></tr>
+                <tr><td>State</td><td><span class="state-badge {{.StateClass}}" data-cam="{{.Name}}" title="{{.VideoTitle}}">{{.State}}</span> <span class="video-badge {{.Video}}" data-cam="{{.Name}}" title="{{.VideoTitle}}">{{videoLabel .Video}}</span></td></tr>
                 <tr><td>Last video</td><td class="cam-last-video" data-cam="{{.Name}}">{{.LastVideo}}</td></tr>
                 <tr><td>Last error</td><td class="cam-last-error" data-cam="{{.Name}}">{{.LastError}}</td></tr>
                 <tr><td>Quality</td><td id="quality">{{.Quality}}</td></tr>

@@ -243,7 +243,9 @@ pulls the stream and never reports a failed dial. The second badge is
 the honest one: `live` means bytes arrived in the last 30 seconds,
 `idle` means nobody is pulling (normal), `no video` means something
 is pulling but nothing is coming back, or go2rtc reported an error for
-that stream — hover for the reason. The dashboard's own players count
+that stream — hover for the reason. When that happens the `streaming`
+badge turns amber too, so a dead camera is never green, and
+`/api/cameras` says the same thing as `stream_ok`. The dashboard's own players count
 as pulling, and the error go2rtc sends a player when a dial fails is
 read off on the way through, so a card you're looking at tells the
 truth within a minute even when nothing else pulls that camera. If a

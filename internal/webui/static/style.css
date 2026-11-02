@@ -243,6 +243,9 @@ main { padding: 1.5rem; max-width: 1600px; margin: 0 auto; }
 .state-badge.discovering { background: rgba(122, 167, 255, 0.18); color: var(--accent-bright); border: 1px solid rgba(122, 167, 255, 0.5); }
 .state-badge.offline { background: rgba(141, 151, 169, 0.18); color: var(--text-dim); border: 1px solid rgba(141, 151, 169, 0.5); }
 .state-badge.error { background: rgba(255, 92, 92, 0.18); color: var(--error); border: 1px solid rgba(255, 92, 92, 0.5); }
+/* Streaming on paper, but the bridge knows no video is arriving.
+   Overrides .streaming above, so it has to follow it. */
+.state-badge.streaming.degraded { background: rgba(240, 173, 78, 0.18); color: var(--warning); border: 1px solid rgba(240, 173, 78, 0.55); }
 
 .video-badge::before {
     content: "";
