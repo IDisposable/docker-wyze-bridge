@@ -105,6 +105,9 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 	reqCtx := r.Context()
 
 	switch {
+	case action == "sd/recording":
+		s.handleSDRecording(w, r, cam)
+
 	case action == "restart" && r.Method == "POST":
 		s.camMgr.RestartStream(reqCtx, name)
 		writeJSON(w, map[string]string{"status": "ok"})

@@ -91,6 +91,9 @@ type Config struct {
 	// land on CamOverride.RecordCmd.
 	RecordCmd string
 
+	// Optional Linux one-clip camera microSD export helper. Empty disables it.
+	SDDownloadHelper string
+
 	// Snapshots — SnapshotPath is the directory template (strftime +
 	// {cam_name} subdirs OK); SnapshotFileName is the filename stem
 	// template (.jpg auto-appended). Both accept the same tokens.
@@ -174,7 +177,8 @@ func Load() (*Config, error) {
 		StreamAuth: env("STREAM_AUTH", ""),
 
 		// External go2rtc (empty = spawn our own)
-		Go2RTCURL: env("GO2RTC_URL", ""),
+		Go2RTCURL:        env("GO2RTC_URL", ""),
+		SDDownloadHelper: env("SD_DOWNLOAD_HELPER", ""),
 
 		Go2RTCAPIPort:      envInt("GO2RTC_API_PORT", 1984),
 		Go2RTCAPIUsername:  env("GO2RTC_API_USERNAME", ""),
