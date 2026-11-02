@@ -79,8 +79,15 @@ type ProducerInfo struct {
 
 // ReceiverInfo is one producer track's counters.
 type ReceiverInfo struct {
-	Bytes   int `json:"bytes,omitempty"`
-	Packets int `json:"packets,omitempty"`
+	Bytes   int       `json:"bytes,omitempty"`
+	Packets int       `json:"packets,omitempty"`
+	Codec   CodecInfo `json:"codec,omitempty"`
+}
+
+// CodecInfo names what a receiver carries; Type is "video" or "audio".
+type CodecInfo struct {
+	Name string `json:"codec_name,omitempty"`
+	Type string `json:"codec_type,omitempty"`
 }
 
 // SourceURL is where this producer pulls from, whichever key go2rtc
@@ -127,6 +134,45 @@ func (s *StreamInfo) ProducerBytes() int {
 		n += p.Bytes()
 	}
 	return n
+}
+
+// VideoBytes sums what the producers' video receivers delivered.
+// known is false when no receiver says what it carries, a producer
+// go2rtc hasn't dialed or an older go2rtc, and callers fall back to
+// ProducerBytes rather than read the zero as no video.
+//
+// Counting the video track alone matters because both paths carry
+// audio on a receiver of its own: a camera whose video stopped while
+// audio kept coming would otherwise still read as live. It also skips
+// the producer-level bytes_recv the WebRTC path reports, which lumps
+// the two together.
+func (s *StreamInfo) VideoBytes() (bytes int, known bool) {
+	for _, p := range s.Producers {
+		for _, r := range p.Receivers {
+			if r.Codec.Type == "" {
+				continue
+			}
+			known = true
+			if r.Codec.Type == "video" {
+				bytes += r.Bytes
+			}
+		}
+	}
+	return bytes, known
+}
+
+// HasVideoReceiver reports whether any producer has a video track at
+// all. False for the bare {"url": ...} go2rtc leaves for a stream it
+// hasn't managed to dial.
+func (s *StreamInfo) HasVideoReceiver() bool {
+	for _, p := range s.Producers {
+		for _, r := range p.Receivers {
+			if r.Codec.Type == "video" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ConsumerInfo describes a stream consumer.

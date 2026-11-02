@@ -160,7 +160,15 @@ func (m *Manager) observeVideo(cam *Camera, info *go2rtcmgr.StreamInfo, now time
 	if info != nil {
 		connected = info.ProducerConnected()
 		consumers = len(info.Consumers)
-		bytes = info.ProducerBytes()
+		// Count the video track alone where go2rtc says which track is
+		// which, so audio still flowing can't pass for video. When it
+		// doesn't say (not dialed yet, or an older go2rtc) the producer
+		// total is the honest fallback rather than reading zero as dead.
+		if vb, known := info.VideoBytes(); known {
+			bytes = vb
+		} else {
+			bytes = info.ProducerBytes()
+		}
 	}
 	// A browser waiting on the /ws proxy is a consumer go2rtc doesn't
 	// list until it can feed it.

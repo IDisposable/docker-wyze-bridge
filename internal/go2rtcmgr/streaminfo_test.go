@@ -71,3 +71,60 @@ func TestProducerConnected_UndialedIsNotConnected(t *testing.T) {
 		t.Error("a bare {url} producer must not count as connected")
 	}
 }
+
+func TestVideoBytes_CountsTheVideoTrackOnly(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		want      int
+		wantKnown bool
+		wantVideo bool
+	}{
+		{"webrtc", webrtcProducerJSON, 35671751, true, true},
+		{"tutk", tutkProducerJSON, 616819515, true, true},
+		{"undialed", undialedProducerJSON, 0, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := parseStream(t, tt.raw)
+			got, known := s.VideoBytes()
+			if got != tt.want || known != tt.wantKnown {
+				t.Errorf("VideoBytes() = (%d, %v), want (%d, %v)", got, known, tt.want, tt.wantKnown)
+			}
+			if gotVideo := s.HasVideoReceiver(); gotVideo != tt.wantVideo {
+				t.Errorf("HasVideoReceiver() = %v, want %v", gotVideo, tt.wantVideo)
+			}
+		})
+	}
+}
+
+func TestVideoBytes_IgnoresAudioOnlyFlow(t *testing.T) {
+	// A camera whose video stopped while audio kept arriving used to
+	// read as live, because the producer total still moved.
+	const raw = `{"name":"x","producers":[{"remote_addr":"1.2.3.4:5","receivers":[
+		{"codec":{"codec_type":"video"},"bytes":1000},
+		{"codec":{"codec_type":"audio"},"bytes":5000}]}]}`
+	s := parseStream(t, raw)
+	got, known := s.VideoBytes()
+	if !known || got != 1000 {
+		t.Fatalf("VideoBytes() = (%d, %v), want (1000, true)", got, known)
+	}
+	if s.ProducerBytes() == got {
+		t.Error("ProducerBytes should still include audio; the two must differ here")
+	}
+}
+
+func TestVideoBytes_UnknownWithoutCodecTypes(t *testing.T) {
+	// Receivers with no codec block (an older go2rtc). Reading that
+	// zero as no video would restart every working camera, so known
+	// must be false and callers fall back to ProducerBytes.
+	const raw = `{"name":"x","producers":[{"remote_addr":"1.2.3.4:5","bytes_recv":4096,
+		"receivers":[{"bytes":2048,"packets":9}]}]}`
+	s := parseStream(t, raw)
+	if got, known := s.VideoBytes(); known {
+		t.Errorf("VideoBytes() = (%d, true), want known=false without codec types", got)
+	}
+	if got := s.ProducerBytes(); got != 4096+2048 {
+		t.Errorf("ProducerBytes() = %d, want %d", got, 4096+2048)
+	}
+}

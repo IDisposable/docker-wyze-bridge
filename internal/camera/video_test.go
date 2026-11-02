@@ -419,3 +419,37 @@ func TestRestartIfFrozen_ReplacesSilentConnectedStream(t *testing.T) {
 		t.Errorf("go2rtc calls = %v, want one PUT", calls)
 	}
 }
+
+func TestObserveVideo_AudioAloneIsNotVideo(t *testing.T) {
+	// go2rtc tags each receiver with what it carries. A camera whose
+	// video stopped while audio keeps coming has moving byte totals
+	// and no picture; counting the video receiver alone calls it.
+	mgr, _ := newLanIPTestManager(t, nil)
+	cam := newV3("pet_cam", "192.168.4.140")
+	cam.SetState(StateStreaming)
+	mgr.cameras["pet_cam"] = cam
+	info := func(video, audio int) *go2rtcmgr.StreamInfo {
+		return &go2rtcmgr.StreamInfo{
+			Producers: []go2rtcmgr.ProducerInfo{{
+				Source:     cam.StreamURL(),
+				RemoteAddr: "192.168.4.140:51772",
+				Receivers: []go2rtcmgr.ReceiverInfo{
+					{Bytes: video, Codec: go2rtcmgr.CodecInfo{Type: "video"}},
+					{Bytes: audio, Codec: go2rtcmgr.CodecInfo{Type: "audio"}},
+				},
+			}},
+			Consumers: []go2rtcmgr.ConsumerInfo{{}},
+		}
+	}
+	now := time.Now()
+	mgr.observeVideo(cam, info(1000, 1000), now)
+	mgr.observeVideo(cam, info(2000, 2000), now.Add(30*time.Second))
+	if cam.Video() != VideoLive {
+		t.Fatalf("video moving: %v, want live", cam.Video())
+	}
+	mgr.observeVideo(cam, info(2000, 3000), now.Add(60*time.Second))
+	mgr.observeVideo(cam, info(2000, 4000), now.Add(90*time.Second))
+	if cam.Video() != VideoNoVideo {
+		t.Errorf("audio moving, video frozen: %v, want no_video", cam.Video())
+	}
+}
