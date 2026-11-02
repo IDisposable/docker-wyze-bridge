@@ -28,6 +28,12 @@ Under the **filter** section:
 - **names**, **models**, **macs** — each is a list; the UI gives you an "Add" button per entry. Narrows which cameras the bridge exposes.
 - **blocks** — when `true`, the lists above act as a block-list instead of an allow-list.
 
+## Cameras Whose IP Changed
+
+Wyze's cloud only knows a camera's IP from the last time the camera phoned home, so after a DHCP change the bridge used to dial a dead address until a restart. The add-on runs with host networking, so the bridge can ask the LAN itself: it verifies each TUTK camera's address by MAC (ARP) before go2rtc dials it, re-checks streaming cameras every couple of minutes, and sweeps the subnet as a last resort. All of that is on by default; the **camera** section has `lan_ip_resolve`, `lan_ip_sweep` and `lan_ip_recheck` if you need to turn any of it off or change the interval. The address that checked out is shown on the camera card and in `/api/cameras`.
+
+Cameras on your Wyze account that aren't on this network (another house, a shared camera) can be ignored from the WebUI with the 🚫 button on their card; they stay ignored across restarts and can be restored from the strip at the bottom of the dashboard. For the whole-account version, the WebUI's **Settings** page has a *local subnets only* switch that skips every camera whose address isn't on this network, plus block or allow lists by name, MAC and model. Those live in the bridge's state file, not in the add-on options, so they apply right away without a restart.
+
 ## Recording
 
 Under the **record** section:

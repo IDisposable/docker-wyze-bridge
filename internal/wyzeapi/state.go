@@ -17,9 +17,140 @@ import (
 type StateFile struct {
 	Auth    *AuthState            `json:"auth,omitempty"`
 	Cameras map[string]CameraInfo `json:"cameras"` // keyed by MAC
-	Updated time.Time             `json:"updated"`
+	// Ignored is the operator's WebUI ignore list. Lives here rather
+	// than in config because it's edited at runtime and must survive
+	// restarts without a redeploy. See camera.Manager.Ignore.
+	Ignored []IgnoredCamera `json:"ignored,omitempty"`
+	// Layout is the dashboard's tile order and lock, edited from the
+	// WebUI and kept here so every browser sees the same arrangement.
+	Layout *Layout `json:"layout,omitempty"`
+	// PinnedIPs are operator-set LAN addresses keyed by MAC, for TUTK
+	// cameras the resolver can't reach (another VLAN, say). A pin wins
+	// over both the cloud's address and the resolver's.
+	PinnedIPs map[string]string `json:"pinned_ips,omitempty"`
+	// Qualities are the operator's saved HD/SD choices keyed by MAC
+	// (Settings page, detail page, MQTT). A camera without one gets
+	// QUALITY_<CAM> or QUALITY.
+	Qualities map[string]string `json:"qualities,omitempty"`
+	// Rules are the WebUI's runtime camera rules (network scope, name /
+	// MAC / model lists), applied after the env filters on every
+	// discovery. See camera.Manager.SetRules.
+	Rules   *CameraRules `json:"rules,omitempty"`
+	Updated time.Time    `json:"updated"`
 
 	writeMu sync.Mutex
+}
+
+// Layout is the operator's dashboard arrangement: camera names in
+// display order (cameras not listed follow, by name), whether the
+// tiles are locked against dragging, and a per-camera view rotation
+// in degrees (0, 90, 180, 270) for cameras mounted sideways or upside
+// down. Rotation only turns the picture in the WebUI; the stream the
+// camera sends is untouched.
+type Layout struct {
+	Order    []string       `json:"order"`
+	Locked   bool           `json:"locked"`
+	Rotation map[string]int `json:"rotation,omitempty"`
+}
+
+// SetLayout replaces the layout under the same lock Save uses.
+func (sf *StateFile) SetLayout(l Layout) {
+	sf.writeMu.Lock()
+	cp := Layout{Order: append([]string(nil), l.Order...), Locked: l.Locked}
+	if len(l.Rotation) > 0 {
+		cp.Rotation = make(map[string]int, len(l.Rotation))
+		for k, v := range l.Rotation {
+			cp.Rotation[k] = v
+		}
+	}
+	sf.Layout = &cp
+	sf.writeMu.Unlock()
+}
+
+// CameraRules is what the Settings page edits. Scope "local" keeps only
+// cameras whose cloud-reported IP sits on one of the bridge's subnets
+// (or on an extra CIDR listed in Subnets); "" or "any" keeps every
+// camera. Names are nickname patterns with * as a wildcard, MACs and
+// Models exact (case-insensitive; a model may be the code or the
+// display name). With Block the listed cameras are dropped; without
+// it, and with any list non-empty, only the listed cameras are kept.
+type CameraRules struct {
+	Scope   string   `json:"scope,omitempty"`
+	Subnets []string `json:"subnets,omitempty"`
+	Names   []string `json:"names,omitempty"`
+	MACs    []string `json:"macs,omitempty"`
+	Models  []string `json:"models,omitempty"`
+	Block   bool     `json:"block"`
+}
+
+// Empty reports whether the rules do nothing at all.
+func (r CameraRules) Empty() bool {
+	return (r.Scope == "" || r.Scope == "any") && len(r.Names) == 0 && len(r.MACs) == 0 && len(r.Models) == 0
+}
+
+// SetRules replaces the rules under the same lock Save uses. Empty
+// rules clear the field from the file.
+func (sf *StateFile) SetRules(r CameraRules) {
+	sf.writeMu.Lock()
+	if r.Empty() && len(r.Subnets) == 0 {
+		sf.Rules = nil
+	} else {
+		cp := r
+		cp.Subnets = append([]string(nil), r.Subnets...)
+		cp.Names = append([]string(nil), r.Names...)
+		cp.MACs = append([]string(nil), r.MACs...)
+		cp.Models = append([]string(nil), r.Models...)
+		sf.Rules = &cp
+	}
+	sf.writeMu.Unlock()
+}
+
+// SetPinnedIPs replaces the pinned addresses under the same lock Save
+// uses. An empty map clears the field from the file.
+func (sf *StateFile) SetPinnedIPs(pins map[string]string) {
+	sf.writeMu.Lock()
+	if len(pins) == 0 {
+		sf.PinnedIPs = nil
+	} else {
+		sf.PinnedIPs = make(map[string]string, len(pins))
+		for k, v := range pins {
+			sf.PinnedIPs[k] = v
+		}
+	}
+	sf.writeMu.Unlock()
+}
+
+// SetQualities replaces the saved quality choices under the same lock
+// Save uses. An empty map clears the field from the file.
+func (sf *StateFile) SetQualities(saved map[string]string) {
+	sf.writeMu.Lock()
+	if len(saved) == 0 {
+		sf.Qualities = nil
+	} else {
+		sf.Qualities = make(map[string]string, len(saved))
+		for k, v := range saved {
+			sf.Qualities[k] = v
+		}
+	}
+	sf.writeMu.Unlock()
+}
+
+// IgnoredCamera is a camera the operator told the bridge to leave
+// alone. Keyed by MAC because nicknames change; the nickname and model
+// are carried only so the ignored list in the WebUI reads well.
+type IgnoredCamera struct {
+	MAC      string    `json:"mac"`
+	Nickname string    `json:"nickname,omitempty"`
+	Model    string    `json:"model,omitempty"`
+	Since    time.Time `json:"since"`
+}
+
+// SetIgnored replaces the ignore list under the same lock Save uses,
+// so a save racing the edit never marshals a half-written slice.
+func (sf *StateFile) SetIgnored(list []IgnoredCamera) {
+	sf.writeMu.Lock()
+	sf.Ignored = append([]IgnoredCamera(nil), list...)
+	sf.writeMu.Unlock()
 }
 
 // LoadState reads the state file from disk.

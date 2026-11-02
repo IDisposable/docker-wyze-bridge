@@ -3,10 +3,16 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
+	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
 // handleFavicon serves the embedded icon.png as the tab favicon.
@@ -113,15 +119,18 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		if body.Quality != "hd" && body.Quality != "sd" {
-			writeJSONError(w, http.StatusBadRequest, "quality must be 'hd' or 'sd'")
+		// "" goes back to the default (QUALITY_<CAM> / QUALITY). The
+		// choice is saved by MAC; see camera/quality.go.
+		effective, err := s.camMgr.SetQuality(reqCtx, name, body.Quality)
+		switch {
+		case errors.Is(err, camera.ErrBadQuality), errors.Is(err, camera.ErrQualityNotTUTK):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
-		}
-		if err := s.camMgr.SetQuality(reqCtx, name, body.Quality); err != nil {
+		case err != nil:
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, map[string]string{"status": "ok", "quality": body.Quality})
+		writeJSON(w, map[string]string{"status": "ok", "quality": effective, "saved": strings.ToLower(strings.TrimSpace(body.Quality))})
 
 	case action == "audio" && r.Method == "POST":
 		var body struct {
@@ -173,9 +182,151 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 			"recording": s.recMgr.IsRecording(name),
 		})
 
+	case action == "property" && r.Method == "POST":
+		// Camera-side settings via the Wyze cloud: body
+		// {"property":"hor_flip","value":"on"}. Same table MQTT's
+		// set topics use (wyzeapi.CloudProperties).
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		var body struct {
+			Property string `json:"property"`
+			Value    string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if _, known := wyzeapi.CloudProperties[body.Property]; !known {
+			writeJSONError(w, http.StatusBadRequest, "unknown property")
+			return
+		}
+		if _, _, ok := wyzeapi.ParsePropertyValue(body.Property, body.Value); !ok {
+			writeJSONError(w, http.StatusBadRequest, "invalid value for "+body.Property)
+			return
+		}
+		published, err := s.cloud.SetNamedProperty(cam.GetInfo(), body.Property, body.Value)
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: body.Property + " = " + body.Value})
+		}
+		if s.onPropertySet != nil {
+			go s.onPropertySet(name, body.Property, published)
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "property": body.Property, "value": published})
+
+	case action == "reboot" && r.Method == "POST":
+		// Reboot the camera itself through the Wyze cloud (the "restart"
+		// run_action), then re-register the stream so go2rtc dials the
+		// camera fresh when it's back. Distinct from "restart", which
+		// only re-registers the stream.
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		if err := s.cloud.RunAction(cam.GetInfo(), "restart"); err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: "reboot requested"})
+		}
+		// rootCtx: the reconnect outlives this request.
+		go s.camMgr.RestartStream(s.rootCtx, name)
+		writeJSON(w, map[string]string{"status": "ok"})
+
+	case action == "pin" && r.Method == "POST":
+		// Pin the camera's LAN address: body {"ip":"192.168.4.151"};
+		// an empty ip unpins. Persisted by MAC; see camera.PinLanIP.
+		var body struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		effective, err := s.camMgr.PinLanIP(s.rootCtx, name, body.IP)
+		switch {
+		case errors.Is(err, camera.ErrBadPinIP), errors.Is(err, camera.ErrNotLANCamera):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		case err != nil:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			msg := "address pinned to " + body.IP
+			if strings.TrimSpace(body.IP) == "" {
+				msg = "address unpinned (now " + effective + ")"
+			}
+			evLog.Record(Event{Kind: "lan_ip", Camera: name, Message: msg})
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "ip": effective, "pinned_ip": cam.PinnedIP()})
+
+	case action == "ignore" && r.Method == "POST":
+		// Drops the camera from the registry for good (persisted by
+		// MAC); /api/ignored/<mac>/restore brings it back.
+		entry, err := s.camMgr.Ignore(reqCtx, name)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "ignore", Camera: name, Message: "ignored (" + entry.MAC + ")"})
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "ignored": entry})
+
 	default:
 		writeJSONError(w, http.StatusNotFound, "not found")
 	}
+}
+
+// handleAPIIgnored lists the operator's ignore list.
+func (s *Server) handleAPIIgnored(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	list := s.camMgr.Ignored()
+	if list == nil {
+		list = []wyzeapi.IgnoredCamera{}
+	}
+	writeJSON(w, list)
+}
+
+// handleAPIIgnoredAction handles POST /api/ignored/{mac}/restore: takes
+// the MAC off the list and kicks a rediscovery so the camera comes
+// back without waiting for the next refresh. The discovery runs
+// asynchronously like the Rediscover button's; the camera_added SSE
+// event tells the dashboard when the card is back.
+func (s *Server) handleAPIIgnoredAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/ignored/")
+	parts := strings.SplitN(path, "/", 2)
+	mac := parts[0]
+	if mac == "" || len(parts) < 2 || parts[1] != "restore" {
+		writeJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	entry, err := s.camMgr.Unignore(mac)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if evLog := s.Events(); evLog != nil {
+		evLog.Record(Event{Kind: "ignore", Camera: entry.Nickname, Message: "restored (" + entry.MAC + ")"})
+	}
+	if s.onDiscoverReq != nil {
+		go s.onDiscoverReq(s.rootCtx)
+	}
+	writeJSON(w, map[string]interface{}{"status": "ok", "restored": entry})
 }
 
 // recordingController is satisfied by recording.Manager. Kept as an
@@ -184,6 +335,67 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 type recordingController interface {
 	Start(ctx context.Context, camName string) error
 	Stop(camName string)
+}
+
+// snapshotWait is how long a tile request waits for a frame before it
+// gets a 503. The request to go2rtc keeps going for snapshotProbeTimeout
+// after that, since go2rtc dials the camera for the frame and can take
+// most of a minute to give up on one that doesn't answer; its verdict
+// is what RecordSnapshotError needs, and cutting the request off at 10s
+// threw it away (go2rtc logs it with no stream name, so there is no
+// other way to hear it). Variables so the tests can shorten them.
+var (
+	snapshotWait         = 10 * time.Second
+	snapshotProbeTimeout = 90 * time.Second
+)
+
+// snapshotCall is one frame request to go2rtc, shared by every tile
+// request for the camera that arrives while it runs.
+type snapshotCall struct {
+	done chan struct{}
+	jpeg []byte
+	err  error
+}
+
+// snapshotCalls is the in-flight frame request per camera.
+type snapshotCalls struct {
+	mu    sync.Mutex
+	calls map[string]*snapshotCall
+}
+
+// snapshot returns the frame request in flight for a camera, starting
+// one when there isn't. The request runs to go2rtc's answer whatever
+// the caller does with it, and an error is reported against the camera.
+func (s *Server) snapshot(go2rtc *go2rtcmgr.APIClient, name string) *snapshotCall {
+	s.snapshots.mu.Lock()
+	defer s.snapshots.mu.Unlock()
+	if c, ok := s.snapshots.calls[name]; ok {
+		return c
+	}
+	if s.snapshots.calls == nil {
+		s.snapshots.calls = make(map[string]*snapshotCall)
+	}
+	c := &snapshotCall{done: make(chan struct{})}
+	s.snapshots.calls[name] = c
+	go func() {
+		ctx, cancel := context.WithTimeout(s.rootCtx, snapshotProbeTimeout)
+		defer cancel()
+		c.jpeg, c.err = go2rtc.GetSnapshot(ctx, name)
+		if c.err != nil {
+			s.log.Warn().Err(c.err).Str("cam", name).Msg("snapshot failed")
+			// The dashboard's tiles pull through here; go2rtc not
+			// getting a frame is the camera not answering its dial,
+			// so tell the camera.
+			if s.camMgr != nil {
+				s.camMgr.RecordSnapshotError(s.rootCtx, name, c.err)
+			}
+		}
+		s.snapshots.mu.Lock()
+		delete(s.snapshots.calls, name)
+		s.snapshots.mu.Unlock()
+		close(c.done)
+	}()
+	return c
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -198,17 +410,23 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "bridge still starting; go2rtc not yet ready")
 		return
 	}
-	ctx := r.Context()
-	jpeg, err := go2rtc.GetSnapshot(ctx, name)
-	if err != nil {
-		s.log.Warn().Err(err).Str("cam", name).Msg("snapshot failed")
+	c := s.snapshot(go2rtc, name)
+	select {
+	case <-c.done:
+	case <-time.After(snapshotWait):
+		writeJSONError(w, http.StatusServiceUnavailable, "snapshot unavailable")
+		return
+	case <-r.Context().Done():
+		return
+	}
+	if c.err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "snapshot unavailable")
 		return
 	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(jpeg)
+	w.Write(c.jpeg)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

@@ -64,7 +64,7 @@ func (c *Client) handleSetCommand(_ paho.Client, msg paho.Message) {
 	case "quality":
 		if value == "hd" || value == "sd" {
 			go func() {
-				if err := c.camMgr.SetQuality(c.rootCtx, camName, value); err != nil {
+				if _, err := c.camMgr.SetQuality(c.rootCtx, camName, value); err != nil {
 					c.log.Error().Err(err).Str("cam", camName).Msg("quality change failed")
 				} else {
 					c.publish(fmt.Sprintf("%s/%s/quality", c.topic, camName), value, true)

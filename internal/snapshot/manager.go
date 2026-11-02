@@ -109,12 +109,23 @@ func (m *Manager) CaptureOne(ctx context.Context, name string) {
 	m.captureOne(ctx, name)
 }
 
+// snapshotTimeout bounds one frame request to go2rtc.
+const snapshotTimeout = 90 * time.Second
+
 func (m *Manager) captureOne(ctx context.Context, name string) {
 	m.log.Trace().Str("cam", name).Msg("requesting snapshot from go2rtc")
 
+	// go2rtc dials the camera for the frame and can take most of a
+	// minute to give up on one that doesn't answer; wait for that
+	// answer, since it's what RecordSnapshotError reports.
+	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
 	jpeg, err := m.go2rtcAPI.GetSnapshot(ctx, name)
 	if err != nil {
 		m.log.Debug().Err(err).Str("cam", name).Msg("snapshot capture failed")
+		// go2rtc dialed the camera for this frame and it didn't
+		// answer; that belongs on the camera, not just in the log.
+		m.camMgr.RecordSnapshotError(ctx, name, err)
 		return
 	}
 

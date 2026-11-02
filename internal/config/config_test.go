@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -130,5 +131,54 @@ func TestParseLogLevel(t *testing.T) {
 		if got.String() != tt.want {
 			t.Errorf("parseLogLevel(%q) = %q, want %q", tt.in, got.String(), tt.want)
 		}
+	}
+}
+
+func TestLoadLanIPDefaultsAndOverrides(t *testing.T) {
+	// The LAN IP resolver and its subnet sweep are on unless turned off.
+	// A value Load can't parse keeps the default instead of quietly
+	// disabling the resolver.
+	t.Setenv("LAN_IP_RESOLVE", "")
+	t.Setenv("LAN_IP_SWEEP", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.LanIPResolve || !cfg.LanIPSweep {
+		t.Errorf("LAN IP resolver should default on: resolve=%v sweep=%v", cfg.LanIPResolve, cfg.LanIPSweep)
+	}
+
+	t.Setenv("LAN_IP_RESOLVE", "false")
+	t.Setenv("LAN_IP_SWEEP", "no")
+	cfg, _ = Load()
+	if cfg.LanIPResolve || cfg.LanIPSweep {
+		t.Errorf("LAN IP resolver should honor opt-out: resolve=%v sweep=%v", cfg.LanIPResolve, cfg.LanIPSweep)
+	}
+
+	// Garbage keeps the default rather than silently disabling.
+	t.Setenv("LAN_IP_RESOLVE", "maybe")
+	cfg, _ = Load()
+	if !cfg.LanIPResolve {
+		t.Error("unparseable LAN_IP_RESOLVE should fall back to the default (true)")
+	}
+}
+
+func TestLoadLanIPRecheck(t *testing.T) {
+	// LAN_IP_RECHECK defaults to 2m, takes a Go duration like 30s, and 0
+	// turns the periodic recheck of streaming cameras off.
+	t.Setenv("LAN_IP_RECHECK", "")
+	cfg, _ := Load()
+	if cfg.LanIPRecheck != 2*time.Minute {
+		t.Errorf("LanIPRecheck default = %v, want 2m", cfg.LanIPRecheck)
+	}
+	t.Setenv("LAN_IP_RECHECK", "0")
+	cfg, _ = Load()
+	if cfg.LanIPRecheck != 0 {
+		t.Errorf("LAN_IP_RECHECK=0 should disable, got %v", cfg.LanIPRecheck)
+	}
+	t.Setenv("LAN_IP_RECHECK", "30s")
+	cfg, _ = Load()
+	if cfg.LanIPRecheck != 30*time.Second {
+		t.Errorf("LAN_IP_RECHECK=30s parsed as %v", cfg.LanIPRecheck)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -168,8 +169,58 @@ func (c *Client) GetCameraList() ([]CameraInfo, error) {
 		cameras = append(cameras, cam)
 	}
 
+	for _, cam := range DisambiguateNames(cameras) {
+		c.log.Warn().
+			Str("nickname", cam.Nickname).
+			Str("mac", cam.MAC).
+			Str("name", cam.Name).
+			Msg("camera nickname is shared with another camera; using a MAC-suffixed name")
+	}
+
 	c.log.Info().Int("count", len(cameras)).Msg("cameras discovered")
 	return cameras, nil
+}
+
+// DisambiguateNames makes every CameraInfo.Name unique. The registry,
+// go2rtc stream names, RTSP paths and HA entity ids all key on Name,
+// so two cameras whose nicknames normalize to the same string would
+// otherwise collapse into one entry that flips between the physical
+// cameras on every discovery. Every member of a colliding group gets
+// "_" + the last four hex digits of its MAC (front_porch_ca02); none
+// keeps the bare name, so adding a third camera later can't silently
+// steal it. Cameras with unique nicknames are untouched. Returns the
+// renamed entries so the caller can log them.
+func DisambiguateNames(cameras []CameraInfo) []CameraInfo {
+	byName := make(map[string][]int, len(cameras))
+	for i, cam := range cameras {
+		byName[cam.Name] = append(byName[cam.Name], i)
+	}
+	var renamed []CameraInfo
+	for _, idxs := range byName {
+		if len(idxs) < 2 {
+			continue
+		}
+		for n, i := range idxs {
+			cameras[i].Name = cameras[i].Name + "_" + macSuffix(cameras[i].MAC, n+1)
+			renamed = append(renamed, cameras[i])
+		}
+	}
+	return renamed
+}
+
+// macSuffix returns the last four hex digits of a MAC in lowercase, or
+// an ordinal when the MAC is too short to be useful.
+func macSuffix(mac string, ordinal int) string {
+	hexOnly := strings.Map(func(r rune) rune {
+		if strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return r
+		}
+		return -1
+	}, mac)
+	if len(hexOnly) < 4 {
+		return strconv.Itoa(ordinal)
+	}
+	return strings.ToLower(hexOnly[len(hexOnly)-4:])
 }
 
 // SetProperty sets a device property via the Wyze cloud API.
