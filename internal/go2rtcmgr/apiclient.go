@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,17 @@ func Unreachable(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial"
 }
 
+// StatusError is go2rtc answering with an error status and its reason
+// in the body ("streams: wyze: connect failed: discovery timeout"), as
+// opposed to not answering at all. Wrapped into the errors callers
+// see, so errors.As picks it out.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("%d %s", e.Status, e.Body) }
+
 // StreamInfo contains details about a go2rtc stream.
 type StreamInfo struct {
 	Name      string         `json:"name"`
@@ -53,7 +65,12 @@ type StreamInfo struct {
 // through the receivers, so Receivers[].Bytes is where TUTK video
 // shows up (bytes_recv stays 0 for it).
 type ProducerInfo struct {
-	URL        string         `json:"url,omitempty"`
+	URL string `json:"url,omitempty"`
+	// Source is where a connected wyze:// producer pulls from; go2rtc
+	// reports "url" for a producer it hasn't dialed and for the sources
+	// it dials itself (webrtc, ffmpeg, rtsp), and an exec: producer
+	// carries both. Read either through SourceURL.
+	Source     string         `json:"source,omitempty"`
 	RemoteAddr string         `json:"remote_addr,omitempty"`
 	BytesRecv  int            `json:"bytes_recv,omitempty"`
 	Medias     []interface{}  `json:"medias,omitempty"`
@@ -64,6 +81,15 @@ type ProducerInfo struct {
 type ReceiverInfo struct {
 	Bytes   int `json:"bytes,omitempty"`
 	Packets int `json:"packets,omitempty"`
+}
+
+// SourceURL is where this producer pulls from, whichever key go2rtc
+// used for it.
+func (p ProducerInfo) SourceURL() string {
+	if p.URL != "" {
+		return p.URL
+	}
+	return p.Source
 }
 
 // Connected reports whether go2rtc currently holds a connection to
@@ -284,7 +310,7 @@ func (c *APIClient) GetSnapshot(ctx context.Context, name string) ([]byte, error
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get snapshot %q: %d %s", name, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("get snapshot %q: %w", name, &StatusError{resp.StatusCode, strings.TrimSpace(string(body))})
 	}
 
 	return io.ReadAll(resp.Body)

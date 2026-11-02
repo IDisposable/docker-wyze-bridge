@@ -2,6 +2,8 @@ package camera
 
 import (
 	"context"
+	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,6 +58,9 @@ func (c *Camera) observeFlow(connected bool, consumers int, bytes int, now time.
 		c.video = VideoLive
 		c.lastVideo = now
 		c.stalledPolls = 0
+		// Video arriving heals whatever recordError counted; lastError
+		// stays as history.
+		c.dialFailures = 0
 	case !connected && consumers == 0:
 		c.video = VideoIdle
 		c.stalledPolls = 0
@@ -82,11 +87,22 @@ func (c *Camera) resetFlow() {
 // recordError stores the latest go2rtc stream error. An error is a
 // stronger signal than two quiet polls, so the status flips to
 // VideoNoVideo at once. Returns the transition.
+//
+// A failed dial also counts: dialFailures is part of the error_count
+// /api/cameras and the WebUI show, and a camera whose every dial
+// times out reading error_count 0 is the lie this stops. The state
+// machine and its own ErrorCount are left alone on purpose: a log
+// line attributed to this camera shouldn't be able to knock a working
+// stream out of StateStreaming, or stretch its reconnect backoff, by
+// itself.
 func (c *Camera) recordError(msg string, at time.Time) (old, cur Video) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lastError = msg
 	c.lastErrorAt = at
+	if ConnectError(msg) {
+		c.dialFailures++
+	}
 	old = c.video
 	c.video = VideoNoVideo
 	return old, c.video
@@ -226,15 +242,122 @@ func consumerSideError(msg string) bool {
 	return strings.Contains(msg, "codecs not matched")
 }
 
+// ConnectError reports a go2rtc error that means the dial to the
+// camera itself failed. Those count against the camera; anything else
+// is recorded and left at that.
+func ConnectError(msg string) bool {
+	return strings.Contains(msg, "connect failed") ||
+		strings.Contains(msg, "discovery timeout") ||
+		strings.Contains(msg, "no answer")
+}
+
+// sourceWordRE splits a producer source into the words a stream name
+// could be: rtsp://127.0.0.1:8554/driveway_bedb?video, ffmpeg:
+// front_door#video=mjpeg and the -i inside an exec: line all carry the
+// name between punctuation. Camera names are \w and - only, so a
+// camera called bedb can't match inside driveway_bedb.
+var sourceWordRE = regexp.MustCompile(`[\w-]+`)
+
+// noteCopyStreams records which go2rtc streams only re-serve a
+// camera's stream. A dashboard panel or a recording leg sits in the
+// table under its own name (panel_driveway_bedb) with the camera's
+// stream as its source, and go2rtc reports a failed dial against
+// whichever stream it was serving at the time; without this the error
+// lands on a name no camera answers to and is dropped. Rebuilt from
+// the whole table on every health poll, so it follows streams coming
+// and going.
+func (m *Manager) noteCopyStreams(streams map[string]*go2rtcmgr.StreamInfo) {
+	m.mu.RLock()
+	names := make(map[string]bool, len(m.cameras))
+	for name := range m.cameras {
+		names[name] = true
+	}
+	m.mu.RUnlock()
+
+	copies := make(map[string]string)
+	for streamName, info := range streams {
+		if streamName == "" || info == nil || names[streamName] {
+			continue
+		}
+		for _, p := range info.Producers {
+			cam := ""
+			for _, word := range sourceWordRE.FindAllString(p.SourceURL(), -1) {
+				if names[word] {
+					cam = word
+					break
+				}
+			}
+			if cam != "" {
+				copies[streamName] = cam
+				break
+			}
+		}
+	}
+
+	m.mu.Lock()
+	m.copies = copies
+	m.mu.Unlock()
+}
+
+// resolveStreamName maps a go2rtc stream name to the camera whose
+// video it carries, "" when none. A camera's own name first, then the
+// copies learned at the last health poll, then a name that ends in
+// "_<camera>" so a copy made since that poll still lands
+// (panel_driveway_bedb → driveway_bedb).
+func (m *Manager) resolveStreamName(name string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.cameras[name]; ok {
+		return name
+	}
+	if cam, ok := m.copies[name]; ok {
+		return cam
+	}
+	best := ""
+	for cam := range m.cameras {
+		if len(cam) > len(best) && strings.HasSuffix(name, "_"+cam) {
+			best = cam
+		}
+	}
+	return best
+}
+
+// RecordSnapshotError reports a snapshot go2rtc couldn't serve. go2rtc
+// dials the camera for a frame, so when it answers with an error that
+// is the camera not answering, and it reaches go2rtc's log as an
+// [api.mjpeg] line with no stream= token to attribute it by. The
+// caller knows which camera it asked for, so it lands there. Only
+// go2rtc's own answer counts: our client giving up first (10s, and a
+// dozing V3 can take 40s to send a frame) or the browser cancelling
+// says nothing about the camera.
+func (m *Manager) RecordSnapshotError(ctx context.Context, name string, err error) {
+	var answer *go2rtcmgr.StatusError
+	if err == nil || !errors.As(err, &answer) {
+		m.log.Debug().Err(err).Str("cam", name).Msg("snapshot failed without an answer from go2rtc; not recorded")
+		return
+	}
+	m.RecordStreamError(ctx, name, "snapshot: "+strings.TrimPrefix(answer.Body, "streams: "))
+}
+
 // RecordStreamError attributes a go2rtc stream error to a camera: it
 // lands on the card and the detail page, flips the video status to
 // no_video, and — for a TUTK camera whose discovery timed out — kicks
 // an immediate LAN IP recheck instead of waiting for the next
-// scheduled one, since a stale address is the usual cause.
+// scheduled one, since a stale address is the usual cause. The name
+// may be a copy of a camera's stream; see resolveStreamName.
 func (m *Manager) RecordStreamError(ctx context.Context, name, msg string) {
-	cam := m.GetCamera(name)
+	resolved := m.resolveStreamName(name)
+	if resolved == "" {
+		m.log.Debug().Str("stream", name).Str("error", msg).Msg("go2rtc stream error for a stream that isn't a camera's")
+		return
+	}
+	cam := m.GetCamera(resolved)
 	if cam == nil {
 		return
+	}
+	if resolved != name {
+		m.log.Debug().Str("stream", name).Str("cam", resolved).Msg("go2rtc stream error on a copy; attributing it to the camera")
+		name = resolved
 	}
 	if consumerSideError(msg) {
 		m.log.Debug().Str("cam", name).Str("error", msg).Msg("go2rtc consumer error (not the camera's)")

@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
+
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
+	"github.com/IDisposable/docker-wyze-bridge/internal/go2rtcmgr"
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
@@ -173,5 +176,39 @@ func TestResponseWriter_StatusTracking(t *testing.T) {
 	rw.WriteHeader(404)
 	if rw.status != 404 {
 		t.Errorf("status = %d, want 404", rw.status)
+	}
+}
+
+func TestHandleSnapshot_FailureLandsOnTheCamera(t *testing.T) {
+	// go2rtc dials the camera for a dashboard tile's snapshot. When
+	// that fails it answers 500 with the dial error, and the camera
+	// has to hear about it: the tile is the only thing pulling a
+	// camera nobody is watching, and the failure used to stop here.
+	go2rtcSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/frame.jpeg" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("streams: wyze: connect failed: discovery timeout"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(go2rtcSrv.Close)
+	srv, _ := testServer(t)
+	srv.SetGo2RTCAPI(go2rtcmgr.NewAPIClient(go2rtcSrv.URL, zerolog.Nop()))
+
+	cam := camera.NewCamera(wyzeapi.CameraInfo{Name: "snap_cam", Model: "WYZE_CAKP2JFUS", LanIP: "192.168.4.141"}, "hd", true, false)
+	cam.SetState(camera.StateStreaming)
+	srv.camMgr.InjectCamera("snap_cam", cam)
+
+	req := httptest.NewRequest("GET", "/api/snapshot/snap_cam", nil)
+	w := httptest.NewRecorder()
+	srv.handleSnapshot(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+	snap := cam.Snapshot()
+	if snap.ErrorCount != 1 || snap.LastError != "snapshot: wyze: connect failed: discovery timeout" {
+		t.Errorf("camera after a failed snapshot: errors=%d err=%q", snap.ErrorCount, snap.LastError)
 	}
 }

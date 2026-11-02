@@ -89,6 +89,13 @@ type Camera struct {
 	lastError        string
 	lastErrorAt      time.Time
 	lastErrorRecheck time.Time
+	// dialFailures counts the dials go2rtc reported failing since
+	// video last flowed (recordError). Kept apart from ErrorCount,
+	// which drives the reconnect backoff and the chronic report for
+	// the bridge's own failed connects; a camera that timed out a few
+	// dials shouldn't wait five minutes to come back after a go2rtc
+	// blip. The two are added up as error_count for the outside.
+	dialFailures int
 	lastRestart      time.Time // last frozen-stream restart; see video.go
 	mu               sync.RWMutex
 }
@@ -430,7 +437,7 @@ func (c *Camera) Snapshot() Snapshot {
 		Quality:       c.Quality,
 		AudioOn:       c.AudioOn,
 		Record:        c.Record,
-		ErrorCount:    c.ErrorCount,
+		ErrorCount:    c.ErrorCount + c.dialFailures,
 		ConnectedAt:   c.ConnectedAt,
 		LastSeen:      c.LastSeen,
 		ForceWebRTC:   c.forceWebRTC,
@@ -465,7 +472,7 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 		"fw_version":    c.Info.FWVersion,
 		"connected_at":  c.ConnectedAt,
 		"last_seen":     c.LastSeen,
-		"error_count":   c.ErrorCount,
+		"error_count":   c.ErrorCount + c.dialFailures,
 		"video":         c.video.String(),
 		"last_video":    c.lastVideo,
 		"last_error":    c.lastError,

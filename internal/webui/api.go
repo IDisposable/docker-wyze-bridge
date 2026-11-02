@@ -351,6 +351,11 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	jpeg, err := go2rtc.GetSnapshot(ctx, name)
 	if err != nil {
 		s.log.Warn().Err(err).Str("cam", name).Msg("snapshot failed")
+		// The dashboard's tiles pull through here; a failure is the
+		// camera not answering go2rtc's dial, so tell the camera.
+		if s.camMgr != nil {
+			s.camMgr.RecordSnapshotError(s.rootCtx, name, err)
+		}
 		writeJSONError(w, http.StatusServiceUnavailable, "snapshot unavailable")
 		return
 	}

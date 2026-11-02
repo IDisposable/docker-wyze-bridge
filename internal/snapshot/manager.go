@@ -115,6 +115,9 @@ func (m *Manager) captureOne(ctx context.Context, name string) {
 	jpeg, err := m.go2rtcAPI.GetSnapshot(ctx, name)
 	if err != nil {
 		m.log.Debug().Err(err).Str("cam", name).Msg("snapshot capture failed")
+		// go2rtc dialed the camera for this frame and it didn't
+		// answer; that belongs on the camera, not just in the log.
+		m.camMgr.RecordSnapshotError(ctx, name, err)
 		return
 	}
 

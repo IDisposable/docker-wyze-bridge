@@ -27,12 +27,17 @@ type StateChangeFunc func(cam *Camera, oldState, newState State)
 // that needs go2rtc before it's attached is a no-op that logs a warning
 // rather than panicking on a nil pointer.
 type Manager struct {
-	log      zerolog.Logger
-	cfg      *config.Config
-	api      *wyzeapi.Client
-	go2rtc   atomic.Pointer[go2rtcmgr.APIClient]
-	filter   *Filter
-	cameras  map[string]*Camera // keyed by normalized name
+	log     zerolog.Logger
+	cfg     *config.Config
+	api     *wyzeapi.Client
+	go2rtc  atomic.Pointer[go2rtcmgr.APIClient]
+	filter  *Filter
+	cameras map[string]*Camera // keyed by normalized name
+	// copies maps a go2rtc stream that only re-serves a camera's
+	// stream (a dashboard panel's ffmpeg leg, say) to that camera, so
+	// go2rtc's errors about the copy reach the camera. Rebuilt from
+	// the stream table on every health poll; see noteCopyStreams.
+	copies   map[string]string
 	mu       sync.RWMutex
 	onChange StateChangeFunc
 	// onChronicError fires once when a camera's error count first
@@ -452,6 +457,11 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 		m.log.Warn().Err(err).Msg("health check: failed to list streams")
 		return
 	}
+
+	// Learn which streams re-serve a camera's stream before anything
+	// is attributed, so a failed dial go2rtc reports against a copy
+	// reaches the camera behind it.
+	m.noteCopyStreams(streams)
 
 	m.mu.RLock()
 	cams := make([]*Camera, 0, len(m.cameras))
