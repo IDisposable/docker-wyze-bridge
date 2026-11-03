@@ -1,6 +1,6 @@
 # ── Stage 1: Fetch the existing go2rtc source + video-rtc.js ────────────────
 FROM alpine:3.21 AS go2rtc-fetch
-ARG GO2RTC_VERSION=1.9.14
+ARG GO2RTC_VERSION=1.9.15
 RUN apk add --no-cache curl ca-certificates && \
     curl -fsSL \
       "https://github.com/AlexxIT/go2rtc/archive/refs/tags/v${GO2RTC_VERSION}.tar.gz" \
