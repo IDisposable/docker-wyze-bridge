@@ -36,7 +36,7 @@ type CameraMetric struct {
 	Nickname  string `json:"nickname"`
 	Model     string `json:"model"`
 	ModelName string `json:"model_name"`
-	Protocol  string `json:"protocol"` // "tutk" | "gwell" | "webrtc"
+	Protocol  string `json:"protocol"` // "tutk" | "gwell" | "webrtc" | "lake"
 	// ProtocolForced is true when the current Protocol reflects a
 	// runtime TUTK→WebRTC auto-fallback rather than the model
 	// registry's default. Lets operators tell "Wyze pushed a bad FW"
@@ -124,6 +124,10 @@ func (s *Server) buildMetricsSnapshot() MetricsSnapshot {
 			Quality:        cs.Quality,
 			AudioOn:        cs.AudioOn,
 			ErrorCount:     cs.ErrorCount,
+		}
+		if cs.Info.Model == "HL_PAN4" {
+			cm.Protocol = "lake"
+			cm.ProtocolForced = false
 		}
 		if s.recMgr != nil {
 			cm.Recording = s.recMgr.IsRecording(cam.Name())
@@ -294,7 +298,7 @@ const metricsHTML = `<!DOCTYPE html>
 <thead><tr>
   <th title="Click to open the camera page. The lower line is the bridge-normalized name (URL-safe, used in MQTT topics and stream URLs)">Name</th>
   <th title="Marketing name + raw Wyze product code">Model</th>
-  <th title="Streaming protocol the bridge uses for this camera: tutk = go2rtc direct, gwell = OG sidecar, webrtc = Wyze KVS via go2rtc">Path</th>
+  <th title="Streaming protocol the bridge uses for this camera: tutk = go2rtc direct, gwell = OG sidecar, webrtc = Wyze KVS via go2rtc, lake = Agora WebRTC">Path</th>
   <th title="streaming = live, connecting = handshake in progress, offline = idle, error = backed off after failures">State</th>
   <th title="hd or sd; override per-camera with QUALITY_&lt;CAM_NAME&gt;">Quality</th>
   <th title="Whether audio is muxed into the stream">Audio</th>

@@ -31,8 +31,10 @@ type StreamInfo struct {
 
 // ProducerInfo describes a stream producer (source).
 type ProducerInfo struct {
-	URL    string        `json:"url,omitempty"`
-	Medias []interface{} `json:"medias,omitempty"`
+	ID        int64         `json:"id,omitempty"`
+	BytesRecv int64         `json:"bytes_recv,omitempty"`
+	URL       string        `json:"url,omitempty"`
+	Medias    []interface{} `json:"medias,omitempty"`
 }
 
 // ConsumerInfo describes a stream consumer.
@@ -152,7 +154,24 @@ func (c *APIClient) AddStream(ctx context.Context, name, streamURL string) error
 
 // DeleteStream removes a stream from go2rtc.
 func (c *APIClient) DeleteStream(ctx context.Context, name string) error {
-	u := fmt.Sprintf("%s/api/streams?name=%s", c.baseURL, url.QueryEscape(name))
+	return c.deleteStream(ctx, name, false)
+}
+
+// DeleteStreamAndStop closes producers and consumers when removing an owned
+// stream. When allowedSources is supplied, a source mismatch returns conflict
+// without stopping it. This opt-in behavior requires the embedded engine patch.
+func (c *APIClient) DeleteStreamAndStop(ctx context.Context, name string, allowedSources ...string) error {
+	return c.deleteStream(ctx, name, true, allowedSources...)
+}
+
+func (c *APIClient) deleteStream(ctx context.Context, name string, stop bool, allowedSources ...string) error {
+	u := fmt.Sprintf("%s/api/streams?src=%s", c.baseURL, url.QueryEscape(name))
+	if stop {
+		u += "&stop=1"
+		for _, source := range allowedSources {
+			u += "&if_src=" + url.QueryEscape(source)
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", u, nil)
 	if err != nil {

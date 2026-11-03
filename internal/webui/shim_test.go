@@ -34,6 +34,24 @@ func injectGwellCam(srv *Server, mac, name, lanIP string) {
 	srv.camMgr.InjectCamera(name, cam)
 }
 
+func TestLakeShimRejectsInactiveCamera(t *testing.T) {
+	srv, _ := testServer(t)
+	cam := camera.NewCamera(wyzeapi.CameraInfo{Name: "front", Model: "HL_PAN4"}, "hd", false, false)
+	srv.camMgr.InjectCamera("front", cam)
+	for _, state := range []camera.State{camera.StateOffline, camera.StateError, camera.StateConnecting, camera.StateStreaming} {
+		cam.SetState(state)
+		w := httptest.NewRecorder()
+		srv.handleShimLakeStream(w, newShimReq("GET", "/internal/wyze/lake-stream/front"))
+		want := http.StatusNotFound
+		if state == camera.StateConnecting || state == camera.StateStreaming {
+			want = http.StatusServiceUnavailable // Test server has no Lake provider.
+		}
+		if w.Code != want {
+			t.Errorf("%s status = %d, want %d", state, w.Code, want)
+		}
+	}
+}
+
 func TestShim_CameraList_EmptyWhenNoGwell(t *testing.T) {
 	srv, _ := testServer(t)
 	// Inject a TUTK camera — should NOT appear in the list.
