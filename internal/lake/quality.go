@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-// Resolution is measured from decoded frames, never SDP or cached stream metadata.
 type Resolution struct{ Width, Height int }
 
 const (

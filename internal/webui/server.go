@@ -135,7 +135,7 @@ type Options struct {
 	Issues      *issues.Registry    // optional; nil-safe
 	Mars        MarsTokenMinter     // optional; nil → CameraToken endpoint returns 503
 	KVS         KVSStreamProvider   // optional; nil → KVS shim returns 503
-	Lake        LakeSessionProvider // optional Lake transport
+	Lake        LakeSessionProvider
 	AuthPhoneID func() string       // optional; nil → empty ClientId in KVS payload
 }
 

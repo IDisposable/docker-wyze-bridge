@@ -23,10 +23,8 @@ type cameraOperation struct {
 }
 
 type Broker struct {
-	OnError func(string, error)
-	OnEvent func(string, Event)
-	// ProbeQuality samples decoded frames from the existing local native
-	// producer. Configure before serving; nil disables the quality guard.
+	OnError      func(string, error)
+	OnEvent      func(string, Event)
 	ProbeQuality func(context.Context, string) (Resolution, error)
 	ctx          context.Context
 	provider     Provider
