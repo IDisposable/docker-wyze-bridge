@@ -342,10 +342,22 @@ func encodePTZMessage(command uint16, payload []byte) []byte {
 
 func matchesPTZMessage(command uint16) func([]byte) bool {
 	return func(message []byte) bool {
+		message = findPTZMessage(message)
 		return len(message) >= 16 &&
-			string(message[:2]) == "HL" &&
 			binary.LittleEndian.Uint16(message[4:6]) == command
 	}
+}
+
+func findPTZMessage(message []byte) []byte {
+	if len(message) >= 16 && string(message[:2]) == "HL" {
+		return message
+	}
+	for i := 32; i+16 <= len(message); i++ {
+		if message[i] == 'H' && message[i+1] == 'L' {
+			return message[i:]
+		}
+	}
+	return nil
 }
 
 func ptzMessagePayload(message []byte) ([]byte, error) {
@@ -353,6 +365,7 @@ func ptzMessagePayload(message []byte) ([]byte, error) {
 }
 
 func ptzResponsePayload(message []byte, command uint16) ([]byte, error) {
+	message = findPTZMessage(message)
 	if !matchesPTZMessage(command)(message) {
 		return nil, fmt.Errorf("invalid TUTK response for command %d", command)
 	}

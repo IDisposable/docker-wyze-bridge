@@ -74,6 +74,35 @@ func TestEncodePTZMessage(t *testing.T) {
 	}
 }
 
+func TestPTZResponseMatchesWrappedIOCtrl(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int
+	}{
+		{name: "channel message", offset: 36},
+		{name: "ioctl message", offset: 40},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte{1, 2, 3}
+			hlMessage := encodePTZMessage(ptzAuthChallenge, payload)
+			wrapped := make([]byte, tt.offset+len(hlMessage))
+			copy(wrapped[tt.offset:], hlMessage)
+
+			if !matchesPTZMessage(ptzAuthChallenge)(wrapped) {
+				t.Fatal("wrapped K10001 response did not match")
+			}
+			got, err := ptzMessagePayload(wrapped)
+			if err != nil {
+				t.Fatalf("ptzMessagePayload() error = %v", err)
+			}
+			if string(got) != string(payload) {
+				t.Errorf("payload = %v, want %v", got, payload)
+			}
+		})
+	}
+}
+
 func TestCruisePointProtocolEncoding(t *testing.T) {
 	points := []CruisePoint{
 		{Vertical: 8, Horizontal: 120, WaitSeconds: 10},
