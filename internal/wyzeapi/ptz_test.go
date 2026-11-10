@@ -128,12 +128,22 @@ func TestParseCruisePointsRejectsInvalidResponses(t *testing.T) {
 		nil,
 		{1, 8, 120},
 		{5},
-		{1, 41, 120, 0, 10},
-		{1, 8, 120, 0, 9},
 	} {
 		if _, err := parseCruisePoints(payload); err == nil {
 			t.Errorf("parseCruisePoints(%v) unexpectedly succeeded", payload)
 		}
+	}
+}
+
+func TestParseCruisePointsPreservesCameraValues(t *testing.T) {
+	payload := []byte{1, 41, 0x5f, 0x01, 0}
+	points, err := parseCruisePoints(payload)
+	if err != nil {
+		t.Fatalf("parseCruisePoints() error = %v", err)
+	}
+	want := []CruisePoint{{Vertical: 41, Horizontal: 351, WaitSeconds: 0}}
+	if len(points) != len(want) || points[0] != want[0] {
+		t.Errorf("parseCruisePoints() = %+v, want %+v", points, want)
 	}
 }
 

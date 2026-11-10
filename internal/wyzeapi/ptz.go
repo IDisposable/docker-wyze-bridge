@@ -126,12 +126,14 @@ func (c *Client) SaveCruisePoint(cam CameraInfo, slot int) error {
 		}
 		point := CruisePoint{Vertical: position.Vertical, Horizontal: position.Horizontal, WaitSeconds: 10}
 		if slot <= len(points) {
-			point.WaitSeconds = points[slot-1].WaitSeconds
+			if wait := points[slot-1].WaitSeconds; wait >= 10 {
+				point.WaitSeconds = wait
+			}
 			points[slot-1] = point
 		} else {
 			points = append(points, point)
 		}
-		if err := validateCruisePoints(points); err != nil {
+		if err := validateCruisePoints([]CruisePoint{point}); err != nil {
 			return err
 		}
 		if _, err := conn.WriteAndWaitIOCtrl(encodePTZMessage(ptzSetCruise, encodeCruisePoints(points)), matchesPTZMessage(ptzSetCruiseAck), 5*time.Second); err != nil {
@@ -226,9 +228,6 @@ func parseCruisePoints(payload []byte) ([]CruisePoint, error) {
 			Horizontal:  int(binary.LittleEndian.Uint16(payload[offset+1 : offset+3])),
 			WaitSeconds: int(payload[offset+3]),
 		}
-	}
-	if err := validateCruisePoints(points); err != nil {
-		return nil, err
 	}
 	return points, nil
 }
