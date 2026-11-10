@@ -25,11 +25,14 @@ RUN apk add --no-cache curl ca-certificates && \
 
 # ── Stage 2: Build Go binary ──────────────────────────────────────────────────
 FROM golang:1.26.4-alpine AS builder
-RUN apk add --no-cache git ca-certificates
+RUN apk add --no-cache git ca-certificates patch
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY patches/go2rtc-ptz-discovery-diagnostics.patch /tmp/go2rtc-ptz-discovery-diagnostics.patch
 RUN go mod download
+RUN patch -d "$(go env GOMODCACHE)/github.com/!alexx!i!t/go2rtc@v1.9.14" -p1 < /tmp/go2rtc-ptz-discovery-diagnostics.patch
 COPY . .
+RUN go test github.com/AlexxIT/go2rtc/pkg/tutk/dtls
 # Replace placeholder video-rtc.js with real one before embedding
 COPY --from=go2rtc-fetch /video-rtc.js ./internal/webui/static/video-rtc.js
 ARG VERSION=dev
