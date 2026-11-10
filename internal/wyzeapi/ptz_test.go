@@ -73,3 +73,47 @@ func TestEncodePTZMessage(t *testing.T) {
 		t.Errorf("payload = %v, want [1 0 5]", got)
 	}
 }
+
+func TestCruisePointProtocolEncoding(t *testing.T) {
+	points := []CruisePoint{
+		{Vertical: 8, Horizontal: 120, WaitSeconds: 10},
+		{Vertical: 40, Horizontal: 350, WaitSeconds: 255},
+	}
+	payload := encodeCruisePoints(points)
+	want := []byte{2, 8, 120, 0, 10, 40, 94, 1, 255}
+	if string(payload) != string(want) {
+		t.Fatalf("encodeCruisePoints() = %v, want %v", payload, want)
+	}
+
+	got, err := parseCruisePoints(payload)
+	if err != nil {
+		t.Fatalf("parseCruisePoints() error = %v", err)
+	}
+	if len(got) != len(points) || got[0] != points[0] || got[1] != points[1] {
+		t.Errorf("parseCruisePoints() = %+v, want %+v", got, points)
+	}
+}
+
+func TestParseCruisePointsRejectsInvalidResponses(t *testing.T) {
+	for _, payload := range [][]byte{
+		nil,
+		{1, 8, 120},
+		{5},
+		{1, 41, 120, 0, 10},
+		{1, 8, 120, 0, 9},
+	} {
+		if _, err := parseCruisePoints(payload); err == nil {
+			t.Errorf("parseCruisePoints(%v) unexpectedly succeeded", payload)
+		}
+	}
+}
+
+func TestParsePTZPosition(t *testing.T) {
+	position, err := parsePTZPosition([]byte{1, 0, 0, 0, 8, 120, 0})
+	if err != nil {
+		t.Fatalf("parsePTZPosition() error = %v", err)
+	}
+	if position.Vertical != 8 || position.Horizontal != 120 {
+		t.Errorf("position = %+v, want vertical 8 horizontal 120", position)
+	}
+}

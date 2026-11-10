@@ -19,6 +19,58 @@ func (f *fakeCloud) MovePTZ(cam wyzeapi.CameraInfo, direction string) error {
 	return nil
 }
 
+func TestHandleAPICameraAction_CruisePoints(t *testing.T) {
+	srv, _ := testServer(t)
+	cloud := &fakeCloud{cruise: []wyzeapi.CruisePoint{{Vertical: 8, Horizontal: 120, WaitSeconds: 10}}}
+	srv.cloud = cloud
+	cam := injectStreamingCamera(srv, "kitchen")
+	info := cam.GetInfo()
+	info.Model = "HL_PAN3"
+	info.DTLS = true
+	cam.UpdateInfo(info)
+
+	w := httptest.NewRecorder()
+	srv.handleAPICameraAction(w, httptest.NewRequest(http.MethodGet, "/api/cameras/kitchen/cruise-points", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"horizontal":120`) {
+		t.Fatalf("GET cruise points status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	for _, action := range []string{"save", "goto"} {
+		body := `{"action":"` + action + `","slot":1}`
+		w = httptest.NewRecorder()
+		srv.handleAPICameraAction(w, httptest.NewRequest(http.MethodPost, "/api/cameras/kitchen/cruise-points", strings.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", action, w.Code, w.Body.String())
+		}
+	}
+	if len(cloud.cruiseOps) != 2 || cloud.cruiseOps[0] != "save:kitchen:1" || cloud.cruiseOps[1] != "goto:kitchen:1" {
+		t.Errorf("cruise point commands = %v", cloud.cruiseOps)
+	}
+
+	w = httptest.NewRecorder()
+	srv.handleAPICameraAction(w, httptest.NewRequest(http.MethodPost, "/api/cameras/kitchen/cruise-points", strings.NewReader(`{"action":"goto","slot":5}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid slot status=%d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleAPICameraAction_CruisePointsRejectsUnsupportedCamera(t *testing.T) {
+	srv, _ := testServer(t)
+	cloud := &fakeCloud{}
+	srv.cloud = cloud
+	injectStreamingCamera(srv, "kitchen")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cameras/kitchen/cruise-points", nil)
+	w := httptest.NewRecorder()
+	srv.handleAPICameraAction(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	if len(cloud.cruiseOps) != 0 {
+		t.Errorf("unsupported camera reached the commander: %v", cloud.cruiseOps)
+	}
+}
+
 func TestHandleAPICameraAction_PTZ(t *testing.T) {
 	srv, _ := testServer(t)
 	cloud := &fakeCloud{}
@@ -83,11 +135,14 @@ func TestRenderCamera_PTZControlsAreGated(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "Pan / tilt (hold)") {
 		t.Fatal("PTZ controls are missing the hold-to-move label")
 	}
+	if !strings.Contains(w.Body.String(), `data-cruise-cam="kitchen"`) {
+		t.Fatal("cruise point controls are missing for a supported Pan camera")
+	}
 
 	cam.SetForceWebRTC(true)
 	w = httptest.NewRecorder()
 	srv.handleCameraPage(w, httptest.NewRequest(http.MethodGet, "/camera/kitchen", nil))
-	if strings.Contains(w.Body.String(), `class="ptz-btn"`) {
-		t.Fatal("PTZ controls rendered for a camera forced onto WebRTC")
+	if strings.Contains(w.Body.String(), `class="ptz-btn"`) || strings.Contains(w.Body.String(), `data-cruise-cam=`) {
+		t.Fatal("PTZ or cruise point controls rendered for a camera forced onto WebRTC")
 	}
 }

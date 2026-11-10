@@ -249,6 +249,61 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]string{"status": "ok", "direction": strings.ToLower(strings.TrimSpace(body.Direction))})
 
+	case action == "cruise-points" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+		info := cam.GetInfo()
+		if !info.SupportsPTZ() || cam.ForceWebRTC() {
+			writeJSONError(w, http.StatusConflict, "camera does not support PTZ on its current protocol")
+			return
+		}
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		if r.Method == http.MethodGet {
+			points, err := s.cloud.GetCruisePoints(info)
+			if err != nil {
+				writeJSONError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			if points == nil {
+				points = []wyzeapi.CruisePoint{}
+			}
+			writeJSON(w, map[string]interface{}{"status": "ok", "points": points})
+			return
+		}
+
+		var body struct {
+			Action string `json:"action"`
+			Slot   int    `json:"slot"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if body.Slot < 1 || body.Slot > wyzeapi.MaxCruisePoints {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("slot must be between 1 and %d", wyzeapi.MaxCruisePoints))
+			return
+		}
+		switch body.Action {
+		case "save":
+			if err := s.cloud.SaveCruisePoint(info, body.Slot); err != nil {
+				writeJSONError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+		case "goto":
+			if err := s.cloud.GoToCruisePoint(info, body.Slot); err != nil {
+				writeJSONError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+		default:
+			writeJSONError(w, http.StatusBadRequest, "action must be save or goto")
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: fmt.Sprintf("PTZ cruise point %d %s", body.Slot, body.Action)})
+		}
+		writeJSON(w, map[string]interface{}{"status": "ok", "action": body.Action, "slot": body.Slot})
+
 	case action == "reboot" && r.Method == "POST":
 		// Reboot the camera itself through the Wyze cloud (the "restart"
 		// run_action), then re-register the stream so go2rtc dials the

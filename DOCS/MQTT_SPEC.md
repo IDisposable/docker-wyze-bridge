@@ -89,7 +89,7 @@ property is set from the WebUI's camera controls
 |---|---|---|---|
 | `{topic}/{cam}/pan_cruise` | `1` / `2` | switch | `1`=on, `2`=off |
 | `{topic}/{cam}/motion_tracking` | `1` / `2` | switch | `1`=on, `2`=off |
-| `{topic}/{cam}/cruise_point` | `1`–`4` or `-` | select | Current cruise point |
+| `{topic}/{cam}/cruise_point` | `1`–`4` or `-` | Deferred | Cruise-point state is not published by the Go MQTT implementation |
 
 ---
 
@@ -151,7 +151,7 @@ Sends a GET query to the camera and publishes the result to the corresponding st
 | `{topic}/{cam}/set/rotary_degree` | `up`/`down`/`left`/`right` or `(x,y)` | K11000SetRotaryByDegree |
 | `{topic}/{cam}/set/rotary_action` | `up` / `down` / `left` / `right` / `stop` | K11002SetRotaryByAction; DTLS TUTK Pan cameras only |
 | `{topic}/{cam}/set/reset_rotation` | any | K11004ResetRotatePosition |
-| `{topic}/{cam}/set/cruise_point` | `1`–`4` | K11012SetCruisePoints or K11018SetPTZPosition |
+| `{topic}/{cam}/set/cruise_point` | `1`–`4` | Deferred | WebUI cruise-point controls are available; MQTT save/recall is not implemented |
 | `{topic}/{cam}/set/ptz_position` | position | K11018SetPTZPosition |
 
 ---
@@ -194,7 +194,7 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 | `pan_cruise` | `switch` | `{base}pan_cruise` | `{base}set/pan_cruise` |
 | `motion_tracking` | `switch` | `{base}motion_tracking` | `{base}set/motion_tracking` |
 | `reset_rotation` | `button` | — | `{base}set/reset_rotation` |
-| `cruise_point` | `select` | `{base}cruise_point` | `{base}set/cruise_point` |
+| `cruise_point` | — | — | Deferred; no MQTT entity is published |
 | `pan_tilt` | `cover` | — | `{base}set/rotary_degree` + tilt |
 
 ---
@@ -248,5 +248,5 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 | Property state from live TUTK polling (`param_info`, `K10050`) | Deferred |
 | Motion event parity (`{cam}/motion`) from camera alarm stream | Deferred |
 | Alarm (`K10630/K10632`) parity | Deferred |
-| Pan-cam state + K110xx commands | Deferred |
+| MQTT Pan-cam state + K110xx commands | Deferred (WebUI PTZ and cruise-point controls are implemented separately) |
 | Sensors requiring live readback (`res`, `wifi`) | Deferred |

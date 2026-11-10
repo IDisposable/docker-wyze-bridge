@@ -167,6 +167,9 @@ type CloudCommander interface {
 	SetNamedProperty(cam wyzeapi.CameraInfo, property, raw string) (publishValue string, err error)
 	RunAction(cam wyzeapi.CameraInfo, action string) error
 	MovePTZ(cam wyzeapi.CameraInfo, direction string) error
+	GetCruisePoints(cam wyzeapi.CameraInfo) ([]wyzeapi.CruisePoint, error)
+	SaveCruisePoint(cam wyzeapi.CameraInfo, slot int) error
+	GoToCruisePoint(cam wyzeapi.CameraInfo, slot int) error
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics

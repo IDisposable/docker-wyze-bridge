@@ -267,6 +267,74 @@
         });
     }
 
+    function wireCruisePoints() {
+        document.querySelectorAll('.cruise-controls').forEach(function(panel) {
+            const cam = panel.getAttribute('data-cruise-cam');
+
+            function setStatus(message) {
+                const status = document.createElement('span');
+                status.className = 'cruise-status';
+                status.textContent = message;
+                panel.replaceChildren(status);
+            }
+
+            function load() {
+                panel.classList.remove('failed');
+                fetch(B + '/api/cameras/' + encodeURIComponent(cam) + '/cruise-points')
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        return resp.json();
+                    })
+                    .then(function(data) {
+                        panel.replaceChildren();
+                        for (let slot = 1; slot <= 4; slot++) {
+                            const configured = slot <= data.points.length;
+                            const row = document.createElement('div');
+                            row.className = 'cruise-point-row';
+                            const label = document.createElement('span');
+                            label.className = 'cruise-point-label';
+                            label.textContent = 'Point ' + slot;
+                            const go = document.createElement('button');
+                            go.type = 'button';
+                            go.textContent = 'Go to';
+                            go.disabled = !configured;
+                            go.addEventListener('click', function() { send('goto', slot); });
+                            const save = document.createElement('button');
+                            save.type = 'button';
+                            save.textContent = configured ? 'Save current' : 'Add current';
+                            save.disabled = slot > data.points.length + 1;
+                            save.addEventListener('click', function() { send('save', slot); });
+                            row.append(label, go, save);
+                            panel.appendChild(row);
+                        }
+                    })
+                    .catch(function(err) {
+                        panel.classList.add('failed');
+                        setStatus('Could not load cruise points: ' + err.message);
+                    });
+            }
+
+            function send(action, slot) {
+                panel.classList.remove('failed');
+                fetch(B + '/api/cameras/' + encodeURIComponent(cam) + '/cruise-points', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, slot: slot })
+                })
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        load();
+                    })
+                    .catch(function(err) {
+                        panel.classList.add('failed');
+                        setStatus('Cruise point command failed: ' + err.message);
+                    });
+            }
+
+            load();
+        });
+    }
+
     // Pin / unpin a camera's LAN address from the detail page's Network
     // box. POST /api/cameras/{name}/pin with {"ip": "..."}; an empty ip
     // clears the pin. The reply carries the effective address.
@@ -862,6 +930,7 @@
         wireRestoreButtons();
         wirePropertyButtons();
         wirePTZButtons();
+        wireCruisePoints();
         wireRebootButtons();
         wirePinForms();
         wireRulesForm();

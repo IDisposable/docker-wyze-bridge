@@ -540,6 +540,10 @@ const cameraHTML = `<!DOCTYPE html>
                     <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="right" aria-label="Pan right">→</button>
                     <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="down" aria-label="Tilt down">↓</button>
                 </div>
+                <span class="control-label">Cruise points</span>
+                <div class="cruise-controls" data-cruise-cam="{{.Name}}" aria-live="polite">
+                    <span class="cruise-status">Loading saved points…</span>
+                </div>
                 {{end}}
                 <span class="control-label"></span>
                 <button type="button" class="reboot-btn danger" data-cam="{{.Name}}" data-nickname="{{.Nickname}}" title="Reboot the camera itself (takes a minute to come back)">⟲ Reboot camera</button>
