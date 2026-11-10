@@ -11,24 +11,21 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
  	"sync"
  	"time"
  
-@@ -506,6 +508,10 @@ func (c *DTLSConn) discovery() error {
- 		if err != nil {
- 			continue
- 		}
+@@ -521,1 +523,4 @@ func (c *DTLSConn) discovery() error {
 +		if os.Getenv("PTZ_TUTK_DISCOVERY_DEBUG") == "true" {
 +			log.Printf("[PTZ TUTK discovery debug] packet_len=%d classification=%s", n, classifyDiscoveryPacket(buf[:n]))
 +		}
-+
- 		if !addr.IP.Equal(c.addr.IP) {
- 			continue
- 		}
-@@ -541,6 +545,21 @@ func (c *DTLSConn) discovery() error {
+ 		// CC51 protocol
+@@ -541,6 +546,24 @@ func (c *DTLSConn) discovery() error {
  	return fmt.Errorf("discovery timeout")
  }
  
 +func classifyDiscoveryPacket(packet []byte) string {
 +	if len(packet) >= 2 && string(packet[:2]) == magicCC51 {
 +		if len(packet) >= 6 {
++			if len(packet) < packetSizeCC51 {
++				return fmt.Sprintf("CC51-like short packet command=0x%04x", binary.LittleEndian.Uint16(packet[4:]))
++			}
 +			return fmt.Sprintf("CC51 command=0x%04x", binary.LittleEndian.Uint16(packet[4:]))
 +		}
 +		return "unrecognized"
@@ -48,7 +45,7 @@ diff --git a/pkg/tutk/dtls/discovery_diagnostics_test.go b/pkg/tutk/dtls/discove
 new file mode 100644
 --- /dev/null
 +++ b/pkg/tutk/dtls/discovery_diagnostics_test.go
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,35 @@
 +package dtls
 +
 +import (
@@ -64,6 +61,13 @@ new file mode 100644
 +	binary.LittleEndian.PutUint16(cc51[4:], cmdDiscoCC51)
 +	if got := classifyDiscoveryPacket(cc51); got != "CC51 command=0x1002" {
 +		t.Fatalf("classify CC51 response = %q", got)
++	}
++
++	shortCC51 := make([]byte, 44)
++	copy(shortCC51, magicCC51)
++	binary.LittleEndian.PutUint16(shortCC51[4:], 0x0f02)
++	if got := classifyDiscoveryPacket(shortCC51); got != "CC51-like short packet command=0x0f02" {
++		t.Fatalf("classify short CC51-like packet = %q", got)
 +	}
 +
 +	iotc := make([]byte, 44)
