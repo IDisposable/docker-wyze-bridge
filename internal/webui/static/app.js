@@ -220,6 +220,53 @@
         });
     }
 
+    function wirePTZButtons() {
+        document.querySelectorAll('.ptz-btn').forEach(function(btn) {
+            const cam = btn.getAttribute('data-cam');
+            const direction = btn.getAttribute('data-direction');
+            let pressed = false;
+            let queue = Promise.resolve();
+
+            function send(value) {
+                queue = queue.then(function() {
+                    return fetch(B + '/api/cameras/' + cam + '/ptz', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ direction: value })
+                    }).then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                    });
+                }).catch(function(err) {
+                    console.error('PTZ command failed:', err);
+                });
+            }
+
+            btn.addEventListener('pointerdown', function(e) {
+                e.preventDefault();
+                if (pressed) return;
+                pressed = true;
+                if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
+                send(direction);
+            });
+
+            function release(e) {
+                if (!pressed) return;
+                pressed = false;
+                e.preventDefault();
+                if (direction !== 'stop') send('stop');
+            }
+
+            btn.addEventListener('pointerup', release);
+            btn.addEventListener('pointercancel', release);
+            btn.addEventListener('lostpointercapture', release);
+            btn.addEventListener('click', function(e) {
+                if (e.detail !== 0 || pressed) return;
+                send(direction);
+                if (direction !== 'stop') send('stop');
+            });
+        });
+    }
+
     // Pin / unpin a camera's LAN address from the detail page's Network
     // box. POST /api/cameras/{name}/pin with {"ip": "..."}; an empty ip
     // clears the pin. The reply carries the effective address.
@@ -814,6 +861,7 @@
         wireIgnoreButtons();
         wireRestoreButtons();
         wirePropertyButtons();
+        wirePTZButtons();
         wireRebootButtons();
         wirePinForms();
         wireRulesForm();

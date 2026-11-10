@@ -203,7 +203,7 @@ const (
 )
 ```
 
-Pan/tilt, cruise points, and other commands require the TUTK command channel (K1xxxx messages), which go2rtc does not expose via API. These are explicitly out of scope for Phases 1-3.
+Pan/tilt action commands use a separate native TUTK control connection because go2rtc does not expose its stream's command channel. They are enabled only for registry Pan models using DTLS over TUTK; Gwell and WebRTC cameras (including Cam Pan Duo) are not eligible. REST clients POST `{"direction":"left"}` (or another supported direction) to `/api/cameras/{name}/ptz`; the WebUI sends a direction while a button is held and `stop` on release. MQTT clients can send `up`, `down`, `left`, `right`, or `stop` to `{topic}/{cam}/set/rotary_action`. This exposes directional pan/tilt only; zoom and position/preset controls are not provided. Camera status JSON exposes the same gate as `supports_ptz`.
 
 ### 5.2 go2rtc Manager (`internal/go2rtcmgr/`)
 

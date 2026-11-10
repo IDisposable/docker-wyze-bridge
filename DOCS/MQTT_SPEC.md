@@ -149,7 +149,7 @@ Sends a GET query to the camera and publishes the result to the corresponding st
 | `{topic}/{cam}/set/pan_cruise` | `on`/`off`/`1`/`2` | K11016SetCruise |
 | `{topic}/{cam}/set/motion_tracking` | `on`/`off`/`1`/`2` | K11022SetMotionTracking |
 | `{topic}/{cam}/set/rotary_degree` | `up`/`down`/`left`/`right` or `(x,y)` | K11000SetRotaryByDegree |
-| `{topic}/{cam}/set/rotary_action` | action string | K11002SetRotaryByAction |
+| `{topic}/{cam}/set/rotary_action` | `up` / `down` / `left` / `right` / `stop` | K11002SetRotaryByAction; DTLS TUTK Pan cameras only |
 | `{topic}/{cam}/set/reset_rotation` | any | K11004ResetRotatePosition |
 | `{topic}/{cam}/set/cruise_point` | `1`–`4` | K11012SetCruisePoints or K11018SetPTZPosition |
 | `{topic}/{cam}/set/ptz_position` | position | K11018SetPTZPosition |

@@ -219,6 +219,36 @@ func (s *Server) handleAPICameraAction(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]interface{}{"status": "ok", "property": body.Property, "value": published})
 
+	case action == "ptz" && r.Method == "POST":
+		info := cam.GetInfo()
+		if !info.SupportsPTZ() || cam.ForceWebRTC() {
+			writeJSONError(w, http.StatusConflict, "camera does not support PTZ on its current protocol")
+			return
+		}
+		if s.cloud == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "Wyze API not wired")
+			return
+		}
+		var body struct {
+			Direction string `json:"direction"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		if _, _, err := wyzeapi.ParsePTZDirection(body.Direction); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.cloud.MovePTZ(info, body.Direction); err != nil {
+			writeJSONError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if evLog := s.Events(); evLog != nil {
+			evLog.Record(Event{Kind: "command", Camera: name, Message: "PTZ " + strings.ToLower(strings.TrimSpace(body.Direction))})
+		}
+		writeJSON(w, map[string]string{"status": "ok", "direction": strings.ToLower(strings.TrimSpace(body.Direction))})
+
 	case action == "reboot" && r.Method == "POST":
 		// Reboot the camera itself through the Wyze cloud (the "restart"
 		// run_action), then re-register the stream so go2rtc dials the

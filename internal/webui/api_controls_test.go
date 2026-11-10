@@ -17,6 +17,7 @@ type fakeCloud struct {
 	mu      sync.Mutex
 	props   []string
 	actions []string
+	ptz     []string
 	fail    error
 }
 

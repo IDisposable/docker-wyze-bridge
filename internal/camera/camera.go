@@ -492,6 +492,7 @@ func (c *Camera) StatusJSON() map[string]interface{} {
 		"nickname":      c.Info.Nickname,
 		"model":         c.Info.Model,
 		"model_name":    c.Info.ModelName(),
+		"supports_ptz":  c.Info.SupportsPTZ() && !c.forceWebRTC,
 		"mac":           c.Info.MAC,
 		"ip":            c.info().LanIP,
 		"cloud_ip":      c.Info.LanIP,

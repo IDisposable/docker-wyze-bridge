@@ -74,11 +74,31 @@ func (c *Client) handleSetCommand(_ paho.Client, msg paho.Message) {
 	case "audio":
 		cam.SetAudioOn(value == "true")
 		c.publish(fmt.Sprintf("%s/%s/audio", c.topic, camName), value, true)
+	case "rotary_action":
+		c.applyPTZAction(camName, cam, value)
 	case "night_vision":
 		fallthrough
 	case "irled", "status_light", "motion_detection", "motion_tagging", "hor_flip", "ver_flip", "bitrate", "fps":
 		c.applyCloudSetProperty(camName, cam, property, value)
 	}
+}
+
+func (c *Client) applyPTZAction(camName string, cam *camera.Camera, direction string) {
+	info := cam.GetInfo()
+	if !info.SupportsPTZ() || cam.ForceWebRTC() {
+		c.log.Warn().Str("cam", camName).Msg("PTZ command ignored for unsupported camera protocol")
+		return
+	}
+	if c.wyzeAPI == nil {
+		c.log.Warn().Str("cam", camName).Msg("Wyze API unavailable for MQTT PTZ command")
+		return
+	}
+
+	go func() {
+		if err := c.wyzeAPI.MovePTZ(info, direction); err != nil {
+			c.log.Error().Err(err).Str("cam", camName).Str("direction", direction).Msg("MQTT PTZ command failed")
+		}
+	}()
 }
 
 func (c *Client) applyCloudSetProperty(camName string, cam *camera.Camera, property, rawValue string) {

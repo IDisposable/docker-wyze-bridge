@@ -221,6 +221,12 @@ func (c CameraInfo) IsPanCam() bool {
 	return modelRegistry[c.Model].IsPan
 }
 
+// SupportsPTZ reports whether the bridge can control this camera through
+// the native TUTK command channel.
+func (c CameraInfo) SupportsPTZ() bool {
+	return c.IsPanCam() && c.DTLS && !c.IsGwell() && !c.IsWebRTCStreamer()
+}
+
 // IsDoorbell returns true if this is a doorbell camera.
 func (c CameraInfo) IsDoorbell() bool {
 	return modelRegistry[c.Model].IsDoorbell
