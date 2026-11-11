@@ -24,21 +24,23 @@ const maxInflightPublishes = 1024
 // to the bridge's shutdown so fire-and-forget work cancels cleanly.
 // publishSem bounds concurrent publish-waiter goroutines.
 type Client struct {
-	log           zerolog.Logger
-	paho          paho.Client
-	topic         string // MQTT_TOPIC, default "wyzebridge"
-	dtopic        string // MQTT_DISCOVERY_TOPIC, default "homeassistant"
-	camMgr        *camera.Manager
-	wyzeAPI       *wyzeapi.Client
-	bridgeIP      string
-	rootCtx       context.Context
-	publishSem    chan struct{}
-	droppedPubs   atomic.Uint64
-	onSnapshot    func(ctx context.Context, camName string)         // snapshot trigger callback
-	onRecord      func(ctx context.Context, camName, action string) // record start/stop callback (action = "start"|"stop")
-	onDiscover    func(ctx context.Context)                         // bridge-wide rediscovery trigger
-	mu            sync.Mutex
-	connected     bool
+	log         zerolog.Logger
+	paho        paho.Client
+	topic       string // MQTT_TOPIC, default "wyzebridge"
+	dtopic      string // MQTT_DISCOVERY_TOPIC, default "homeassistant"
+	camMgr      *camera.Manager
+	wyzeAPI     *wyzeapi.Client
+	bridgeIP    string
+	rootCtx     context.Context
+	publishSem  chan struct{}
+	droppedPubs atomic.Uint64
+	onSnapshot  func(ctx context.Context, camName string)         // snapshot trigger callback
+	onRecord    func(ctx context.Context, camName, action string) // record start/stop callback (action = "start"|"stop")
+	onDiscover  func(ctx context.Context)                         // bridge-wide rediscovery trigger
+	mu          sync.Mutex
+	connected   bool
+	ptzQueueMu  sync.Mutex
+	ptzQueues   map[string]*ptzCommandQueue
 }
 
 // Config holds MQTT connection settings.
@@ -64,6 +66,7 @@ func NewClient(ctx context.Context, cfg Config, camMgr *camera.Manager, api *wyz
 		bridgeIP:   bridgeIP,
 		rootCtx:    ctx,
 		publishSem: make(chan struct{}, maxInflightPublishes),
+		ptzQueues:  make(map[string]*ptzCommandQueue),
 	}
 
 	opts := paho.NewClientOptions()

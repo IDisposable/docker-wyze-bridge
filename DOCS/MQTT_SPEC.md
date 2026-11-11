@@ -15,6 +15,8 @@ current Go rewrite implementation plan.
 	expose a property-control API for Wyze (K10xxx/K11xxx IoT commands).
 - Consequence: Phase 1 can support stream controls and cloud-backed property writes, but
 	cannot provide full live property readback parity with Python's direct TUTK control loop.
+- Exception: PTZ and cruise-point MQTT commands use a separate short-lived TUTK/DTLS
+	control connection and are gated to supported Pan cameras.
 
 Legend used in this document:
 
@@ -89,7 +91,7 @@ property is set from the WebUI's camera controls
 |---|---|---|---|
 | `{topic}/{cam}/pan_cruise` | `1` / `2` | switch | `1`=on, `2`=off |
 | `{topic}/{cam}/motion_tracking` | `1` / `2` | switch | `1`=on, `2`=off |
-| `{topic}/{cam}/cruise_point` | `1`–`4` or `-` | Deferred | Cruise-point state is not published by the Go MQTT implementation |
+| `{topic}/{cam}/cruise_points` | JSON array | — | Retained response to the cruise-point GET command |
 
 ---
 
@@ -151,8 +153,55 @@ Sends a GET query to the camera and publishes the result to the corresponding st
 | `{topic}/{cam}/set/rotary_degree` | `up`/`down`/`left`/`right` or `(x,y)` | K11000SetRotaryByDegree |
 | `{topic}/{cam}/set/rotary_action` | `up` / `down` / `left` / `right` / `stop` | K11002SetRotaryByAction; DTLS TUTK Pan cameras only |
 | `{topic}/{cam}/set/reset_rotation` | any | K11004ResetRotatePosition |
-| `{topic}/{cam}/set/cruise_point` | `1`–`4` | Deferred | WebUI cruise-point controls are available; MQTT save/recall is not implemented |
+| `{topic}/{cam}/set/cruise_point` | `1`–`4` or JSON | Save current position or go to a configured cruise point |
+| `{topic}/{cam}/cruise_points/get` | any | Read and publish the configured cruise points |
 | `{topic}/{cam}/set/ptz_position` | position | K11018SetPTZPosition |
+| `{topic}/{cam}/command/status` | JSON | Publish | Non-retained success/error result for PTZ and cruise-point commands |
+
+PTZ and cruise-point commands are implemented only for cameras whose model
+supports TUTK PTZ and which are not forced to WebRTC; Gwell and WebRTC paths
+are not used. Publish one of `up`, `down`, `left`, `right`, or `stop` to
+`{topic}/{cam}/set/rotary_action`. Movement has no automatic timeout, so send
+an explicit `stop`. Commands for the same camera are serialized. If a STOP
+arrives while an earlier PTZ command is in flight, it is attempted immediately
+and queued once more after earlier commands to reduce the chance of a late
+movement command leaving the camera moving. If the queue is full, not-yet-started
+commands are cancelled so the final STOP can be queued. A successful response
+means the camera acknowledged the protocol command; it does not confirm
+mechanical movement.
+
+For example, with the default `{topic}`:
+
+```sh
+# Terminal 1: watch non-retained results
+mosquitto_sub -t wyzebridge/living_room/command/status
+
+# Terminal 2: issue movement, then explicitly stop
+mosquitto_pub -t wyzebridge/living_room/set/rotary_action -m left
+mosquitto_pub -t wyzebridge/living_room/set/rotary_action -m stop
+```
+
+The status topic receives non-retained JSON such as
+`{"command":"rotary_action","direction":"left","status":"ok"}` or an error
+with an `error` field. When STOP overlaps an in-flight command, two status
+events may be published: one for the immediate attempt and one for the queued
+final attempt.
+
+Publish any payload to `{topic}/{cam}/cruise_points/get` to read the current
+list. The retained `{topic}/{cam}/cruise_points` state is a JSON array with
+`vertical`, `horizontal`, and `wait_seconds` for each configured slot. To save
+the current position into a slot, publish `{"action":"save","slot":1}` to
+`{topic}/{cam}/set/cruise_point`; slots are numbered 1–4 and new slots must be
+saved sequentially. To recall a slot, publish either its number (for example
+`2`) or `{"action":"goto","slot":2}`. Cruise point reads, saves, and recalls
+also report completion or errors to `{topic}/{cam}/command/status`.
+
+```sh
+mosquitto_pub -t wyzebridge/living_room/cruise_points/get -n
+mosquitto_sub -t wyzebridge/living_room/cruise_points
+mosquitto_pub -t wyzebridge/living_room/set/cruise_point -m '{"action":"save","slot":1}'
+mosquitto_pub -t wyzebridge/living_room/set/cruise_point -m 1
+```
 
 ---
 
@@ -194,7 +243,6 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 | `pan_cruise` | `switch` | `{base}pan_cruise` | `{base}set/pan_cruise` |
 | `motion_tracking` | `switch` | `{base}motion_tracking` | `{base}set/motion_tracking` |
 | `reset_rotation` | `button` | — | `{base}set/reset_rotation` |
-| `cruise_point` | — | — | Deferred; no MQTT entity is published |
 | `pan_tilt` | `cover` | — | `{base}set/rotary_degree` + tilt |
 
 ---
@@ -248,5 +296,5 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 | Property state from live TUTK polling (`param_info`, `K10050`) | Deferred |
 | Motion event parity (`{cam}/motion`) from camera alarm stream | Deferred |
 | Alarm (`K10630/K10632`) parity | Deferred |
-| MQTT Pan-cam state + K110xx commands | Deferred (WebUI PTZ and cruise-point controls are implemented separately) |
+| MQTT PTZ action + cruise-point read/save/recall | Implemented for supported TUTK Pan cameras; command results on `{cam}/command/status` |
 | Sensors requiring live readback (`res`, `wifi`) | Deferred |
