@@ -54,7 +54,15 @@ var modelRegistry = map[string]ModelSpec{
 	// GW_DUO: PR #118 hardware-verified WebRTC via mars-webcsrv (same as
 	// GW_BE1 Doorbell Pro). PR #116 had it as Gwell P2P; PR #118 wins
 	// because get_streams returns a wyze-mars-webcsrv signaling URL.
-	"GW_DUO":  {Name: "Cam Pan Duo", IsWebRTCStreamer: true, IsPan: true},
+	"GW_DUO": {Name: "Cam Pan Duo", IsWebRTCStreamer: true, IsPan: true},
+	// HL_BC: Wyze Bulb Cam. Hardware-verified WebRTC via mars-webcsrv
+	// (get_streams returns a wyze-mars-webcsrv signaling URL; TUTK
+	// discovery times out — IOTC_ER_TIMEOUT — on current firmware).
+	// The camera publishes only its lowest profile (640x360) until a
+	// viewer requests a higher one over the KVS data-channel; see the
+	// WEBRTC_PROFILE env var and patches/ for the go2rtc #profile=
+	// support that unlocks its 2K (2304x1296) feed.
+	"HL_BC":   {Name: "Bulb Cam", IsWebRTCStreamer: true},
 	"WVOD1":   {Name: "Outdoor"},
 	"HL_WCO2": {Name: "Outdoor V2"},
 	"AN_RSCW": {Name: "Battery Cam Pro"},

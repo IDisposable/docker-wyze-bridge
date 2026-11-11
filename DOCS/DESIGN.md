@@ -870,6 +870,9 @@ LONGITUDE           float    decimal degrees
 QUALITY_{CAM_NAME}  string   "hd" | "sd"
 AUDIO_{CAM_NAME}    bool
 RECORD_{CAM_NAME}   bool
+WEBRTC_PROFILE      string   KVS data-channel profile for WebRTC cameras (e.g. "2k";
+                             see patches/ — requires go2rtc PR #2324 build)
+WEBRTC_PROFILE_{CAM_NAME}  string  per-camera override
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 STATE_DIR           string   state/config dir, default "/config"

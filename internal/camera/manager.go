@@ -438,12 +438,29 @@ func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
 	info := cam.GetInfo()
 	switch {
 	case cam.ForceWebRTC() || info.IsWebRTCStreamer():
-		return fmt.Sprintf("webrtc:http://127.0.0.1:%d/internal/wyze/webrtc/%s#format=wyze", m.cfg.BridgePort, cam.Name()), "webrtc"
+		// #profile= asks the camera to switch off its lowest
+		// (360p) publish profile via the KVS data-channel (see
+		// go2rtc PR #2324; applied to our bundled go2rtc). The
+		// profile is per-camera via WEBRTC_PROFILE_{CAM_NAME},
+		// global via WEBRTC_PROFILE; "none" disables the fragment.
+		profile := m.webrtcProfile(cam)
+		frag := "#format=wyze"
+		if profile != "" && profile != "none" {
+			frag += "#profile=" + profile
+		}
+		return fmt.Sprintf("webrtc:http://127.0.0.1:%d/internal/wyze/webrtc/%s%s", m.cfg.BridgePort, cam.Name(), frag), "webrtc"
 	case info.IsGwell():
 		return "", "gwell"
 	default:
 		return cam.StreamURL(), "tutk"
 	}
+}
+
+// webrtcProfile resolves the data-channel resolution profile for a
+// WebRTC camera: per-camera override first, then the global default
+// (empty = no profile request).
+func (m *Manager) webrtcProfile(cam *Camera) string {
+	return m.cfg.CamWebrtcProfile(cam.Name())
 }
 
 // HealthCheck polls go2rtc for stream status and reconnects dead streams.
