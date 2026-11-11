@@ -21,14 +21,14 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
 @@ -117,2 +121,10 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
 -func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
 +func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
-+	return dialDTLS(host, port, uid, authKey, enr, verbose, "")
++	return dialDTLSWithDiscoveryDiagnostics(host, port, uid, authKey, enr, verbose, "")
 +}
 +
 +func DialDTLSWithDiagnostics(host string, port int, uid, authKey, enr string, verbose bool, diagnosticID string) (*DTLSConn, error) {
-+	return dialDTLS(host, port, uid, authKey, enr, verbose, diagnosticID)
++	return dialDTLSWithDiscoveryDiagnostics(host, port, uid, authKey, enr, verbose, diagnosticID)
 +}
 +
-+func dialDTLS(host string, port int, uid, authKey, enr string, verbose bool, diagnosticID string) (*DTLSConn, error) {
++func dialDTLSWithDiscoveryDiagnostics(host string, port int, uid, authKey, enr string, verbose bool, diagnosticID string) (*DTLSConn, error) {
  	udp, err := net.ListenUDP("udp", nil)
 @@ -138,5 +150,6 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
  		psk:        psk,
