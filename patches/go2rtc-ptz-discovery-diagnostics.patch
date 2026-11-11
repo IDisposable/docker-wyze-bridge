@@ -12,7 +12,7 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
  	"sync"
  	"time"
  
-@@ -74,4 +77,5 @@ type DTLSConn struct {
+@@ -75,4 +78,5 @@ type DTLSConn struct {
  	err     error
  	verbose bool
 +	diagnosticID string
@@ -30,16 +30,60 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
 +
 +func dialDTLS(host string, port int, uid, authKey, enr string, verbose bool, diagnosticID string) (*DTLSConn, error) {
  	udp, err := net.ListenUDP("udp", nil)
-@@ -143,5 +155,6 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
+@@ -138,5 +150,6 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
  		psk:        psk,
  		verbose:    verbose,
 +		diagnosticID: diagnosticID,
  		ctx:        ctx,
  		cancel:     cancel,
  		rxSeqStart: 0xffff,
-@@ -499,2 +512,11 @@ func (c *DTLSConn) discovery() error {
- func (c *DTLSConn) discovery() error {
- 	c.sid = tutk.GenSessionID()
+@@ -499,44 +512,71 @@ func (c *DTLSConn) discovery() error {
+-func (c *DTLSConn) discovery() error {
+-	c.sid = tutk.GenSessionID()
+-
+-	pktIOTC := tutk.TransCodeBlob(c.msgDisco(1))
+-	pktCC51 := c.msgDiscoCC51(0, 0, false)
+-
+-	buf := make([]byte, 2048)
+-	deadline := time.Now().Add(5 * time.Second)
+-
+-	for time.Now().Before(deadline) {
+-		c.conn.WriteToUDP(pktIOTC, c.addr)
+-		c.conn.WriteToUDP(pktCC51, c.addr)
+-
+-		c.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+-		n, addr, err := c.conn.ReadFromUDP(buf)
+-		if err != nil {
+-			continue
+-		}
+-		if !addr.IP.Equal(c.addr.IP) {
+-			continue
+-		}
+-
+-		// CC51 protocol
+-		if n >= packetSizeCC51 && string(buf[:2]) == magicCC51 {
+-			if binary.LittleEndian.Uint16(buf[4:]) == cmdDiscoCC51 {
+-				c.addr, c.isCC51, c.ticket = addr, true, binary.LittleEndian.Uint16(buf[14:])
+-				if n >= 24 {
+-					copy(c.sid, buf[16:24])
+-				}
+-				return c.discoDoneCC51()
+-			}
+-			continue
+-		}
+-
+-		// IOTC Protocol (Basis)
+-		data := tutk.ReverseTransCodeBlob(buf[:n])
+-		if len(data) >= 16 && binary.LittleEndian.Uint16(data[8:]) == cmdDiscoRes {
+-			c.addr, c.isCC51 = addr, false
+-			return c.discoDone()
+-		}
+-	}
+-
+-	return fmt.Errorf("discovery timeout")
+-}
++func (c *DTLSConn) discovery() error {
++	c.sid = tutk.GenSessionID()
 +	var packetCounts map[string]int
 +	outcome := "timeout"
 +	if c.diagnosticID != "" {
@@ -49,16 +93,36 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
 +			log.Printf("[PTZ TUTK discovery] attempt=%s outcome=%s packet_classes=%s", c.diagnosticID, outcome, formatDiscoveryPacketCounts(packetCounts))
 +		}()
 +	}
-@@ -521,1 +541,4 @@ func (c *DTLSConn) discovery() error {
++
++	pktIOTC := tutk.TransCodeBlob(c.msgDisco(1))
++	pktCC51 := c.msgDiscoCC51(0, 0, false)
++
++	buf := make([]byte, 2048)
++	deadline := time.Now().Add(5 * time.Second)
++
++	for time.Now().Before(deadline) {
++		c.conn.WriteToUDP(pktIOTC, c.addr)
++		c.conn.WriteToUDP(pktCC51, c.addr)
++
++		c.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
++		n, addr, err := c.conn.ReadFromUDP(buf)
++		if err != nil {
++			continue
++		}
++		if !addr.IP.Equal(c.addr.IP) {
++			continue
++		}
 +		if c.diagnosticID != "" {
 +			recordDiscoveryPacket(&packetCounts, classifyDiscoveryPacket(buf[:n]))
 +		}
- 		// CC51 protocol
-@@ -525,4 +548,11 @@ func (c *DTLSConn) discovery() error {
- 				if n >= 24 {
- 					copy(c.sid, buf[16:24])
- 				}
--				return c.discoDoneCC51()
++
++		// CC51 protocol
++		if n >= packetSizeCC51 && string(buf[:2]) == magicCC51 {
++			if binary.LittleEndian.Uint16(buf[4:]) == cmdDiscoCC51 {
++				c.addr, c.isCC51, c.ticket = addr, true, binary.LittleEndian.Uint16(buf[14:])
++				if n >= 24 {
++					copy(c.sid, buf[16:24])
++				}
 +				outcome = "accepted_cc51"
 +				err := c.discoDoneCC51()
 +				if err != nil {
@@ -67,10 +131,14 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
 +					outcome = "accepted_cc51_followup_ok"
 +				}
 +				return err
-@@ -536,3 +565,10 @@ func (c *DTLSConn) discovery() error {
- 		if len(data) >= 16 && binary.LittleEndian.Uint16(data[8:]) == cmdDiscoRes {
- 			c.addr, c.isCC51 = addr, false
--			return c.discoDone()
++			}
++			continue
++		}
++
++		// IOTC Protocol (Basis)
++		data := tutk.ReverseTransCodeBlob(buf[:n])
++		if len(data) >= 16 && binary.LittleEndian.Uint16(data[8:]) == cmdDiscoRes {
++			c.addr, c.isCC51 = addr, false
 +			outcome = "accepted_iotc"
 +			err := c.discoDone()
 +			if err != nil {
@@ -79,10 +147,13 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
 +				outcome = "accepted_iotc_followup_ok"
 +			}
 +			return err
-@@ -541,6 +546,62 @@ func (c *DTLSConn) discovery() error {
- 	return fmt.Errorf("discovery timeout")
- }
- 
++		}
++	}
++
++	return fmt.Errorf("discovery timeout")
++}
++
+@@ -544,3 +584,59 @@ func (c *DTLSConn) discoDone() error {
 +func classifyDiscoveryPacket(packet []byte) string {
 +	cc51Magic := len(packet) >= 2 && string(packet[:2]) == magicCC51
 +	if cc51Magic {
