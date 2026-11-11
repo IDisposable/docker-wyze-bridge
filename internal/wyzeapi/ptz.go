@@ -3,6 +3,7 @@ package wyzeapi
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -31,9 +32,45 @@ const (
 	ptzPositionAck          = 11019
 	// MaxCruisePoints is the number of numbered positions supported by Pan cameras.
 	MaxCruisePoints = 4
+
+	ptzStopDiscoveryRetries    = 1
+	ptzStopDiscoveryRetryDelay = 200 * time.Millisecond
 )
 
 var ptzDiagnosticSequence atomic.Uint64
+
+type PTZDelivery string
+
+const (
+	PTZDeliveryAcknowledged PTZDelivery = "acknowledged"
+	PTZDeliveryNotSent      PTZDelivery = "not_sent"
+	PTZDeliveryUnknown      PTZDelivery = "unknown"
+)
+
+// PTZError records whether a PTZ action was sent when an operation failed.
+type PTZError struct {
+	Delivery PTZDelivery
+	Err      error
+}
+
+func (e *PTZError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *PTZError) Unwrap() error {
+	return e.Err
+}
+
+// PTZDeliveryForError reports not_sent only when the failure occurred before
+// the requested PTZ action could be written. Other errors are conservatively
+// classified as unknown.
+func PTZDeliveryForError(err error) PTZDelivery {
+	var ptzErr *PTZError
+	if errors.As(err, &ptzErr) {
+		return ptzErr.Delivery
+	}
+	return PTZDeliveryUnknown
+}
 
 // CruisePoint is a camera-stored position and its cruise dwell time.
 type CruisePoint struct {
@@ -64,9 +101,10 @@ func ParsePTZDirection(direction string) (horizontal, vertical byte, err error) 
 func (c *Client) MovePTZ(cam CameraInfo, direction string) error {
 	horizontal, vertical, err := ParsePTZDirection(direction)
 	if err != nil {
-		return err
+		return &PTZError{Delivery: PTZDeliveryNotSent, Err: err}
 	}
-	return withPTZControl(cam, func(conn *tutkdtls.DTLSConn) error {
+	retryDiscovery := strings.EqualFold(strings.TrimSpace(direction), "stop")
+	return withPTZControlOptions(cam, retryDiscovery, func(conn *tutkdtls.DTLSConn) error {
 		payload := []byte{horizontal, vertical, 5}
 		if _, err := conn.WriteAndWaitIOCtrl(encodePTZMessage(ptzMoveAction, payload), matchesPTZMessage(ptzMoveResult), 5*time.Second); err != nil {
 			return fmt.Errorf("send PTZ action: %w", err)
@@ -176,24 +214,37 @@ func (c *Client) GoToCruisePoint(cam CameraInfo, slot int) error {
 }
 
 func withPTZControl(cam CameraInfo, action func(*tutkdtls.DTLSConn) error) error {
+	return withPTZControlOptions(cam, false, action)
+}
+
+func withPTZControlOptions(cam CameraInfo, retryDiscovery bool, action func(*tutkdtls.DTLSConn) error) error {
 	if !cam.SupportsPTZ() {
-		return fmt.Errorf("camera model %s does not support TUTK PTZ", cam.Model)
+		return &PTZError{Delivery: PTZDeliveryNotSent, Err: fmt.Errorf("camera model %s does not support TUTK PTZ", cam.Model)}
 	}
 	if net.ParseIP(cam.LanIP) == nil {
-		return fmt.Errorf("camera %s has no usable LAN IP for PTZ", cam.Name)
+		return &PTZError{Delivery: PTZDeliveryNotSent, Err: fmt.Errorf("camera %s has no usable LAN IP for PTZ", cam.Name)}
 	}
 	if cam.P2PID == "" || cam.ENR == "" || cam.MAC == "" {
-		return fmt.Errorf("camera %s is missing TUTK credentials for PTZ", cam.Name)
+		return &PTZError{Delivery: PTZDeliveryNotSent, Err: fmt.Errorf("camera %s is missing TUTK credentials for PTZ", cam.Name)}
 	}
 
 	debug := os.Getenv("PTZ_TUTK_DISCOVERY_DEBUG") == "true"
 	diagnosticID := ""
-	dial := tutkdtls.DialDTLS
+	dialAttempt := 0
+	var dial func(host string, port int, uid, authKey, enr string, verbose bool) (*tutkdtls.DTLSConn, error)
 	if debug {
-		diagnosticID = fmt.Sprintf("ptz-%d", ptzDiagnosticSequence.Add(1))
+		operationID := fmt.Sprintf("ptz-%d", ptzDiagnosticSequence.Add(1))
 		dial = func(host string, port int, uid, authKey, enr string, verbose bool) (*tutkdtls.DTLSConn, error) {
-			return tutkdtls.DialDTLSWithDiagnostics(host, port, uid, authKey, enr, verbose, diagnosticID)
+			attemptID := operationID
+			if dialAttempt > 0 {
+				attemptID = fmt.Sprintf("%s-retry-%d", operationID, dialAttempt)
+			}
+			dialAttempt++
+			diagnosticID = attemptID
+			return tutkdtls.DialDTLSWithDiagnostics(host, port, uid, authKey, enr, verbose, attemptID)
 		}
+	} else {
+		dial = tutkdtls.DialDTLS
 	}
 	withDiagnosticID := func(err error) error {
 		if err != nil && diagnosticID != "" {
@@ -202,18 +253,44 @@ func withPTZControl(cam CameraInfo, action func(*tutkdtls.DTLSConn) error) error
 		return err
 	}
 
-	conn, err := dial(cam.LanIP, 0, cam.P2PID, string(tutkdtls.CalculateAuthKey(cam.ENR, cam.MAC)), cam.ENR, false)
+	conn, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+		return dial(cam.LanIP, 0, cam.P2PID, string(tutkdtls.CalculateAuthKey(cam.ENR, cam.MAC)), cam.ENR, false)
+	}, retryDiscovery)
 	if err != nil {
-		return withDiagnosticID(fmt.Errorf("connect for PTZ: %w", err))
+		return &PTZError{
+			Delivery: PTZDeliveryNotSent,
+			Err:      withDiagnosticID(fmt.Errorf("connect for PTZ: %w", err)),
+		}
 	}
 	defer conn.Close()
 	if err := conn.AVClientStart(5 * time.Second); err != nil {
-		return withDiagnosticID(fmt.Errorf("start TUTK control channel: %w", err))
+		return &PTZError{
+			Delivery: PTZDeliveryNotSent,
+			Err:      withDiagnosticID(fmt.Errorf("start TUTK control channel: %w", err)),
+		}
 	}
 	if err := authenticatePTZ(conn, cam.ENR); err != nil {
-		return withDiagnosticID(err)
+		return &PTZError{Delivery: PTZDeliveryNotSent, Err: withDiagnosticID(err)}
 	}
-	return withDiagnosticID(action(conn))
+	if err := action(conn); err != nil {
+		return &PTZError{Delivery: PTZDeliveryUnknown, Err: withDiagnosticID(err)}
+	}
+	return nil
+}
+
+func dialPTZWithDiscoveryRetry(dial func() (*tutkdtls.DTLSConn, error), retryDiscovery bool) (*tutkdtls.DTLSConn, error) {
+	for attempt := 0; ; attempt++ {
+		conn, err := dial()
+		if err == nil || !retryDiscovery || attempt >= ptzStopDiscoveryRetries || !isPTZDiscoveryTimeout(err) {
+			return conn, err
+		}
+		time.Sleep(ptzStopDiscoveryRetryDelay)
+	}
+}
+
+func isPTZDiscoveryTimeout(err error) bool {
+	// Pinned go2rtc v1.9.14 returns this plain error before the PTZ action can be sent.
+	return err != nil && err.Error() == "discovery timeout"
 }
 
 func ptzTimestamp() []byte {

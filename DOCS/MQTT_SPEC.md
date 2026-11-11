@@ -168,7 +168,9 @@ and queued once more after earlier commands to reduce the chance of a late
 movement command leaving the camera moving. If the queue is full, not-yet-started
 commands are cancelled so the final STOP can be queued. A successful response
 means the camera acknowledged the protocol command; it does not confirm
-mechanical movement.
+mechanical movement. A STOP whose initial TUTK discovery times out is retried
+once before the action is sent; other connection/authentication failures are not
+retried.
 
 For example, with the default `{topic}`:
 
@@ -182,10 +184,12 @@ mosquitto_pub -t wyzebridge/living_room/set/rotary_action -m stop
 ```
 
 The status topic receives non-retained JSON such as
-`{"command":"rotary_action","direction":"left","status":"ok"}` or an error
-with an `error` field. When STOP overlaps an in-flight command, two status
-events may be published: one for the immediate attempt and one for the queued
-final attempt.
+`{"command":"rotary_action","direction":"stop","status":"ok","delivery":"acknowledged"}`.
+For STOP, `delivery` is `acknowledged` only after a protocol response, `not_sent`
+when the bridge knows the action was not sent, or `unknown` when the action may
+have reached the camera but no acknowledgement was received. When STOP overlaps
+an in-flight command, two status events may be published: one for the immediate
+attempt and one for the queued final attempt.
 
 Publish any payload to `{topic}/{cam}/cruise_points/get` to read the current
 list. The retained `{topic}/{cam}/cruise_points` state is a JSON array with

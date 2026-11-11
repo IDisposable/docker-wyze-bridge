@@ -3,9 +3,11 @@ package mqtt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 	"github.com/rs/zerolog"
 )
 
@@ -41,7 +43,7 @@ func TestParseCruisePointCommand(t *testing.T) {
 
 func TestMarshalMQTTCommandResult(t *testing.T) {
 	got, err := marshalMQTTCommandResult(mqttCommandResult{
-		Command: "rotary_action", Direction: "stop", Status: "error", Error: "discovery timeout",
+		Command: "rotary_action", Direction: "stop", Status: "error", Delivery: "not_sent", Error: "discovery timeout",
 	})
 	if err != nil {
 		t.Fatalf("marshalMQTTCommandResult() error = %v", err)
@@ -54,10 +56,42 @@ func TestMarshalMQTTCommandResult(t *testing.T) {
 		"command":   "rotary_action",
 		"direction": "stop",
 		"status":    "error",
+		"delivery":  "not_sent",
 		"error":     "discovery timeout",
 	}
 	if !reflect.DeepEqual(result, want) {
 		t.Fatalf("result = %#v, want %#v", result, want)
+	}
+}
+
+func TestStopCommandOutcomeReportsDelivery(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		want     string
+		wantSend string
+	}{
+		{name: "acknowledged", want: "ok", wantSend: string(wyzeapi.PTZDeliveryAcknowledged)},
+		{
+			name: "failed before send",
+			err:  &wyzeapi.PTZError{Delivery: wyzeapi.PTZDeliveryNotSent, Err: errors.New("discovery timeout")},
+			want: "error", wantSend: string(wyzeapi.PTZDeliveryNotSent),
+		},
+		{
+			name: "acknowledgement not received",
+			err:  &wyzeapi.PTZError{Delivery: wyzeapi.PTZDeliveryUnknown, Err: errors.New("send PTZ action: timeout")},
+			want: "error", wantSend: string(wyzeapi.PTZDeliveryUnknown),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mqttCommandResult{Command: "rotary_action", Direction: "stop"}
+			setPTZCommandOutcome(&result, tt.err)
+			if result.Status != tt.want || result.Delivery != tt.wantSend {
+				t.Fatalf("outcome = (%q, %q), want (%q, %q)", result.Status, result.Delivery, tt.want, tt.wantSend)
+			}
+		})
 	}
 }
 

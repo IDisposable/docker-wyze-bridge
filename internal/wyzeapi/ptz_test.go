@@ -2,7 +2,11 @@ package wyzeapi
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"testing"
+
+	tutkdtls "github.com/AlexxIT/go2rtc/pkg/tutk/dtls"
 )
 
 func TestParsePTZDirection(t *testing.T) {
@@ -29,6 +33,90 @@ func TestParsePTZDirection(t *testing.T) {
 			}
 			if horizontal != tt.horizontal || vertical != tt.vertical {
 				t.Errorf("ParsePTZDirection() = (%d, %d), want (%d, %d)", horizontal, vertical, tt.horizontal, tt.vertical)
+			}
+		})
+	}
+}
+
+func TestDialPTZWithDiscoveryRetry(t *testing.T) {
+	t.Run("retries discovery once", func(t *testing.T) {
+		attempts := 0
+		conn, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("discovery timeout")
+			}
+			return nil, nil
+		}, true)
+		if err != nil || conn != nil {
+			t.Fatalf("dial result = (%v, %v), want (nil, nil)", conn, err)
+		}
+		if attempts != 2 {
+			t.Fatalf("dial attempts = %d, want 2", attempts)
+		}
+	})
+
+	t.Run("does not retry other failures", func(t *testing.T) {
+		attempts := 0
+		_, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+			attempts++
+			return nil, errors.New("connection refused")
+		}, true)
+		if err == nil || attempts != 1 {
+			t.Fatalf("dial attempts = %d, error = %v; want one attempt and an error", attempts, err)
+		}
+	})
+
+	t.Run("retry is opt-in", func(t *testing.T) {
+		attempts := 0
+		_, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+			attempts++
+			return nil, errors.New("discovery timeout")
+		}, false)
+		if err == nil || attempts != 1 {
+			t.Fatalf("dial attempts = %d, error = %v; want one attempt and an error", attempts, err)
+		}
+	})
+
+	t.Run("retry is bounded", func(t *testing.T) {
+		attempts := 0
+		_, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+			attempts++
+			return nil, errors.New("discovery timeout")
+		}, true)
+		if err == nil || attempts != ptzStopDiscoveryRetries+1 {
+			t.Fatalf("dial attempts = %d, error = %v; want %d attempts and an error", attempts, err, ptzStopDiscoveryRetries+1)
+		}
+	})
+}
+
+func TestPTZDeliveryForError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want PTZDelivery
+	}{
+		{
+			name: "failure before action send",
+			err:  fmt.Errorf("connect: %w", &PTZError{Delivery: PTZDeliveryNotSent, Err: errors.New("discovery timeout")}),
+			want: PTZDeliveryNotSent,
+		},
+		{
+			name: "failure after possible send",
+			err:  &PTZError{Delivery: PTZDeliveryUnknown, Err: errors.New("ack timeout")},
+			want: PTZDeliveryUnknown,
+		},
+		{
+			name: "untyped error is conservative",
+			err:  errors.New("unknown failure"),
+			want: PTZDeliveryUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PTZDeliveryForError(tt.err); got != tt.want {
+				t.Fatalf("PTZDeliveryForError() = %q, want %q", got, tt.want)
 			}
 		})
 	}

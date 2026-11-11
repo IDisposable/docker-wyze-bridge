@@ -18,6 +18,7 @@ type mqttCommandResult struct {
 	Command   string `json:"command"`
 	Status    string `json:"status"`
 	Direction string `json:"direction,omitempty"`
+	Delivery  string `json:"delivery,omitempty"`
 	Action    string `json:"action,omitempty"`
 	Slot      int    `json:"slot,omitempty"`
 	Error     string `json:"error,omitempty"`
@@ -86,9 +87,13 @@ func (c *Client) handleSetCommand(_ paho.Client, msg paho.Message) {
 	if cam == nil {
 		c.log.Warn().Str("cam", camName).Msg("unknown camera in MQTT command")
 		if property == "rotary_action" || property == "cruise_point" {
-			c.publishCommandResult(camName, mqttCommandResult{
+			result := mqttCommandResult{
 				Command: property, Status: "error", Error: "unknown camera",
-			})
+			}
+			if property == "rotary_action" && strings.EqualFold(strings.TrimSpace(value), "stop") {
+				result.Delivery = string(wyzeapi.PTZDeliveryNotSent)
+			}
+			c.publishCommandResult(camName, result)
 		}
 		return
 	}
@@ -125,6 +130,9 @@ func (c *Client) applyPTZAction(camName string, cam *camera.Camera, direction st
 	info, err := c.supportedPTZInfo(cam)
 	if err != nil {
 		result.Status, result.Error = "error", err.Error()
+		if direction == "stop" {
+			result.Delivery = string(wyzeapi.PTZDeliveryNotSent)
+		}
 		c.publishCommandResult(camName, result)
 		return
 	}
@@ -292,6 +300,9 @@ drained:
 	if len(queue.jobs) == cap(queue.jobs) {
 		queue.mu.Unlock()
 		task.result.Status, task.result.Error = "error", "PTZ command queue is full"
+		if isStopCommand(task) {
+			task.result.Delivery = string(wyzeapi.PTZDeliveryNotSent)
+		}
 		c.publishCommandResult(camName, task.result)
 		for _, result := range cancelled {
 			c.publishCommandResult(camName, result)
@@ -329,13 +340,26 @@ func (c *Client) runPTZCommandQueue(camName string, queue *ptzCommandQueue) {
 }
 
 func (c *Client) executePTZCommand(camName string, task ptzCommand) {
-	if err := task.run(); err != nil {
-		task.result.Status, task.result.Error = "error", err.Error()
+	err := task.run()
+	if err != nil {
 		c.log.Error().Err(err).Str("cam", camName).Str("command", task.result.Command).Msg("MQTT PTZ command failed")
-	} else {
-		task.result.Status = "ok"
 	}
+	setPTZCommandOutcome(&task.result, err)
 	c.publishCommandResult(camName, task.result)
+}
+
+func setPTZCommandOutcome(result *mqttCommandResult, err error) {
+	if err != nil {
+		result.Status, result.Error = "error", err.Error()
+		if result.Direction == "stop" {
+			result.Delivery = string(wyzeapi.PTZDeliveryForError(err))
+		}
+		return
+	}
+	result.Status = "ok"
+	if result.Direction == "stop" {
+		result.Delivery = string(wyzeapi.PTZDeliveryAcknowledged)
+	}
 }
 
 func (c *Client) publishCommandResult(camName string, result mqttCommandResult) {
