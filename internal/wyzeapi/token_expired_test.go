@@ -18,6 +18,7 @@ type expiredTokenServer struct {
 	srv          *httptest.Server
 	validToken   string
 	refreshFails bool
+	loginFails   bool
 	streams      atomic.Int32
 	objectList   atomic.Int32
 	refreshes    atomic.Int32
@@ -35,6 +36,12 @@ func newExpiredTokenServer(t *testing.T, validToken string) *expiredTokenServer 
 
 	mux.HandleFunc("/api/user/login", func(w http.ResponseWriter, r *http.Request) {
 		s.logins.Add(1)
+		if s.loginFails {
+			// What Wyze returned to an unauthorized login on 2026-11-11:
+			// HTTP 429 with an empty body.
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
 		write(w, map[string]interface{}{"code": "1", "data": map[string]interface{}{
 			"access_token": "login_token", "refresh_token": "login_refresh", "user_id": "u",
 		}})
@@ -189,5 +196,44 @@ func TestWithAuth_OtherErrorsNotRetried(t *testing.T) {
 	}
 	if got := s.refreshes.Load(); got != 0 {
 		t.Errorf("refresh calls = %d, want 0", got)
+	}
+}
+
+func TestEnsureAuth_FailedLoginWaitsBeforeRetry(t *testing.T) {
+	s := newExpiredTokenServer(t, "login_token")
+	s.refreshFails = true
+	s.loginFails = true
+	c := clientWithStaleToken(t, s)
+
+	// 2001, refresh rejected, login rejected.
+	if _, err := c.GetCameraStream(testCam); err == nil {
+		t.Fatal("GetCameraStream succeeded, want the login error")
+	}
+	if got := s.logins.Load(); got != 1 {
+		t.Fatalf("login calls after first failure = %d, want 1", got)
+	}
+
+	// Further requests inside the wait must not call the login endpoint.
+	for i := 0; i < 5; i++ {
+		if _, err := c.GetCameraStream(testCam); err == nil {
+			t.Fatal("GetCameraStream succeeded during the login wait")
+		}
+	}
+	if got := s.logins.Load(); got != 1 {
+		t.Errorf("login calls during the wait = %d, want still 1", got)
+	}
+
+	// Once the wait has passed, the next request logs in again and,
+	// with Wyze accepting it now, recovers.
+	s.loginFails = false
+	c.lastLoginAt = time.Now().Add(-loginRetryAfter - time.Second)
+	if _, err := c.GetCameraStream(testCam); err != nil {
+		t.Fatalf("GetCameraStream after the wait: %v", err)
+	}
+	if got := s.logins.Load(); got != 2 {
+		t.Errorf("login calls after the wait = %d, want 2", got)
+	}
+	if c.lastLoginErr != nil {
+		t.Errorf("lastLoginErr after a successful login = %v, want nil", c.lastLoginErr)
 	}
 }
