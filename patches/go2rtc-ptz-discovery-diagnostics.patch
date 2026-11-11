@@ -58,7 +58,7 @@ diff --git a/pkg/tutk/dtls/discovery_diagnostics_test.go b/pkg/tutk/dtls/discove
 new file mode 100644
 --- /dev/null
 +++ b/pkg/tutk/dtls/discovery_diagnostics_test.go
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,39 @@
 +package dtls
 +
 +import (
