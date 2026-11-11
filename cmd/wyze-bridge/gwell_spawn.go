@@ -70,12 +70,22 @@ func spawnGwellProxy(ctx context.Context, cfg *config.Config, log zerolog.Logger
 	dumpDir := cfg.GwellDumpDir
 	ffmpegLogLevel := cfg.GwellFFmpegLogLevel
 	deadmanTimeout := cfg.GwellDeadmanTimeout
+	var extraArgs []string
+	if cfg.GwellStallTimeout > 0 {
+		extraArgs = append(extraArgs, "--stall-timeout", cfg.GwellStallTimeout.String())
+	}
+	if cfg.GwellReconnectDelay > 0 {
+		extraArgs = append(extraArgs, "--reconnect-delay", cfg.GwellReconnectDelay.String())
+	}
+	if cfg.GwellKeepPublisher {
+		extraArgs = append(extraArgs, "--keep-publisher")
+	}
 
 	backoff := 2 * time.Second
 	const maxBackoff = 60 * time.Second
 
 	for ctx.Err() == nil {
-		if err := runGwellProxyOnce(ctx, bin, shimURL, rtspHost, rtspPort, dumpDir, ffmpegLogLevel, deadmanTimeout, log); err != nil {
+		if err := runGwellProxyOnce(ctx, bin, shimURL, rtspHost, rtspPort, dumpDir, ffmpegLogLevel, deadmanTimeout, extraArgs, log); err != nil {
 			log.Warn().Err(err).Dur("backoff", backoff).Msg("gwell-proxy exited; restarting")
 		}
 		if ctx.Err() != nil {
@@ -97,7 +107,7 @@ func spawnGwellProxy(ctx context.Context, cfg *config.Config, log zerolog.Logger
 // the parent context cancels. Stdout/stderr are routed through the
 // caller's zerolog logger so the subprocess noise blends into the
 // bridge's structured log output.
-func runGwellProxyOnce(ctx context.Context, bin, shimURL, rtspHost string, rtspPort int, dumpDir, ffmpegLogLevel string, deadmanTimeout time.Duration, log zerolog.Logger) error {
+func runGwellProxyOnce(ctx context.Context, bin, shimURL, rtspHost string, rtspPort int, dumpDir, ffmpegLogLevel string, deadmanTimeout time.Duration, extraArgs []string, log zerolog.Logger) error {
 	args := []string{
 		"--shim-url", shimURL,
 		"--rtsp-host", rtspHost,
@@ -112,6 +122,7 @@ func runGwellProxyOnce(ctx context.Context, bin, shimURL, rtspHost string, rtspP
 	if deadmanTimeout > 0 {
 		args = append(args, "--deadman-timeout", deadmanTimeout.String())
 	}
+	args = append(args, extraArgs...)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

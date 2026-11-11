@@ -30,6 +30,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -51,7 +52,21 @@ const (
 	tokenRefreshInterval = 1 * time.Hour
 	cameraStagger        = 15 * time.Second
 	reconnectDelay       = 10 * time.Second
+	maxReconnectDelay    = 1 * time.Minute
 )
+
+var errTokenFresh = errors.New("token still fresh")
+
+// proxyOpts holds the reconnect tuning flags.
+type proxyOpts struct {
+	stallTimeout       time.Duration
+	reconnectDelay     time.Duration
+	keepPublisher      bool
+	relayKeepalive     string
+	legacyRelayReplies bool
+}
+
+var opts proxyOpts
 
 // connectMu serializes P2P session setup across all cameras.
 // The GWell P2P server gets confused when multiple sessions from the same
@@ -159,7 +174,13 @@ func main() {
 	dumpDir := flag.String("dump-h264", "", "if set, tee raw H.264 bytes per-camera into <dir>/<cam>-<unix-ms>.h264 for offline analysis")
 	ffmpegLogLevel := flag.String("ffmpeg-loglevel", "warning", "ffmpeg -loglevel (quiet/panic/fatal/error/warning/info/verbose/debug/trace); debug spams thousands of lines/second")
 	deadmanTimeout := flag.Duration("deadman-timeout", 2*time.Minute, "max no-data interval before forcing reconnect")
+	flag.DurationVar(&opts.stallTimeout, "stall-timeout", 0, "end a session when no media arrives for this long after streaming starts (0 = rely on -deadman-timeout only); a stalled relay never recovers, so a few seconds gives a fast reconnect")
+	flag.DurationVar(&opts.reconnectDelay, "reconnect-delay", reconnectDelay, "wait between a session end and the next attempt (doubles on consecutive failed handshakes, max 1m)")
+	flag.StringVar(&opts.relayKeepalive, "relay-keepalive", "both", "UDP relay keepalive sent every 10s while streaming: both|relay|server|none")
+	flag.BoolVar(&opts.legacyRelayReplies, "legacy-relay-replies", false, "answer frames from a UDP relay with standard (not extended) MTP frames, as before; for A/B tests only")
+	flag.BoolVar(&opts.keepPublisher, "keep-publisher", false, "keep the ffmpeg RTSP publisher (and so the go2rtc producer) alive across P2P reconnects; viewers see a short freeze instead of a stream restart")
 	flag.Parse()
+	log.Printf("[main] deadman=%s stall=%s reconnect-delay=%s keep-publisher=%v", *deadmanTimeout, opts.stallTimeout, opts.reconnectDelay, opts.keepPublisher)
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Println("[main] Wyze GWell P2P proxy starting")
@@ -311,6 +332,11 @@ func getSharedState() (*gwell.AccessToken, string, []gwell.DeviceInfo) {
 func runCamera(client *wyzeShimClient, cameraID string,
 	rtspHost string, rtspPort int, dumpDir string, ffmpegLogLevel string, deadmanTimeout time.Duration, stopCh chan struct{}) {
 
+	pub := &publisher{}
+	defer pub.close()
+	delay := opts.reconnectDelay
+	var lastMint time.Time
+	lastStreamed := false
 	for {
 		select {
 		case <-stopCh:
@@ -319,9 +345,23 @@ func runCamera(client *wyzeShimClient, cameraID string,
 		default:
 		}
 
-		// Get fresh token on each attempt
-		cred, err := client.GetCameraToken(cameraID)
-		if err != nil {
+		// Mint a fresh token after a failed handshake or when the last
+		// one is old. A session that streamed and then stalled does not
+		// need a new token: minting one on every reconnect only adds a
+		// Wyze API round trip (and load) to each recovery.
+		var cred *shimAccessCredential
+		var err error
+		if lastStreamed && time.Since(lastMint) < tokenRefreshInterval {
+			err = errTokenFresh
+		} else {
+			cred, err = client.GetCameraToken(cameraID)
+			if err == nil {
+				lastMint = time.Now()
+			}
+		}
+		if err == errTokenFresh {
+			// keep the current shared token
+		} else if err != nil {
 			log.Printf("[%s] Token fetch failed: %v, using shared token", cameraID, err)
 		} else {
 			newToken, err := gwell.ParseAccessToken(cred.AccessID, cred.AccessToken)
@@ -334,10 +374,30 @@ func runCamera(client *wyzeShimClient, cameraID string,
 			}
 		}
 
-		err = streamCamera(client, cameraID, rtspHost, rtspPort, dumpDir, ffmpegLogLevel, deadmanTimeout, stopCh)
+		started := time.Now()
+		streamed, err := streamCamera(client, cameraID, pub, rtspHost, rtspPort, dumpDir, ffmpegLogLevel, deadmanTimeout, stopCh)
+		if !opts.keepPublisher {
+			pub.close()
+		}
+		// A session that streamed and then stalled reconnects after the
+		// base delay: the relay path is gone, a new session is the only
+		// fix. Failed handshakes back off (x2, max 1m) so we do not hammer
+		// the P2P server.
+		if streamed {
+			delay = opts.reconnectDelay
+		} else {
+			delay *= 2
+			if delay > maxReconnectDelay {
+				delay = maxReconnectDelay
+			}
+		}
+		lastStreamed = streamed
+		log.Printf("[%s] session lasted %s (streamed=%v), next attempt in %s", cameraID, time.Since(started).Round(time.Second), streamed, delay)
 		if err != nil {
 			log.Printf("[%s] Stream error: %v", cameraID, err)
 			log.Printf("[%s] reconnect reason: stream_error", cameraID)
+		}
+		if err != nil && !streamed {
 			if derr := refreshDiscovery(client, cameraID, false); derr != nil {
 				log.Printf("[%s] Re-discovery before reconnect failed: %v", cameraID, derr)
 			}
@@ -346,7 +406,7 @@ func runCamera(client *wyzeShimClient, cameraID string,
 		select {
 		case <-stopCh:
 			return
-		case <-time.After(reconnectDelay):
+		case <-time.After(delay):
 			log.Printf("[%s] Reconnecting...", cameraID)
 		}
 	}
@@ -354,13 +414,14 @@ func runCamera(client *wyzeShimClient, cameraID string,
 
 // streamCamera runs a single streaming session for one camera.
 // It acquires connectMu to serialize the P2P handshake phase.
-func streamCamera(client *wyzeShimClient, cameraID string,
-	rtspHost string, rtspPort int, dumpDir string, ffmpegLogLevel string, deadmanTimeout time.Duration, stopCh chan struct{}) error {
+// It returns streamed=true when the session reached the streaming state.
+func streamCamera(client *wyzeShimClient, cameraID string, pub *publisher,
+	rtspHost string, rtspPort int, dumpDir string, ffmpegLogLevel string, deadmanTimeout time.Duration, stopCh chan struct{}) (streamed bool, err error) {
 
 	// Get device info for stream name and LAN IP
 	info, err := client.GetDeviceInfo(cameraID)
 	if err != nil {
-		return fmt.Errorf("get device info: %w", err)
+		return false, fmt.Errorf("get device info: %w", err)
 	}
 
 	streamName := info.StreamName
@@ -377,12 +438,11 @@ func streamCamera(client *wyzeShimClient, cameraID string,
 
 	log.Printf("[%s] Starting stream: %s (LAN IP: %s)", cameraID, streamPath, info.LanIP)
 
-	// Start ffmpeg publisher
-	ffmpeg, err := stream.StartFFmpegPublisher(streamPath, rtspHost, rtspPort, ffmpegLogLevel)
+	// Start (or reuse) the ffmpeg publisher
+	ffmpeg, err := pub.get(streamPath, rtspHost, rtspPort, ffmpegLogLevel)
 	if err != nil {
-		return fmt.Errorf("start ffmpeg: %w", err)
+		return false, fmt.Errorf("start ffmpeg: %w", err)
 	}
-	defer ffmpeg.Close()
 
 	// writeTracker feeds bytes straight to ffmpeg, optionally teeing
 	// them to --dump-h264 for offline ffprobe inspection, while
@@ -428,14 +488,34 @@ func streamCamera(client *wyzeShimClient, cameraID string,
 
 	token, serverAddr, devices := getSharedState()
 
+	// Release the handshake lock as soon as this camera streams (or
+	// after cameraStagger at the latest) so the other cameras do not
+	// wait the full stagger on every reconnect.
+	var unlockOnce sync.Once
+	unlock := func() {
+		unlockOnce.Do(func() {
+			connectMu.Unlock()
+			log.Printf("[%s] Released connect lock", cameraID)
+		})
+	}
+	var streamedFlag atomic.Bool
 	sess := gwell.NewSession(gwell.SessionConfig{
-		Token:       token,
-		ServerAddr:  serverAddr,
-		CameraLanIP: info.LanIP,
-		DeviceName:  cameraID,
-		H264Writer:  tracker,
-		Devices:     devices,
+		Token:              token,
+		ServerAddr:         serverAddr,
+		CameraLanIP:        info.LanIP,
+		DeviceName:         cameraID,
+		H264Writer:         tracker,
+		Devices:            devices,
+		StallTimeout:       opts.stallTimeout,
+		RelayKeepalive:     opts.relayKeepalive,
+		LegacyRelayReplies: opts.legacyRelayReplies,
+		OnStreaming: func() {
+			streamedFlag.Store(true)
+			// Give the P2P server a moment before the next handshake.
+			time.AfterFunc(2*time.Second, unlock)
+		},
 	})
+	defer func() { streamed = streamedFlag.Load() }()
 
 	// Run the session — it will go through connect, certify, initInfo,
 	// subscribe, calling, and then enter streamLoop. We release the
@@ -450,8 +530,7 @@ func streamCamera(client *wyzeShimClient, cameraID string,
 	// Release the lock after the stagger delay so the next camera can go
 	go func() {
 		time.Sleep(cameraStagger)
-		connectMu.Unlock()
-		log.Printf("[%s] Released connect lock", cameraID)
+		unlock()
 	}()
 	// === END SERIALIZED SECTION ===
 
@@ -462,24 +541,28 @@ func streamCamera(client *wyzeShimClient, cameraID string,
 	for {
 		select {
 		case err := <-errCh:
-			return fmt.Errorf("session ended: %w", err)
+			if err == nil {
+				err = errors.New("stream loop exited")
+			}
+			return false, fmt.Errorf("session ended: %w", err)
 
 		case <-stopCh:
 			sess.Close()
-			return nil
+			return false, nil
 
 		case <-ticker.C:
 			// Check ffmpeg health
 			if !ffmpeg.Alive() {
 				sess.Close()
-				return fmt.Errorf("ffmpeg process died")
+				pub.close()
+				return false, fmt.Errorf("ffmpeg process died")
 			}
 
 			// Deadman switch: no data for too long
 			last := tracker.lastWriteTime()
 			if !last.IsZero() && time.Since(last) > deadmanTimeout {
 				sess.Close()
-				return fmt.Errorf("deadman timeout: no stream data for %s", deadmanTimeout)
+				return false, fmt.Errorf("deadman timeout: no stream data for %s", deadmanTimeout)
 			}
 		}
 	}
@@ -511,4 +594,31 @@ func saveCache(tc *tokenCache) {
 		return
 	}
 	log.Printf("[cache] Saved token cache to %s", path)
+}
+
+// publisher owns one camera's ffmpeg RTSP publisher. With
+// -keep-publisher it outlives P2P sessions, so the go2rtc producer (and
+// every HLS/WebRTC viewer on it) survives a reconnect.
+type publisher struct {
+	ff *stream.FFmpegPublisher
+}
+
+func (p *publisher) get(streamPath, rtspHost string, rtspPort int, logLevel string) (*stream.FFmpegPublisher, error) {
+	if p.ff != nil && p.ff.Alive() {
+		return p.ff, nil
+	}
+	p.close()
+	ff, err := stream.StartFFmpegPublisher(streamPath, rtspHost, rtspPort, logLevel)
+	if err != nil {
+		return nil, err
+	}
+	p.ff = ff
+	return ff, nil
+}
+
+func (p *publisher) close() {
+	if p.ff != nil {
+		p.ff.Close()
+		p.ff = nil
+	}
 }
