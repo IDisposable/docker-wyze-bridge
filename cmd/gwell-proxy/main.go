@@ -88,7 +88,7 @@ func (tc *tokenCache) isValid() bool {
 // and (c) accumulate bytesIn/bytesOut so the session-end summary can
 // answer "did we get any video at all?" in one log line.
 type writeTracker struct {
-	inner     *stream.FFmpegPublisher
+	inner     io.Writer      // ffmpeg stdin, or the NAL escaper in front of it
 	dump      io.WriteCloser // nil when --dump-h264 isn't set
 	lastWrite atomic.Int64   // unix nano
 	bytesIn   atomic.Uint64  // raw bytes received from the P2P pipeline
@@ -147,6 +147,9 @@ var (
 	sharedDevices []gwell.DeviceInfo
 )
 
+// escapeNAL puts a nalEscaper in front of ffmpeg (-escape-nal).
+var escapeNAL bool
+
 func main() {
 	// Configuration flows from the parent wyze-bridge process as CLI
 	// flags — the bridge already knows every value it needs to hand us
@@ -159,6 +162,7 @@ func main() {
 	dumpDir := flag.String("dump-h264", "", "if set, tee raw H.264 bytes per-camera into <dir>/<cam>-<unix-ms>.h264 for offline analysis")
 	ffmpegLogLevel := flag.String("ffmpeg-loglevel", "warning", "ffmpeg -loglevel (quiet/panic/fatal/error/warning/info/verbose/debug/trace); debug spams thousands of lines/second")
 	deadmanTimeout := flag.Duration("deadman-timeout", 2*time.Minute, "max no-data interval before forcing reconnect")
+	flag.BoolVar(&escapeNAL, "escape-nal", true, "rewrite each H.264 NAL unit with valid emulation prevention bytes and drop invalid units and frames before ffmpeg; Wyze Cam OG slices carry unescaped zero runs that hardware decoders (Apple VideoToolbox in Chrome/Safari) reject")
 	flag.Parse()
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
@@ -388,7 +392,13 @@ func streamCamera(client *wyzeShimClient, cameraID string,
 	// them to --dump-h264 for offline ffprobe inspection, while
 	// tracking last-write time for the deadman switch and byte counts
 	// for the session-end summary.
-	tracker := &writeTracker{inner: ffmpeg}
+	// The escaper is per session: a partial NAL unit left by a dead
+	// session is dropped, not glued to the next session's first bytes.
+	var sink io.Writer = ffmpeg
+	if escapeNAL {
+		sink = newNALEscaper(ffmpeg)
+	}
+	tracker := &writeTracker{inner: sink}
 	tracker.lastWrite.Store(time.Now().UnixNano())
 	defer tracker.Close()
 	// Session-end summary — one log line tells you whether the session
