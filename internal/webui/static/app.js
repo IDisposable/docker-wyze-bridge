@@ -221,24 +221,69 @@
     }
 
     function wirePTZButtons() {
+        const activePTZReleases = new Set();
+        function stopActivePTZ() {
+            Array.from(activePTZReleases).forEach(function(release) {
+                release();
+            });
+        }
+
+        window.addEventListener('blur', stopActivePTZ);
+        window.addEventListener('pagehide', stopActivePTZ);
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) stopActivePTZ();
+        });
+
         document.querySelectorAll('.ptz-btn').forEach(function(btn) {
             const cam = btn.getAttribute('data-cam');
             const direction = btn.getAttribute('data-direction');
+            const controls = btn.closest('.ptz-controls');
+            const stopStatus = controls && controls.querySelector('.ptz-status');
             let pressed = false;
             let queue = Promise.resolve();
+            let activePress = null;
+
+            function sendNow(value, retried) {
+                return fetch(B + '/api/cameras/' + cam + '/ptz', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction: value }),
+                    keepalive: value === 'stop'
+                }).then(function(resp) {
+                    if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                    if (value === 'stop') {
+                        btn.classList.remove('failed');
+                        btn.title = btn.getAttribute('aria-label') || 'Stop movement';
+                        if (stopStatus) {
+                            stopStatus.textContent = '';
+                            stopStatus.classList.remove('failed');
+                        }
+                    }
+                }).catch(function(err) {
+                    if (value === 'stop') {
+                        if (!retried) {
+                            return new Promise(function(resolve) {
+                                setTimeout(resolve, 250);
+                            }).then(function() {
+                                return sendNow('stop', true);
+                            });
+                        }
+                        btn.classList.add('failed');
+                        btn.title = 'Stop request failed. Disconnect camera power if it keeps moving.';
+                        if (stopStatus) {
+                            stopStatus.textContent = 'Stop request failed. Disconnect camera power if it keeps moving.';
+                            stopStatus.classList.add('failed');
+                        }
+                    }
+                    console.error('PTZ command failed:', err);
+                });
+            }
 
             function send(value) {
                 queue = queue.then(function() {
-                    return fetch(B + '/api/cameras/' + cam + '/ptz', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ direction: value })
-                    }).then(function(resp) {
-                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
-                    });
-                }).catch(function(err) {
-                    console.error('PTZ command failed:', err);
+                    return sendNow(value);
                 });
+                return queue;
             }
 
             btn.addEventListener('pointerdown', function(e) {
@@ -246,14 +291,30 @@
                 if (pressed) return;
                 pressed = true;
                 if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
-                send(direction);
+                if (direction === 'stop') {
+                    sendNow('stop');
+                    return;
+                }
+
+                const press = { released: false };
+                activePress = press;
+                send(direction).then(function() {
+                    if (press.released) sendNow('stop');
+                });
+                activePTZReleases.add(release);
             });
 
             function release(e) {
                 if (!pressed) return;
                 pressed = false;
-                e.preventDefault();
-                if (direction !== 'stop') send('stop');
+                if (e && e.preventDefault) e.preventDefault();
+                if (direction === 'stop') return;
+
+                const press = activePress;
+                activePress = null;
+                activePTZReleases.delete(release);
+                if (press) press.released = true;
+                sendNow('stop');
             }
 
             btn.addEventListener('pointerup', release);
@@ -261,8 +322,15 @@
             btn.addEventListener('lostpointercapture', release);
             btn.addEventListener('click', function(e) {
                 if (e.detail !== 0 || pressed) return;
-                send(direction);
-                if (direction !== 'stop') send('stop');
+                if (direction === 'stop') {
+                    sendNow('stop');
+                    return;
+                }
+                const press = { released: true };
+                send(direction).then(function() {
+                    if (press.released) sendNow('stop');
+                });
+                sendNow('stop');
             });
         });
     }

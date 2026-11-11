@@ -135,6 +135,9 @@ func TestRenderCamera_PTZControlsAreGated(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "Pan / tilt (hold)") {
 		t.Fatal("PTZ controls are missing the hold-to-move label")
 	}
+	if !strings.Contains(w.Body.String(), `class="ptz-status" aria-live="assertive"`) {
+		t.Fatal("PTZ controls are missing an accessible stop-failure status")
+	}
 	if !strings.Contains(w.Body.String(), `data-cruise-cam="kitchen"`) {
 		t.Fatal("cruise point controls are missing for a supported Pan camera")
 	}

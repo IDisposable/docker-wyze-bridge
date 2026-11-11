@@ -539,6 +539,7 @@ const cameraHTML = `<!DOCTYPE html>
                     <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="stop" aria-label="Stop movement">■</button>
                     <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="right" aria-label="Pan right">→</button>
                     <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="down" aria-label="Tilt down">↓</button>
+                    <span class="ptz-status" aria-live="assertive"></span>
                 </div>
                 <span class="control-label">Cruise points</span>
                 <div class="cruise-controls" data-cruise-cam="{{.Name}}" aria-live="polite">
