@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/tutk"
@@ -30,6 +32,8 @@ const (
 	// MaxCruisePoints is the number of numbered positions supported by Pan cameras.
 	MaxCruisePoints = 4
 )
+
+var ptzDiagnosticSequence atomic.Uint64
 
 // CruisePoint is a camera-stored position and its cruise dwell time.
 type CruisePoint struct {
@@ -182,18 +186,34 @@ func withPTZControl(cam CameraInfo, action func(*tutkdtls.DTLSConn) error) error
 		return fmt.Errorf("camera %s is missing TUTK credentials for PTZ", cam.Name)
 	}
 
-	conn, err := tutkdtls.DialDTLS(cam.LanIP, 0, cam.P2PID, string(tutkdtls.CalculateAuthKey(cam.ENR, cam.MAC)), cam.ENR, false)
+	debug := os.Getenv("PTZ_TUTK_DISCOVERY_DEBUG") == "true"
+	diagnosticID := ""
+	dial := tutkdtls.DialDTLS
+	if debug {
+		diagnosticID = fmt.Sprintf("ptz-%d", ptzDiagnosticSequence.Add(1))
+		dial = func(host string, port int, uid, authKey, enr string, verbose bool) (*tutkdtls.DTLSConn, error) {
+			return tutkdtls.DialDTLSWithDiagnostics(host, port, uid, authKey, enr, verbose, diagnosticID)
+		}
+	}
+	withDiagnosticID := func(err error) error {
+		if err != nil && diagnosticID != "" {
+			return fmt.Errorf("PTZ diagnostic_id=%s: %w", diagnosticID, err)
+		}
+		return err
+	}
+
+	conn, err := dial(cam.LanIP, 0, cam.P2PID, string(tutkdtls.CalculateAuthKey(cam.ENR, cam.MAC)), cam.ENR, false)
 	if err != nil {
-		return fmt.Errorf("connect for PTZ: %w", err)
+		return withDiagnosticID(fmt.Errorf("connect for PTZ: %w", err))
 	}
 	defer conn.Close()
 	if err := conn.AVClientStart(5 * time.Second); err != nil {
-		return fmt.Errorf("start TUTK control channel: %w", err)
+		return withDiagnosticID(fmt.Errorf("start TUTK control channel: %w", err))
 	}
 	if err := authenticatePTZ(conn, cam.ENR); err != nil {
-		return err
+		return withDiagnosticID(err)
 	}
-	return action(conn)
+	return withDiagnosticID(action(conn))
 }
 
 func ptzTimestamp() []byte {

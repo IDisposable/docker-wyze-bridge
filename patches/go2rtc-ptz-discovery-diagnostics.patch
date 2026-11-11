@@ -1,22 +1,85 @@
 diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
 --- a/pkg/tutk/dtls/conn_dtls.go
 +++ b/pkg/tutk/dtls/conn_dtls.go
-@@ -7,7 +7,9 @@
+@@ -7,7 +7,10 @@
  	"encoding/binary"
  	"fmt"
  	"io"
 +	"log"
  	"net"
-+	"os"
++	"sort"
++	"strings"
  	"sync"
  	"time"
  
-@@ -521,1 +523,4 @@ func (c *DTLSConn) discovery() error {
-+		if os.Getenv("PTZ_TUTK_DISCOVERY_DEBUG") == "true" {
-+			log.Printf("[PTZ TUTK discovery debug] %s", classifyDiscoveryPacket(buf[:n]))
+@@ -74,4 +77,5 @@ type DTLSConn struct {
+ 	err     error
+ 	verbose bool
++	diagnosticID string
+ 	ctx     context.Context
+ 	cancel  context.CancelFunc
+@@ -117,2 +121,10 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
+-func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
++func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
++	return dialDTLS(host, port, uid, authKey, enr, verbose, "")
++}
++
++func DialDTLSWithDiagnostics(host string, port int, uid, authKey, enr string, verbose bool, diagnosticID string) (*DTLSConn, error) {
++	return dialDTLS(host, port, uid, authKey, enr, verbose, diagnosticID)
++}
++
++func dialDTLS(host string, port int, uid, authKey, enr string, verbose bool, diagnosticID string) (*DTLSConn, error) {
+ 	udp, err := net.ListenUDP("udp", nil)
+@@ -143,5 +155,6 @@ func DialDTLS(host string, port int, uid, authKey, enr string, verbose bool) (*DTLSConn, error) {
+ 		psk:        psk,
+ 		verbose:    verbose,
++		diagnosticID: diagnosticID,
+ 		ctx:        ctx,
+ 		cancel:     cancel,
+ 		rxSeqStart: 0xffff,
+@@ -499,2 +512,11 @@ func (c *DTLSConn) discovery() error {
+ func (c *DTLSConn) discovery() error {
+ 	c.sid = tutk.GenSessionID()
++	var packetCounts map[string]int
++	outcome := "timeout"
++	if c.diagnosticID != "" {
++		log.Printf("[PTZ TUTK discovery] attempt=%s event=start", c.diagnosticID)
++		packetCounts = make(map[string]int)
++		defer func() {
++			log.Printf("[PTZ TUTK discovery] attempt=%s outcome=%s packet_classes=%s", c.diagnosticID, outcome, formatDiscoveryPacketCounts(packetCounts))
++		}()
++	}
+@@ -521,1 +541,4 @@ func (c *DTLSConn) discovery() error {
++		if c.diagnosticID != "" {
++			recordDiscoveryPacket(&packetCounts, classifyDiscoveryPacket(buf[:n]))
 +		}
  		// CC51 protocol
-@@ -541,6 +546,37 @@ func (c *DTLSConn) discovery() error {
+@@ -525,4 +548,11 @@ func (c *DTLSConn) discovery() error {
+ 				if n >= 24 {
+ 					copy(c.sid, buf[16:24])
+ 				}
+-				return c.discoDoneCC51()
++				outcome = "accepted_cc51"
++				err := c.discoDoneCC51()
++				if err != nil {
++					outcome = "accepted_cc51_followup_failed"
++				} else {
++					outcome = "accepted_cc51_followup_ok"
++				}
++				return err
+@@ -536,3 +565,10 @@ func (c *DTLSConn) discovery() error {
+ 		if len(data) >= 16 && binary.LittleEndian.Uint16(data[8:]) == cmdDiscoRes {
+ 			c.addr, c.isCC51 = addr, false
+-			return c.discoDone()
++			outcome = "accepted_iotc"
++			err := c.discoDone()
++			if err != nil {
++				outcome = "accepted_iotc_followup_failed"
++			} else {
++				outcome = "accepted_iotc_followup_ok"
++			}
++			return err
+@@ -541,6 +546,62 @@ func (c *DTLSConn) discovery() error {
  	return fmt.Errorf("discovery timeout")
  }
  
@@ -51,6 +114,31 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
 +	return fmt.Sprintf("packet_len=%d cc51_magic=false classification=unrecognized", len(packet))
 +}
 +
++func recordDiscoveryPacket(counts *map[string]int, packet string) {
++	const maxPacketClasses = 8
++	if _, ok := (*counts)[packet]; ok || len(*counts) < maxPacketClasses {
++		(*counts)[packet]++
++		return
++	}
++	(*counts)["other packet classes"]++
++}
++
++func formatDiscoveryPacketCounts(counts map[string]int) string {
++	if len(counts) == 0 {
++		return "none"
++	}
++	keys := make([]string, 0, len(counts))
++	for key := range counts {
++		keys = append(keys, key)
++	}
++	sort.Strings(keys)
++	parts := make([]string, 0, len(keys))
++	for _, key := range keys {
++		parts = append(parts, fmt.Sprintf("%s x%d", key, counts[key]))
++	}
++	return strings.Join(parts, "; ")
++}
++
  func (c *DTLSConn) discoDone() error {
  	c.Write(c.msgDisco(2))
  	time.Sleep(100 * time.Millisecond)
@@ -58,7 +146,7 @@ diff --git a/pkg/tutk/dtls/discovery_diagnostics_test.go b/pkg/tutk/dtls/discove
 new file mode 100644
 --- /dev/null
 +++ b/pkg/tutk/dtls/discovery_diagnostics_test.go
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,59 @@
 +package dtls
 +
 +import (
@@ -72,7 +160,9 @@ new file mode 100644
 +	cc51 := make([]byte, packetSizeCC51)
 +	copy(cc51, magicCC51)
 +	binary.LittleEndian.PutUint16(cc51[4:], cmdDiscoCC51)
-+	wantCC51 := "packet_len=52 cc51_magic=true command=0x1002 declared_payload_len=0 direction_status=0x0000 classification=CC51 packet"
++	binary.LittleEndian.PutUint16(cc51[6:], 40)
++	binary.LittleEndian.PutUint16(cc51[8:], 0xffff)
++	wantCC51 := "packet_len=52 cc51_magic=true command=0x1002 declared_payload_len=40 direction_status=0xffff classification=CC51 packet"
 +	if got := classifyDiscoveryPacket(cc51); got != wantCC51 {
 +		t.Fatalf("classify CC51 response = %q, want %q", got, wantCC51)
 +	}
@@ -80,9 +170,9 @@ new file mode 100644
 +	shortCC51 := make([]byte, 44)
 +	copy(shortCC51, magicCC51)
 +	binary.LittleEndian.PutUint16(shortCC51[4:], 0x0f02)
-+	binary.LittleEndian.PutUint16(shortCC51[6:], 36)
-+	binary.LittleEndian.PutUint16(shortCC51[8:], 0x0001)
-+	wantShortCC51 := "packet_len=44 cc51_magic=true command=0x0f02 declared_payload_len=36 direction_status=0x0001 classification=CC51-like short packet"
++	binary.LittleEndian.PutUint16(shortCC51[6:], 32)
++	binary.LittleEndian.PutUint16(shortCC51[8:], 0xffff)
++	wantShortCC51 := "packet_len=44 cc51_magic=true command=0x0f02 declared_payload_len=32 direction_status=0xffff classification=CC51-like short packet"
 +	if got := classifyDiscoveryPacket(shortCC51); got != wantShortCC51 {
 +		t.Fatalf("classify short CC51-like packet = %q, want %q", got, wantShortCC51)
 +	}
@@ -96,5 +186,23 @@ new file mode 100644
 +
 +	if got := classifyDiscoveryPacket([]byte{0x01, 0x02}); got != "packet_len=2 cc51_magic=false classification=unrecognized" {
 +		t.Fatalf("classify unknown packet = %q", got)
++	}
++}
++
++func TestFormatDiscoveryPacketCounts(t *testing.T) {
++	counts := make(map[string]int)
++	recordDiscoveryPacket(&counts, "CC51 short command=0x0f02")
++	recordDiscoveryPacket(&counts, "CC51 short command=0x0f02")
++	recordDiscoveryPacket(&counts, "IOTC command=0x0602")
++	got := formatDiscoveryPacketCounts(counts)
++	want := "CC51 short command=0x0f02 x2; IOTC command=0x0602 x1"
++	if got != want {
++		t.Fatalf("formatDiscoveryPacketCounts() = %q, want %q", got, want)
++	}
++	for i := 0; i < 10; i++ {
++		recordDiscoveryPacket(&counts, string(rune('a'+i)))
++	}
++	if len(counts) > 9 || counts["other packet classes"] == 0 {
++		t.Fatalf("packet class aggregation is not bounded: %v", counts)
 +	}
 +}
