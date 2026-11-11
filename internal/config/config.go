@@ -128,6 +128,9 @@ type Config struct {
 	GwellFFmpegLogLevel string // ffmpeg -loglevel inside gwell-proxy (quiet/panic/fatal/error/warning/info/verbose/debug/trace)
 	GwellDumpDir        string // if non-empty, gwell-proxy tees raw H.264 to this dir for offline ffprobe
 	GwellDeadmanTimeout time.Duration
+	GwellStallTimeout   time.Duration // gwell-proxy -stall-timeout (0 = off)
+	GwellReconnectDelay time.Duration // gwell-proxy -reconnect-delay (0 = proxy default)
+	GwellKeepPublisher  bool          // gwell-proxy -keep-publisher
 	// ModelOverrides is the raw MODEL_OVERRIDES string applied to the
 	// wyzeapi model registry at startup. See wyzeapi.ApplyModelOverrides.
 	ModelOverrides string
@@ -263,6 +266,9 @@ func Load() (*Config, error) {
 		GwellFFmpegLogLevel: env("GWELL_FFMPEG_LOGLEVEL", "warning"),
 		GwellDumpDir:        env("GWELL_DUMP_DIR", ""),
 		GwellDeadmanTimeout: envDuration("GWELL_DEADMAN_TIMEOUT", 2*time.Minute),
+		GwellStallTimeout:   envDuration("GWELL_STALL_TIMEOUT", 0),
+		GwellReconnectDelay: envDuration("GWELL_RECONNECT_DELAY", 0),
+		GwellKeepPublisher:  envBool("GWELL_KEEP_PUBLISHER", false),
 		ModelOverrides:      env("MODEL_OVERRIDES", ""),
 
 		// Internals
