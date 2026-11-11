@@ -6,6 +6,7 @@ import (
 	cryptoRand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -292,6 +293,31 @@ func (c *Client) EnsureAuth() error {
 	return nil
 }
 
+// withAuth runs one authenticated Wyze request. do must build its
+// payload and headers from the current token each time it is called.
+// Wyze can expire an access token well before the 23h ExpiresAt we
+// assume, and then answers code 2001. On 2001 the local token is marked
+// expired so EnsureAuth refreshes it (or logs in again when the refresh
+// token is also rejected), and the request is retried once.
+func (c *Client) withAuth(do func() (map[string]interface{}, error)) (map[string]interface{}, error) {
+	if err := c.EnsureAuth(); err != nil {
+		return nil, err
+	}
+	resp, err := do()
+	var apiErr *WyzeAPIError
+	if !errors.As(err, &apiErr) || !apiErr.AccessTokenExpired() {
+		return resp, err
+	}
+	c.log.Warn().Str("path", apiErr.Path).Msg("Wyze rejected the access token (2001), refreshing and retrying once")
+	if c.auth != nil {
+		c.auth.ExpiresAt = time.Time{}
+	}
+	if err := c.EnsureAuth(); err != nil {
+		return nil, err
+	}
+	return do()
+}
+
 func (c *Client) notifyAuthFailure(err error) {
 	if c.onAuthFailure != nil {
 		c.onAuthFailure(err)
@@ -306,11 +332,9 @@ func (c *Client) notifyAuthRecover() {
 
 // GetUserInfo retrieves the authenticated user's profile.
 func (c *Client) GetUserInfo() (*WyzeAccount, error) {
-	if err := c.EnsureAuth(); err != nil {
-		return nil, err
-	}
-
-	resp, err := c.postJSON(c.WyzeURL+"/user/get_user_info", c.defaultHeaders(), c.authenticatedPayload("default"))
+	resp, err := c.withAuth(func() (map[string]interface{}, error) {
+		return c.postJSON(c.WyzeURL+"/user/get_user_info", c.defaultHeaders(), c.authenticatedPayload("default"))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get_user_info: %w", err)
 	}
