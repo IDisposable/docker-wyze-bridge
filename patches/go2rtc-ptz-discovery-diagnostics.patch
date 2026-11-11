@@ -13,29 +13,42 @@ diff --git a/pkg/tutk/dtls/conn_dtls.go b/pkg/tutk/dtls/conn_dtls.go
  
 @@ -521,1 +523,4 @@ func (c *DTLSConn) discovery() error {
 +		if os.Getenv("PTZ_TUTK_DISCOVERY_DEBUG") == "true" {
-+			log.Printf("[PTZ TUTK discovery debug] packet_len=%d classification=%s", n, classifyDiscoveryPacket(buf[:n]))
++			log.Printf("[PTZ TUTK discovery debug] %s", classifyDiscoveryPacket(buf[:n]))
 +		}
  		// CC51 protocol
-@@ -541,6 +546,24 @@ func (c *DTLSConn) discovery() error {
+@@ -541,6 +546,37 @@ func (c *DTLSConn) discovery() error {
  	return fmt.Errorf("discovery timeout")
  }
  
 +func classifyDiscoveryPacket(packet []byte) string {
-+	if len(packet) >= 2 && string(packet[:2]) == magicCC51 {
++	cc51Magic := len(packet) >= 2 && string(packet[:2]) == magicCC51
++	if cc51Magic {
++		command := "unavailable"
++		payloadLength := "unavailable"
++		directionStatus := "unavailable"
 +		if len(packet) >= 6 {
-+			if len(packet) < packetSizeCC51 {
-+				return fmt.Sprintf("CC51-like short packet command=0x%04x", binary.LittleEndian.Uint16(packet[4:]))
-+			}
-+			return fmt.Sprintf("CC51 command=0x%04x", binary.LittleEndian.Uint16(packet[4:]))
++			command = fmt.Sprintf("0x%04x", binary.LittleEndian.Uint16(packet[4:6]))
 +		}
-+		return "unrecognized"
++		if len(packet) >= 8 {
++			payloadLength = fmt.Sprintf("%d", binary.LittleEndian.Uint16(packet[6:8]))
++		}
++		if len(packet) >= 10 {
++			directionStatus = fmt.Sprintf("0x%04x", binary.LittleEndian.Uint16(packet[8:10]))
++		}
++		classification := "CC51-like short packet"
++		if len(packet) >= packetSizeCC51 {
++			classification = "CC51 packet"
++		}
++		return fmt.Sprintf("packet_len=%d cc51_magic=true command=%s declared_payload_len=%s direction_status=%s classification=%s",
++			len(packet), command, payloadLength, directionStatus, classification)
 +	}
 +
 +	decoded := tutk.ReverseTransCodeBlob(packet)
 +	if len(decoded) >= 16 {
-+		return fmt.Sprintf("IOTC command=0x%04x", binary.LittleEndian.Uint16(decoded[8:]))
++		return fmt.Sprintf("packet_len=%d cc51_magic=false classification=IOTC command=0x%04x",
++			len(packet), binary.LittleEndian.Uint16(decoded[8:]))
 +	}
-+	return "unrecognized"
++	return fmt.Sprintf("packet_len=%d cc51_magic=false classification=unrecognized", len(packet))
 +}
 +
  func (c *DTLSConn) discoDone() error {
@@ -45,7 +58,7 @@ diff --git a/pkg/tutk/dtls/discovery_diagnostics_test.go b/pkg/tutk/dtls/discove
 new file mode 100644
 --- /dev/null
 +++ b/pkg/tutk/dtls/discovery_diagnostics_test.go
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,38 @@
 +package dtls
 +
 +import (
@@ -59,25 +72,29 @@ new file mode 100644
 +	cc51 := make([]byte, packetSizeCC51)
 +	copy(cc51, magicCC51)
 +	binary.LittleEndian.PutUint16(cc51[4:], cmdDiscoCC51)
-+	if got := classifyDiscoveryPacket(cc51); got != "CC51 command=0x1002" {
-+		t.Fatalf("classify CC51 response = %q", got)
++	wantCC51 := "packet_len=52 cc51_magic=true command=0x1002 declared_payload_len=0 direction_status=0x0000 classification=CC51 packet"
++	if got := classifyDiscoveryPacket(cc51); got != wantCC51 {
++		t.Fatalf("classify CC51 response = %q, want %q", got, wantCC51)
 +	}
 +
 +	shortCC51 := make([]byte, 44)
 +	copy(shortCC51, magicCC51)
 +	binary.LittleEndian.PutUint16(shortCC51[4:], 0x0f02)
-+	if got := classifyDiscoveryPacket(shortCC51); got != "CC51-like short packet command=0x0f02" {
-+		t.Fatalf("classify short CC51-like packet = %q", got)
++	binary.LittleEndian.PutUint16(shortCC51[6:], 36)
++	binary.LittleEndian.PutUint16(shortCC51[8:], 0x0001)
++	wantShortCC51 := "packet_len=44 cc51_magic=true command=0x0f02 declared_payload_len=36 direction_status=0x0001 classification=CC51-like short packet"
++	if got := classifyDiscoveryPacket(shortCC51); got != wantShortCC51 {
++		t.Fatalf("classify short CC51-like packet = %q, want %q", got, wantShortCC51)
 +	}
 +
 +	iotc := make([]byte, 44)
 +	binary.LittleEndian.PutUint16(iotc[8:], cmdDiscoRes)
 +	iotc = tutk.TransCodeBlob(iotc)
-+	if got := classifyDiscoveryPacket(iotc); got != "IOTC command=0x0602" {
++	if got := classifyDiscoveryPacket(iotc); got != "packet_len=44 cc51_magic=false classification=IOTC command=0x0602" {
 +		t.Fatalf("classify IOTC response = %q", got)
 +	}
 +
-+	if got := classifyDiscoveryPacket([]byte{0x01, 0x02}); got != "unrecognized" {
++	if got := classifyDiscoveryPacket([]byte{0x01, 0x02}); got != "packet_len=2 cc51_magic=false classification=unrecognized" {
 +		t.Fatalf("classify unknown packet = %q", got)
 +	}
 +}
