@@ -124,7 +124,7 @@ func (c *Config) loadYAML() error {
 // matched prefix to prevent fallthrough.
 func (c *Config) loadCamOverrides() {
 	for _, e := range os.Environ() {
-		for _, prefix := range []string{"QUALITY_", "AUDIO_", "RECORD_CMD_", "RECORD_"} {
+		for _, prefix := range []string{"QUALITY_", "AUDIO_", "RECORD_CMD_", "RECORD_", "WEBRTC_PROFILE_"} {
 			key, val, ok := cutEnvPrefix(e, prefix)
 			if !ok {
 				continue
@@ -144,6 +144,9 @@ func (c *Config) loadCamOverrides() {
 			case "RECORD_":
 				b := parseBool(val, false)
 				ov.Record = &b
+			case "WEBRTC_PROFILE_":
+				v := val
+				ov.WebrtcProfile = &v
 			}
 			c.CamOverrides[camKey] = ov
 			break

@@ -200,6 +200,22 @@ func TestCameraInfo_PanDuo_IsWebRTC(t *testing.T) {
 	}
 }
 
+func TestCameraInfo_BulbCam_IsWebRTC(t *testing.T) {
+	// Bulb Cam (HL_BC) streams over WebRTC via mars-webcsrv (same as
+	// Doorbell Pro). TUTK discovery times out on current firmware.
+	// Hardware-verified 2026-11. NOT Gwell, NOT TUTK.
+	bc := CameraInfo{Model: "HL_BC", LanIP: ""}
+	if bc.IsGwell() {
+		t.Error("HL_BC must not be classified as Gwell")
+	}
+	if !bc.IsWebRTCStreamer() {
+		t.Error("HL_BC should be a WebRTC streamer")
+	}
+	if got, want := bc.ModelName(), "Bulb Cam"; got != want {
+		t.Errorf("ModelName(HL_BC) = %q, want %q", got, want)
+	}
+}
+
 func TestApplyModelOverrides(t *testing.T) {
 	// Snapshot + restore so test mutations don't leak.
 	saved := make(map[string]ModelSpec, len(modelRegistry))

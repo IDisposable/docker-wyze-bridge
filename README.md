@@ -113,6 +113,7 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam OG Telephoto 3X | `GW_GC2` | WebRTC | Expected (same lineage as GW_GC1) |
 | Wyze Battery Cam Pro | `AN_RSCW` | — | Not supported |
 | Wyze Cam Floodlight Pro (2K) | `LD_CFP` | — | Not supported |
+| Wyze Bulb Cam (2K) | `HL_BC` | WebRTC | **Confirmed 2026-11** (see [Bulb Cam](#bulb-cam-hl_bc)) |
 
 "Expected" means the code path is plumbed and equivalent hardware is
 known to work, but we don't own a unit to confirm end-to-end. Bug
@@ -138,6 +139,28 @@ To pin a camera to WebRTC immediately (skipping the streak), set
 Registry → Model Overrides** → `model=HL_CAM4, is_webrtc=true`). To
 disable the auto-fallback entirely, set `TUTK_FALLBACK_THRESHOLD=0` —
 the chronic-error hint still points at the manual override.
+
+### Bulb Cam (`HL_BC`)
+
+The Wyze Bulb Cam (a lightbulb-form-factor cam) is a WebRTC/KVS
+camera like the Doorbell Pro: TUTK discovery times out
+(`IOTC_ER_TIMEOUT`) on current firmware, and `/v4/camera/get_streams`
+returns a `wyze-mars-webcsrv` signaling URL. `4.8+` ships it in the
+model registry as `is_webrtc=true`, so it needs no config.
+
+One quirk: the camera publishes **only its lowest profile
+(640×360)** over KVS until a viewer explicitly asks for a higher one
+via the `switch/resolution` data-channel message — cloud knobs like
+the `P2` property and the `QUALITY=hd` env var are both ignored by
+this firmware. Set `WEBRTC_PROFILE=2k` (or per-camera
+`WEBRTC_PROFILE_WYZE_BULB_CAM=2k`) to have the bridge append
+`#profile=2k` to the source URL so go2rtc requests the full
+**2304×1296** feed. This requires the go2rtc sidecar built with
+[go2rtc PR #2324](https://github.com/AlexxIT/go2rtc/pull/2324); see
+[`patches/`](patches/) for the diff and a one-command build. Without
+the env var set (or with `WEBRTC_PROFILE=none`), streams behave
+exactly as before. Verified end-to-end on a `HL_BC` unit at 2304×1296
+@ 15fps, 2026-11.
 
 ### Cameras whose LAN IP changed (`discovery timeout`)
 
@@ -429,6 +452,7 @@ Everything is controlled by environment variables. See
 | `WYZE_API_KEY` | yes | API Key from Wyze Developer Console |
 | `WYZE_TOTP_KEY` | optional | TOTP secret for accounts with 2FA enabled |
 | `BRIDGE_IP` | for WebRTC | Host IP that browsers reach the bridge at; injected as a WebRTC ICE candidate |
+| `WEBRTC_PROFILE` | no | KVS data-channel resolution profile for WebRTC cameras (e.g. `2k` for the Bulb Cam; see [Bulb Cam](#bulb-cam-hl_bc)); per-camera via `WEBRTC_PROFILE_{CAM_NAME}` |
 | `MQTT_HOST` | for MQTT | MQTT broker hostname (enables MQTT) |
 | `LOG_LEVEL` | no | `trace` / `debug` / `info` / `warn` / `error` (default `info`) |
 

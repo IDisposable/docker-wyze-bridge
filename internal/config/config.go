@@ -125,6 +125,13 @@ type Config struct {
 	// wyzeapi model registry at startup. See wyzeapi.ApplyModelOverrides.
 	ModelOverrides string
 
+	// WebrtcProfile is the data-channel resolution profile requested
+	// from WebRTC (KVS) cameras on connect, e.g. "2k" for the Bulb
+	// Cam (empty = don't ask; "none" also disables). Per-camera via
+	// WEBRTC_PROFILE_{CAM_NAME}. Requires the #profile= patch in the
+	// bundled go2rtc (AlexxIT/go2rtc PR #2324).
+	WebrtcProfile string
+
 	// Per-camera overrides keyed by normalized camera name (UPPER_CASE)
 	CamOverrides map[string]CamOverride
 
@@ -134,10 +141,11 @@ type Config struct {
 
 // CamOverride holds per-camera setting overrides.
 type CamOverride struct {
-	Quality   *string
-	Audio     *bool
-	Record    *bool
-	RecordCmd *string // per-camera RECORD_CMD_<CAM> — overrides global
+	Quality       *string
+	Audio         *bool
+	Record        *bool
+	RecordCmd     *string // per-camera RECORD_CMD_<CAM> — overrides global
+	WebrtcProfile *string // per-camera WEBRTC_PROFILE_<CAM> — KVS data-channel profile (e.g. "2k")
 }
 
 // Load reads configuration from environment variables, Docker secrets,
@@ -255,6 +263,7 @@ func Load() (*Config, error) {
 
 		// Internals
 		CamOverrides:    make(map[string]CamOverride),
+		WebrtcProfile:   env("WEBRTC_PROFILE", ""),
 		RefreshInterval: envDuration("REFRESH_INTERVAL", 30*time.Minute),
 	}
 
@@ -308,6 +317,16 @@ func (c *Config) CamRecord(camName string) bool {
 		return *ov.Record
 	}
 	return c.RecordAll
+}
+
+// CamWebrtcProfile returns the effective KVS data-channel resolution
+// profile for a camera (e.g. "2k"); empty means don't request one.
+func (c *Config) CamWebrtcProfile(camName string) string {
+	key := normalizeCamName(camName)
+	if ov, ok := c.CamOverrides[key]; ok && ov.WebrtcProfile != nil {
+		return *ov.WebrtcProfile
+	}
+	return c.WebrtcProfile
 }
 
 func normalizeCamName(name string) string {
