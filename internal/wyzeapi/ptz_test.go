@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-
-	tutkdtls "github.com/AlexxIT/go2rtc/pkg/tutk/dtls"
 )
 
 func TestParsePTZDirection(t *testing.T) {
@@ -41,7 +39,7 @@ func TestParsePTZDirection(t *testing.T) {
 func TestDialPTZWithDiscoveryRetry(t *testing.T) {
 	t.Run("retries discovery once", func(t *testing.T) {
 		attempts := 0
-		conn, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+		conn, err := dialPTZWithDiscoveryRetry(func() (ptzConn, error) {
 			attempts++
 			if attempts == 1 {
 				return nil, errors.New("discovery timeout")
@@ -58,7 +56,7 @@ func TestDialPTZWithDiscoveryRetry(t *testing.T) {
 
 	t.Run("does not retry other failures", func(t *testing.T) {
 		attempts := 0
-		_, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+		_, err := dialPTZWithDiscoveryRetry(func() (ptzConn, error) {
 			attempts++
 			return nil, errors.New("connection refused")
 		}, true)
@@ -69,7 +67,7 @@ func TestDialPTZWithDiscoveryRetry(t *testing.T) {
 
 	t.Run("retry is opt-in", func(t *testing.T) {
 		attempts := 0
-		_, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+		_, err := dialPTZWithDiscoveryRetry(func() (ptzConn, error) {
 			attempts++
 			return nil, errors.New("discovery timeout")
 		}, false)
@@ -80,7 +78,7 @@ func TestDialPTZWithDiscoveryRetry(t *testing.T) {
 
 	t.Run("retry is bounded", func(t *testing.T) {
 		attempts := 0
-		_, err := dialPTZWithDiscoveryRetry(func() (*tutkdtls.DTLSConn, error) {
+		_, err := dialPTZWithDiscoveryRetry(func() (ptzConn, error) {
 			attempts++
 			return nil, errors.New("discovery timeout")
 		}, true)
