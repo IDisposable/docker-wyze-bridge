@@ -179,6 +179,12 @@ func main() {
 		func(camName string) { issueReg.Resolve("camera/chronic/" + camName) },
 	)
 
+	// Retracts a promoted camera's PTZ/cruise entities from Home Assistant.
+	// Wired after setupMQTT below; the fallback callback only fires from the
+	// discovery loop, which starts later, but the nil guard keeps the order
+	// safe if startup is ever rearranged.
+	var retractPTZDiscovery func(mac string)
+
 	camMgr.OnProtocolFallback(func(camName, oldProtocol, newProtocol string, streak int) {
 		issueReg.Report(issues.Issue{
 			ID:       "camera/fallback/" + camName,
@@ -188,6 +194,13 @@ func main() {
 			Message:  fmt.Sprintf("Auto-promoted %s → %s after %d consecutive failures", oldProtocol, newProtocol, streak),
 			Detail:   "Wyze's newer firmware disables TUTK on some models (notably HL_CAM4); the WebRTC path via mars-webcsrv still works. Persists for this process; restart to re-probe TUTK. Set TUTK_FALLBACK_THRESHOLD=0 to disable the auto-promotion.",
 		})
+		// The WebRTC path has no native PTZ command channel, so the PTZ
+		// buttons announced for a Pan camera would only ever fail. Drop them.
+		if newProtocol == "webrtc" && retractPTZDiscovery != nil {
+			if cam := camMgr.GetCamera(camName); cam != nil {
+				retractPTZDiscovery(cam.GetInfo().MAC)
+			}
+		}
 	})
 
 	webuiLog := log.With().Str("c", "webui").Logger()
@@ -264,6 +277,12 @@ func main() {
 
 	mqttClient := setupMQTT(ctx, cfg, camMgr, apiClient)
 	webhookClient := setupWebhooks(cfg)
+
+	retractPTZDiscovery = func(mac string) {
+		if mqttClient != nil {
+			mqttClient.RetractPTZDiscovery(mac)
+		}
+	}
 
 	// A property set from the WebUI (flip, night vision) is mirrored to
 	// the MQTT state topic so HA's switches don't show the old value.

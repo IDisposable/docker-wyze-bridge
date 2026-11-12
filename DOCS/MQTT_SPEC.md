@@ -168,9 +168,10 @@ and queued once more after earlier commands to reduce the chance of a late
 movement command leaving the camera moving. If the queue is full, not-yet-started
 commands are cancelled so the final STOP can be queued. A successful response
 means the camera acknowledged the protocol command; it does not confirm
-mechanical movement. A STOP whose initial TUTK discovery times out is retried
-once before the action is sent; other connection/authentication failures are not
-retried.
+mechanical movement. A STOP whose initial TUTK discovery times out before the
+action is sent is retried once, 200 ms apart; other connection or authentication
+failures are not retried. See *TUTK Pan PTZ + cruise-point entities* below for
+what Home Assistant's tap-only buttons change about this.
 
 For example, with the default `{topic}`:
 
@@ -249,6 +250,71 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 | `reset_rotation` | `button` | — | `{base}set/reset_rotation` |
 | `pan_tilt` | `cover` | — | `{base}set/rotary_degree` + tilt |
 
+### TUTK Pan PTZ + cruise-point entities (`supports_ptz`)
+
+Announced only for cameras that pass the same capability gate as the PTZ
+command topics: registry Pan models (Pan V1/V2/V3/Pro) reachable over DTLS
+TUTK. Never for Gwell or WebRTC cameras (including Cam Pan Duo), and never
+while the camera is on the WebRTC path — whether the WebRTC route came from a
+model override or from auto-promotion after repeated TUTK failures. This is the
+same value the camera status JSON reports as `supports_ptz`. When a camera
+moves to the WebRTC path mid-run, or is removed/ignored, these configs are
+retracted with empty retained payloads so Home Assistant drops the controls
+instead of leaving buttons that can only fail.
+
+`{base}` = `{topic}/{cam}/`. Every entity uses `unique_id = wyze_{mac}{suffix}`
+and joins the camera's existing device group (`identifiers: ["wyze_{mac}"]`), so
+these show up beside the camera's switches and selects. Availability comes from
+`{base}state` (`connected`/`disconnected`).
+
+| Suffix | Component | Topic | Payload |
+|---|---|---|---|
+| `_ptz_up` | `button` | `{base}set/rotary_action` | `payload_press=up` |
+| `_ptz_down` | `button` | `{base}set/rotary_action` | `payload_press=down` |
+| `_ptz_left` | `button` | `{base}set/rotary_action` | `payload_press=left` |
+| `_ptz_right` | `button` | `{base}set/rotary_action` | `payload_press=right` |
+| `_ptz_stop` | `button` | `{base}set/rotary_action` | `payload_press=stop` |
+| `_cruise_refresh` | `button` | `{base}cruise_points/get` | `payload_press=get` |
+| `_cruise_save_1` … `_cruise_save_4` | `button` | `{base}set/cruise_point` | `payload_press={"action":"save","slot":N}` |
+| `_cruise_goto_1` … `_cruise_goto_4` | `button` | `{base}set/cruise_point` | `payload_press={"action":"goto","slot":N}` |
+| `_cruise_points` | `sensor` | state: `{base}cruise_points` | retained JSON array (`vertical`, `horizontal`, `wait_seconds`); no command topic |
+
+Entity names are the camera nickname plus a suffix (`Pan V3 PTZ Up`, `Pan V3 PTZ
+STOP`, `Pan V3 Cruise Save 1`, …), and each button carries an icon
+(`mdi:arrow-up/down/left/right`, `mdi:stop`, `mdi:refresh`,
+`mdi:map-marker-plus`, `mdi:map-marker`, `mdi:map-marker-path`).
+
+**Home Assistant buttons are tap commands, not hold-to-move.** HA's `button`
+entity fires once per press and has no release event, so there is no "press and
+hold" like the WebUI's PTZ pad. A direction tap starts a movement that keeps
+going until a `stop` arrives — the bridge adds no automatic movement timeout.
+Keep `_ptz_stop` reachable (its own row or a large card next to the direction
+buttons), and prefer one tap per nudge over holding/repeating a direction.
+
+**STOP is best-effort; a physical stop is not guaranteed.** A `_ptz_stop` tap
+publishes exactly the `stop` payload any other client would, and the outcome
+lands on `{topic}/{cam}/command/status` with `delivery`:
+
+- `acknowledged` — the camera answered the protocol command; it is still not
+  proof the camera physically moved.
+- `not_sent` — the bridge knows the stop was never sent.
+- `unknown` — the stop may have reached the camera, but no acknowledgement came
+  back.
+
+A STOP whose initial TUTK discovery times out before any action is sent is
+retried once, 200 ms apart; other connect or authentication failures are not
+retried. If a direction command is still queued when STOP arrives, STOP is
+attempted immediately and re-queued last so a final stop runs after the earlier
+commands; if the per-camera queue (8 commands) is full, not-yet-started
+movements are cancelled to make room for it. None of this can guarantee the
+camera stops: if it keeps moving, disconnect its power rather than trusting
+another software command.
+
+The cruise-point entities mirror the command topics documented above
+(`set/cruise_point`, `cruise_points/get`, `cruise_points`): `_cruise_refresh`
+asks the bridge to re-read the camera's slots into the retained sensor, and
+slots are 1–4 with new slots saved sequentially.
+
 ---
 
 ## PID / command reference
@@ -301,4 +367,5 @@ All entities use availability from `{topic}/{cam}/state` (connected/disconnected
 | Motion event parity (`{cam}/motion`) from camera alarm stream | Deferred |
 | Alarm (`K10630/K10632`) parity | Deferred |
 | MQTT PTZ action + cruise-point read/save/recall | Implemented for supported TUTK Pan cameras; command results on `{cam}/command/status` |
+| HA discovery: PTZ up/down/left/right + STOP, cruise-point save/goto/refresh, cruise-point sensor | Implemented; announced only for cameras passing the TUTK Pan `supports_ptz` gate |
 | Sensors requiring live readback (`res`, `wifi`) | Deferred |

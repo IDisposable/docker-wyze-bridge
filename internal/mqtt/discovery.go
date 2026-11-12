@@ -246,6 +246,143 @@ func (c *Client) PublishDiscovery(cam *camera.Camera) {
 		"payload_not_available": "disconnected",
 		"device":                device,
 	})
+
+	// PTZ + cruise-point entities, gated to the same cameras the MQTT
+	// PTZ commands accept (see subscribe.supportedPTZInfo).
+	c.publishPTZDiscovery(cam, info, device)
+}
+
+// haSupportsPTZ mirrors the PTZ command gate in subscribe.supportedPTZInfo:
+// native TUTK Pan models only, and never while the camera is pinned to the
+// WebRTC path (model-promoted or runtime-promoted).
+func haSupportsPTZ(info wyzeapi.CameraInfo, forceWebRTC bool) bool {
+	return info.SupportsPTZ() && !forceWebRTC
+}
+
+// haEntityConfig is one announced entity: where it lives on the discovery
+// prefix plus the payload to announce.
+type haEntityConfig struct {
+	component string
+	suffix    string
+	config    map[string]interface{}
+}
+
+// ptzEntitySpec describes one PTZ/cruise-point entity. The table is the
+// single source of truth for both the announce (ptzDiscoveryConfigs) and
+// unannounce (RemoveDiscovery / retractPTZDiscovery) paths, so a stale
+// entity can never linger because a topic pair drifted.
+type ptzEntitySpec struct {
+	component string
+	suffix    string
+	label     string // appended to the camera nickname
+	icon      string
+	command   string // camera-relative topic the press goes to
+	payload   string // payload_press; empty marks a state-only sensor
+}
+
+// ptzEntitySpecs is the PTZ/cruise entity set: five movement buttons, a
+// cruise-point refresh, per-slot save/recall buttons (slots 1–4, matching
+// wyzeapi.MaxCruisePoints), and the retained cruise_points sensor.
+var ptzEntitySpecs = buildPTZEntitySpecs()
+
+func buildPTZEntitySpecs() []ptzEntitySpec {
+	specs := []ptzEntitySpec{
+		{component: "button", suffix: "_ptz_up", label: "PTZ Up", icon: "mdi:arrow-up", command: "set/rotary_action", payload: "up"},
+		{component: "button", suffix: "_ptz_down", label: "PTZ Down", icon: "mdi:arrow-down", command: "set/rotary_action", payload: "down"},
+		{component: "button", suffix: "_ptz_left", label: "PTZ Left", icon: "mdi:arrow-left", command: "set/rotary_action", payload: "left"},
+		{component: "button", suffix: "_ptz_right", label: "PTZ Right", icon: "mdi:arrow-right", command: "set/rotary_action", payload: "right"},
+		{component: "button", suffix: "_ptz_stop", label: "PTZ STOP", icon: "mdi:stop", command: "set/rotary_action", payload: "stop"},
+		{component: "button", suffix: "_cruise_refresh", label: "Cruise Points Refresh", icon: "mdi:refresh", command: "cruise_points/get", payload: "get"},
+	}
+	for slot := 1; slot <= wyzeapi.MaxCruisePoints; slot++ {
+		specs = append(specs,
+			ptzEntitySpec{
+				component: "button",
+				suffix:    fmt.Sprintf("_cruise_save_%d", slot),
+				label:     fmt.Sprintf("Cruise Save %d", slot),
+				icon:      "mdi:map-marker-plus",
+				command:   "set/cruise_point",
+				payload:   fmt.Sprintf(`{"action":"save","slot":%d}`, slot),
+			},
+			ptzEntitySpec{
+				component: "button",
+				suffix:    fmt.Sprintf("_cruise_goto_%d", slot),
+				label:     fmt.Sprintf("Cruise Go %d", slot),
+				icon:      "mdi:map-marker",
+				command:   "set/cruise_point",
+				payload:   fmt.Sprintf(`{"action":"goto","slot":%d}`, slot),
+			},
+		)
+	}
+	specs = append(specs, ptzEntitySpec{
+		component: "sensor",
+		suffix:    "_cruise_points",
+		label:     "Cruise Points",
+		icon:      "mdi:map-marker-path",
+		command:   "cruise_points",
+	})
+	return specs
+}
+
+// ptzDiscoveryConfigs builds the announcement payloads for the PTZ set.
+// Split out from the publish path so the entity surface is testable and
+// so the configs all share one consistent device + availability block.
+func ptzDiscoveryConfigs(name, topic string, info wyzeapi.CameraInfo, device map[string]interface{}) []haEntityConfig {
+	entities := make([]haEntityConfig, 0, len(ptzEntitySpecs))
+	for _, spec := range ptzEntitySpecs {
+		cfg := map[string]interface{}{
+			"name":                  info.Nickname + " " + spec.label,
+			"unique_id":             "wyze_" + info.MAC + spec.suffix,
+			"icon":                  spec.icon,
+			"qos":                   1,
+			"availability_topic":    fmt.Sprintf("%s/%s/state", topic, name),
+			"payload_available":     "connected",
+			"payload_not_available": "disconnected",
+			"device":                device,
+		}
+		target := fmt.Sprintf("%s/%s/%s", topic, name, spec.command)
+		if spec.payload == "" {
+			cfg["state_topic"] = target
+		} else {
+			cfg["command_topic"] = target
+			cfg["payload_press"] = spec.payload
+		}
+		entities = append(entities, haEntityConfig{component: spec.component, suffix: spec.suffix, config: cfg})
+	}
+	return entities
+}
+
+// publishPTZDiscovery announces the PTZ/cruise entities for an eligible
+// camera. For a Pan camera that left the TUTK path at runtime the same
+// topics are cleared instead, so HA doesn't keep movement buttons that
+// can only fail. Non-Pan cameras never had these entities, so they are
+// left alone rather than writing empty retained configs for each one.
+func (c *Client) publishPTZDiscovery(cam *camera.Camera, info wyzeapi.CameraInfo, device map[string]interface{}) {
+	if !haSupportsPTZ(info, cam.ForceWebRTC()) {
+		if info.IsPanCam() {
+			c.retractPTZDiscovery(info.MAC)
+		}
+		return
+	}
+	for _, entity := range ptzDiscoveryConfigs(cam.Name(), c.topic, info, device) {
+		c.publishDiscoveryConfig(fmt.Sprintf("%s/%s/%s%s/config", c.dtopic, entity.component, info.MAC, entity.suffix), entity.config)
+	}
+}
+
+// retractPTZDiscovery clears the PTZ/cruise entity configs for a camera.
+func (c *Client) retractPTZDiscovery(mac string) {
+	for _, spec := range ptzEntitySpecs {
+		c.publish(fmt.Sprintf("%s/%s/%s%s/config", c.dtopic, spec.component, mac, spec.suffix), "", true)
+	}
+}
+
+// RetractPTZDiscovery drops a camera's PTZ/cruise entities over MQTT, used
+// when a TUTK camera is promoted to the WebRTC path while running.
+func (c *Client) RetractPTZDiscovery(mac string) {
+	if mac == "" || !c.IsConnected() {
+		return
+	}
+	c.retractPTZDiscovery(mac)
 }
 
 // haDeviceFromInfo builds the HA device block from a pre-captured
@@ -291,6 +428,10 @@ func (c *Client) RemoveDiscovery(mac string) {
 	for _, e := range entities {
 		c.publish(fmt.Sprintf("%s/%s/%s%s/config", c.dtopic, e.component, mac, e.suffix), "", true)
 	}
+	// PTZ/cruise entities are gated on announce, but unannouncing them for
+	// every removed camera is harmless and keeps stale movement buttons
+	// out of HA if a camera's model override changed mid-process.
+	c.retractPTZDiscovery(mac)
 }
 
 func (c *Client) publishDiscoveryConfig(topic string, config map[string]interface{}) {
