@@ -321,7 +321,6 @@ func withPTZControlOptions(cam CameraInfo, retryDiscovery bool, trace *ptzTrace,
 			Err:      withDiagnosticID(fmt.Errorf("connect for PTZ: %w", err)),
 		}
 	}
-	trace.stage(PTZStageP2PConnection, true, PTZDetailOK, dialStart)
 	defer conn.Close()
 	if err := conn.AVClientStart(5 * time.Second); err != nil {
 		trace.stage(PTZStageDTLSSession, false, PTZDetailChannelStart, dialStart)
