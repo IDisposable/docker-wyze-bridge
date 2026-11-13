@@ -163,6 +163,15 @@ Then open `http://localhost:5080` for the WebUI.
 > compose) — the bridge then binds directly to the host network and
 > NAT is out of the way. The HA add-on already runs host-networked
 > for the same reason.
+>
+> Still `discovery timeout` with host networking? Check the host's
+> firewall. go2rtc sends discovery to the camera's UDP port 32761,
+> but the camera can answer from a different port, so a stateful
+> firewall such as UFW (default: deny incoming) doesn't treat the
+> answer as a reply and drops it. UFW logs these as `[UFW BLOCK]`
+> lines with `SRC=<camera IP>` and `PROTO=UDP`. Allow UDP from the
+> camera's IP, e.g. `sudo ufw allow proto udp from 192.168.1.60`
+> (one rule per camera; a DHCP reservation keeps the address fixed).
 
 ## Docker image tags
 
