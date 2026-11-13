@@ -6,6 +6,7 @@ import (
 	cryptoRand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -95,7 +96,15 @@ type Client struct {
 	WyzeURL       string      // base URL for wyze app endpoints (default: DefaultWyzeAPI)
 	CloudURL      string      // base URL for cloud endpoints (default: DefaultCloudAPI)
 	NewWyzeURL    string      // base URL for "v4" app endpoints incl. get_streams (default: DefaultNewWyzeAPI)
+	lastLoginAt   time.Time   // time of the last login attempt made by EnsureAuth
+	lastLoginErr  error       // error of that attempt; nil after a successful login
 }
+
+// loginRetryAfter is the minimum wait after a failed login before
+// EnsureAuth calls the login endpoint again. Every camera request runs
+// EnsureAuth, so without it a rejected login (bad password, 429 rate
+// limit) is repeated for every camera about once a minute.
+var loginRetryAfter = 5 * time.Minute
 
 // SetAuthObserver attaches callbacks for auth lifecycle events.
 // Either may be nil.
@@ -269,7 +278,7 @@ func (c *Client) NeedsRefresh() bool {
 func (c *Client) EnsureAuth() error {
 	if c.auth == nil {
 		c.log.Debug().Msg("no auth state, initiating login")
-		if _, err := c.Login(); err != nil {
+		if err := c.loginWithBackoff(); err != nil {
 			c.notifyAuthFailure(fmt.Errorf("initial login: %w", err))
 			return err
 		}
@@ -282,7 +291,7 @@ func (c *Client) EnsureAuth() error {
 		if err != nil {
 			c.log.Warn().Err(err).Msg("token refresh failed, re-logging in")
 			c.auth = nil
-			if _, err = c.Login(); err != nil {
+			if err = c.loginWithBackoff(); err != nil {
 				c.notifyAuthFailure(fmt.Errorf("token refresh + relogin both failed: %w", err))
 				return err
 			}
@@ -290,6 +299,46 @@ func (c *Client) EnsureAuth() error {
 		c.notifyAuthRecover()
 	}
 	return nil
+}
+
+// loginWithBackoff logs in unless the previous attempt failed less than
+// loginRetryAfter ago, in which case it returns that failure again
+// without contacting Wyze.
+func (c *Client) loginWithBackoff() error {
+	if c.lastLoginErr != nil {
+		if wait := loginRetryAfter - time.Since(c.lastLoginAt); wait > 0 {
+			return fmt.Errorf("next Wyze login attempt in %s, last one failed: %w", wait.Round(time.Second), c.lastLoginErr)
+		}
+	}
+	c.lastLoginAt = time.Now()
+	_, err := c.Login()
+	c.lastLoginErr = err
+	return err
+}
+
+// withAuth runs one authenticated Wyze request. do must build its
+// payload and headers from the current token each time it is called.
+// Wyze can expire an access token well before the 23h ExpiresAt we
+// assume, and then answers code 2001. On 2001 the local token is marked
+// expired so EnsureAuth refreshes it (or logs in again when the refresh
+// token is also rejected), and the request is retried once.
+func (c *Client) withAuth(do func() (map[string]interface{}, error)) (map[string]interface{}, error) {
+	if err := c.EnsureAuth(); err != nil {
+		return nil, err
+	}
+	resp, err := do()
+	var apiErr *WyzeAPIError
+	if !errors.As(err, &apiErr) || !apiErr.AccessTokenExpired() {
+		return resp, err
+	}
+	c.log.Warn().Str("path", apiErr.Path).Msg("Wyze rejected the access token (2001), refreshing and retrying once")
+	if c.auth != nil {
+		c.auth.ExpiresAt = time.Time{}
+	}
+	if err := c.EnsureAuth(); err != nil {
+		return nil, err
+	}
+	return do()
 }
 
 func (c *Client) notifyAuthFailure(err error) {
@@ -306,11 +355,9 @@ func (c *Client) notifyAuthRecover() {
 
 // GetUserInfo retrieves the authenticated user's profile.
 func (c *Client) GetUserInfo() (*WyzeAccount, error) {
-	if err := c.EnsureAuth(); err != nil {
-		return nil, err
-	}
-
-	resp, err := c.postJSON(c.WyzeURL+"/user/get_user_info", c.defaultHeaders(), c.authenticatedPayload("default"))
+	resp, err := c.withAuth(func() (map[string]interface{}, error) {
+		return c.postJSON(c.WyzeURL+"/user/get_user_info", c.defaultHeaders(), c.authenticatedPayload("default"))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get_user_info: %w", err)
 	}
