@@ -643,6 +643,20 @@ main.settings { max-width: 960px; }
 .camera-controls .control-label { font-size: 0.82rem; color: var(--text-dim); grid-column: 1; }
 .camera-controls .prop-btn.sent { background: var(--success); color: #fff; }
 .camera-controls .prop-btn.failed { background: var(--error); color: #fff; }
+.camera-controls .ptz-controls { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(3, 2.5rem); gap: 0.25rem; justify-items: center; }
+.ptz-controls .ptz-btn { width: 2.5rem; height: 2.5rem; touch-action: none; user-select: none; }
+.ptz-controls .ptz-btn.failed { background: var(--error); color: #fff; }
+.ptz-controls .ptz-status { grid-column: 1 / -1; color: var(--error); font-size: 0.8rem; }
+.ptz-controls [data-direction="up"] { grid-row: 1; grid-column: 2; }
+.ptz-controls [data-direction="left"] { grid-row: 2; grid-column: 1; }
+.ptz-controls [data-direction="stop"] { grid-row: 2; grid-column: 2; }
+.ptz-controls [data-direction="right"] { grid-row: 2; grid-column: 3; }
+.ptz-controls [data-direction="down"] { grid-row: 3; grid-column: 2; }
+.camera-controls .cruise-controls { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 0.3rem; }
+.cruise-point-row { display: flex; align-items: center; gap: 0.4rem; }
+.cruise-point-label { min-width: 4.5rem; font-size: 0.82rem; color: var(--text-dim); }
+.cruise-status { font-size: 0.82rem; color: var(--text-dim); }
+.cruise-controls.failed .cruise-status { color: var(--error); }
 .camera-controls .reboot-btn { grid-column: 2 / -1; justify-self: start; }
 .actions button.danger:hover { background: var(--error); color: #fff; border-color: transparent; }
 .actions button:disabled { opacity: 0.6; cursor: wait; }

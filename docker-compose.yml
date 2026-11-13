@@ -176,3 +176,4 @@ services:
             # ── Debug ────────────────────────────────────────────
             # - LOG_LEVEL=info                    # trace|debug|info|warn|error
             # - FORCE_IOTC_DETAIL=false           # verbose go2rtc + bridge streaming logs
+            # - PTZ_TUTK_DISCOVERY_DEBUG=true     # safe packet length/protocol classification for PTZ discovery

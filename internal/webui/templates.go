@@ -199,6 +199,7 @@ func (s *Server) renderCamera(w http.ResponseWriter, r *http.Request, cam *camer
 		"LanMisses":   snap.LanMisses,
 		"LanResolver": s.lanResolverLabel(),
 		"PinnedIP":    snap.PinnedIP,
+		"SupportsPTZ": snap.Info.SupportsPTZ() && !snap.ForceWebRTC,
 	}
 
 	tmpl, err := template.New("camera").Funcs(templateFuncs).Parse(cameraHTML)
@@ -530,6 +531,21 @@ const cameraHTML = `<!DOCTYPE html>
                 <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="night_vision" data-value="auto">Auto</button>
                 <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="night_vision" data-value="on">On</button>
                 <button type="button" class="prop-btn" data-cam="{{.Name}}" data-property="night_vision" data-value="off">Off</button>
+                {{if .SupportsPTZ}}
+                <span class="control-label">Pan / tilt (hold)</span>
+                <div class="ptz-controls" role="group" aria-label="Pan and tilt controls">
+                    <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="up" aria-label="Tilt up">↑</button>
+                    <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="left" aria-label="Pan left">←</button>
+                    <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="stop" aria-label="Stop movement">■</button>
+                    <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="right" aria-label="Pan right">→</button>
+                    <button type="button" class="ptz-btn" data-cam="{{.Name}}" data-direction="down" aria-label="Tilt down">↓</button>
+                    <span class="ptz-status" aria-live="assertive"></span>
+                </div>
+                <span class="control-label">Cruise points</span>
+                <div class="cruise-controls" data-cruise-cam="{{.Name}}" aria-live="polite">
+                    <span class="cruise-status">Loading saved points…</span>
+                </div>
+                {{end}}
                 <span class="control-label"></span>
                 <button type="button" class="reboot-btn danger" data-cam="{{.Name}}" data-nickname="{{.Nickname}}" title="Reboot the camera itself (takes a minute to come back)">⟲ Reboot camera</button>
             </div>

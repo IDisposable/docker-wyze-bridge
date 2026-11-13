@@ -145,7 +145,7 @@ type Options struct {
 	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
 	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
 	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
-	Cloud       CloudCommander       // optional; nil → camera property/reboot endpoints return 503
+	Cloud       CloudCommander       // optional; nil → camera command endpoints return 503
 }
 
 // LanResolverInfo is what the detail page's Network box shows about
@@ -161,12 +161,15 @@ func (s *Server) SetLanResolver(r LanResolverInfo) {
 	s.lanResolver = r
 }
 
-// CloudCommander is the slice of the Wyze API client the camera
-// controls need: set a property by friendly name, run an action.
+// CloudCommander is the slice of camera commands used by the WebUI.
 // Satisfied by *wyzeapi.Client; an interface so tests can fake it.
 type CloudCommander interface {
 	SetNamedProperty(cam wyzeapi.CameraInfo, property, raw string) (publishValue string, err error)
 	RunAction(cam wyzeapi.CameraInfo, action string) error
+	MovePTZ(cam wyzeapi.CameraInfo, direction string) error
+	GetCruisePoints(cam wyzeapi.CameraInfo) ([]wyzeapi.CruisePoint, error)
+	SaveCruisePoint(cam wyzeapi.CameraInfo, slot int) error
+	GoToCruisePoint(cam wyzeapi.CameraInfo, slot int) error
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics

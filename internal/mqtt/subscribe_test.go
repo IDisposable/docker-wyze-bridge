@@ -127,6 +127,7 @@ func TestSubscribePatterns(t *testing.T) {
 		topic + "/+/power/set",
 		topic + "/+/snapshot/take",
 		topic + "/+/stream/restart",
+		topic + "/+/cruise_points/get",
 	}
 
 	// Verify patterns are well-formed

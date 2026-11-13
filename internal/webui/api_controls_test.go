@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,12 +13,15 @@ import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 )
 
-// fakeCloud records what the handlers asked the Wyze cloud to do.
+// fakeCloud records the camera commands issued by WebUI handlers.
 type fakeCloud struct {
-	mu      sync.Mutex
-	props   []string
-	actions []string
-	fail    error
+	mu        sync.Mutex
+	props     []string
+	actions   []string
+	ptz       []string
+	cruise    []wyzeapi.CruisePoint
+	cruiseOps []string
+	fail      error
 }
 
 func (f *fakeCloud) SetNamedProperty(cam wyzeapi.CameraInfo, property, raw string) (string, error) {
@@ -41,6 +45,35 @@ func (f *fakeCloud) RunAction(cam wyzeapi.CameraInfo, action string) error {
 		return f.fail
 	}
 	f.actions = append(f.actions, cam.Name+":"+action)
+	return nil
+}
+
+func (f *fakeCloud) GetCruisePoints(cam wyzeapi.CameraInfo) ([]wyzeapi.CruisePoint, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return nil, f.fail
+	}
+	return append([]wyzeapi.CruisePoint(nil), f.cruise...), nil
+}
+
+func (f *fakeCloud) SaveCruisePoint(cam wyzeapi.CameraInfo, slot int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return f.fail
+	}
+	f.cruiseOps = append(f.cruiseOps, "save:"+cam.Name+":"+strconv.Itoa(slot))
+	return nil
+}
+
+func (f *fakeCloud) GoToCruisePoint(cam wyzeapi.CameraInfo, slot int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return f.fail
+	}
+	f.cruiseOps = append(f.cruiseOps, "goto:"+cam.Name+":"+strconv.Itoa(slot))
 	return nil
 }
 

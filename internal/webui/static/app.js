@@ -220,6 +220,189 @@
         });
     }
 
+    function wirePTZButtons() {
+        const activePTZReleases = new Set();
+        function stopActivePTZ() {
+            Array.from(activePTZReleases).forEach(function(release) {
+                release();
+            });
+        }
+
+        window.addEventListener('blur', stopActivePTZ);
+        window.addEventListener('pagehide', stopActivePTZ);
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) stopActivePTZ();
+        });
+
+        document.querySelectorAll('.ptz-btn').forEach(function(btn) {
+            const cam = btn.getAttribute('data-cam');
+            const direction = btn.getAttribute('data-direction');
+            const controls = btn.closest('.ptz-controls');
+            const stopStatus = controls && controls.querySelector('.ptz-status');
+            let pressed = false;
+            let queue = Promise.resolve();
+            let activePress = null;
+
+            function sendNow(value, retried) {
+                return fetch(B + '/api/cameras/' + cam + '/ptz', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction: value }),
+                    keepalive: value === 'stop'
+                }).then(function(resp) {
+                    if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                    if (value === 'stop') {
+                        btn.classList.remove('failed');
+                        btn.title = btn.getAttribute('aria-label') || 'Stop movement';
+                        if (stopStatus) {
+                            stopStatus.textContent = '';
+                            stopStatus.classList.remove('failed');
+                        }
+                    }
+                }).catch(function(err) {
+                    if (value === 'stop') {
+                        if (!retried) {
+                            return new Promise(function(resolve) {
+                                setTimeout(resolve, 250);
+                            }).then(function() {
+                                return sendNow('stop', true);
+                            });
+                        }
+                        btn.classList.add('failed');
+                        btn.title = 'Stop request failed. Disconnect camera power if it keeps moving.';
+                        if (stopStatus) {
+                            stopStatus.textContent = 'Stop request failed. Disconnect camera power if it keeps moving.';
+                            stopStatus.classList.add('failed');
+                        }
+                    }
+                    console.error('PTZ command failed:', err);
+                });
+            }
+
+            function send(value) {
+                queue = queue.then(function() {
+                    return sendNow(value);
+                });
+                return queue;
+            }
+
+            btn.addEventListener('pointerdown', function(e) {
+                e.preventDefault();
+                if (pressed) return;
+                pressed = true;
+                if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
+                if (direction === 'stop') {
+                    sendNow('stop');
+                    return;
+                }
+
+                const press = { released: false };
+                activePress = press;
+                send(direction).then(function() {
+                    if (press.released) sendNow('stop');
+                });
+                activePTZReleases.add(release);
+            });
+
+            function release(e) {
+                if (!pressed) return;
+                pressed = false;
+                if (e && e.preventDefault) e.preventDefault();
+                if (direction === 'stop') return;
+
+                const press = activePress;
+                activePress = null;
+                activePTZReleases.delete(release);
+                if (press) press.released = true;
+                sendNow('stop');
+            }
+
+            btn.addEventListener('pointerup', release);
+            btn.addEventListener('pointercancel', release);
+            btn.addEventListener('lostpointercapture', release);
+            btn.addEventListener('click', function(e) {
+                if (e.detail !== 0 || pressed) return;
+                if (direction === 'stop') {
+                    sendNow('stop');
+                    return;
+                }
+                const press = { released: true };
+                send(direction).then(function() {
+                    if (press.released) sendNow('stop');
+                });
+                sendNow('stop');
+            });
+        });
+    }
+
+    function wireCruisePoints() {
+        document.querySelectorAll('.cruise-controls').forEach(function(panel) {
+            const cam = panel.getAttribute('data-cruise-cam');
+
+            function setStatus(message) {
+                const status = document.createElement('span');
+                status.className = 'cruise-status';
+                status.textContent = message;
+                panel.replaceChildren(status);
+            }
+
+            function load() {
+                panel.classList.remove('failed');
+                fetch(B + '/api/cameras/' + encodeURIComponent(cam) + '/cruise-points')
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        return resp.json();
+                    })
+                    .then(function(data) {
+                        panel.replaceChildren();
+                        for (let slot = 1; slot <= 4; slot++) {
+                            const configured = slot <= data.points.length;
+                            const row = document.createElement('div');
+                            row.className = 'cruise-point-row';
+                            const label = document.createElement('span');
+                            label.className = 'cruise-point-label';
+                            label.textContent = 'Point ' + slot;
+                            const go = document.createElement('button');
+                            go.type = 'button';
+                            go.textContent = 'Go to';
+                            go.disabled = !configured;
+                            go.addEventListener('click', function() { send('goto', slot); });
+                            const save = document.createElement('button');
+                            save.type = 'button';
+                            save.textContent = configured ? 'Save current' : 'Add current';
+                            save.disabled = slot > data.points.length + 1;
+                            save.addEventListener('click', function() { send('save', slot); });
+                            row.append(label, go, save);
+                            panel.appendChild(row);
+                        }
+                    })
+                    .catch(function(err) {
+                        panel.classList.add('failed');
+                        setStatus('Could not load cruise points: ' + err.message);
+                    });
+            }
+
+            function send(action, slot) {
+                panel.classList.remove('failed');
+                fetch(B + '/api/cameras/' + encodeURIComponent(cam) + '/cruise-points', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, slot: slot })
+                })
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+                        load();
+                    })
+                    .catch(function(err) {
+                        panel.classList.add('failed');
+                        setStatus('Cruise point command failed: ' + err.message);
+                    });
+            }
+
+            load();
+        });
+    }
+
     // Pin / unpin a camera's LAN address from the detail page's Network
     // box. POST /api/cameras/{name}/pin with {"ip": "..."}; an empty ip
     // clears the pin. The reply carries the effective address.
@@ -814,6 +997,8 @@
         wireIgnoreButtons();
         wireRestoreButtons();
         wirePropertyButtons();
+        wirePTZButtons();
+        wireCruisePoints();
         wireRebootButtons();
         wirePinForms();
         wireRulesForm();
